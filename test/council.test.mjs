@@ -1,0 +1,5 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {validateContext,demoCouncil,matchSlots} from '../council.mjs';
+test('rejects invalid input instead of producing a plan',()=>{for(const c of [{text:'',sleep:5},{text:'ok',sleep:-1},{text:'ok',sleep:null}])assert.throws(()=>validateContext(c));});
+test('low sleep changes exercise proposal and retains social meal',()=>{const p=demoCouncil({text:'今晚朋友聚餐',sleep:5});assert.match(p.actions[0],/轻松散步/);assert.match(p.actions[1],/朋友/);assert.equal(p.agents.length,3);assert.equal(p.memoryUsed,false);});
+test('busy rested day produces different executable plan',()=>{const p=demoCouncil({text:'加班很忙',sleep:8},'饭后更容易执行');assert.match(p.actions[0],/午饭后/);assert.equal(p.memoryUsed,true);});
+test('external simulation only returns mutually shared supported slots',()=>{assert.deepEqual(matchSlots(['19:00–19:30','private'],['19:00–19:30','private']),['19:00–19:30']);assert.deepEqual(matchSlots(['12:30–13:00'],['20:00–20:30']),[]);});
