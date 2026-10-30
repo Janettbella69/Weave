@@ -15,3 +15,10 @@ Muse / cue / dots: ambiguous references, awaiting exact links. No claims about t
 - Adapter uses `/v2/api`, `X-GEWE-TOKEN`, `/message/postText` and `ret=200`. Does not copy trust-all TLS code.
 - Callback outer casing observed in historical ecosystem integrations; real deployment compatibility remains unverified.
 - Real Gewechat and Notion credentials absent at implementation time; tests use mocked services.
+
+## Weave v0.2 scope
+
+- Two separately stored local personas with independently scoped ParticipantAgent snapshots. Local consent, proposals, counterproposals and mutual confirmation protocol; not an implementation of Google A2A or a connected third-party agent network.
+- One-time reminders execute only while the Node server is running; local calendar plus ICS export, no external calendar API claimed.
+- Gewechat maps two explicitly configured wxids to their own personal state. Notion pages configured separately; no fallback to another person's page.
+- Browser runtime discovery returned no available browser. Real-browser visual QA remains unverified.

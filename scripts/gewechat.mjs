@@ -2,7 +2,7 @@ import {GewechatClient} from '../integrations/gewechat.mjs';
 const command=process.argv[2];
 try{
  if(command==='status'){
-  console.log(JSON.stringify({baseUrl:!!process.env.GEWECHAT_BASE_URL,token:!!process.env.GEWECHAT_TOKEN,appId:!!process.env.GEWECHAT_APP_ID,owner:!!process.env.GEWECHAT_OWNER_WXID,callbackSecret:(process.env.GEWECHAT_CALLBACK_SECRET?.length||0)>=24,notion:!!(process.env.NOTION_TOKEN&&process.env.NOTION_PAGE_ID)},null,2));
+  console.log(JSON.stringify({baseUrl:!!process.env.GEWECHAT_BASE_URL,token:!!process.env.GEWECHAT_TOKEN,appId:!!process.env.GEWECHAT_APP_ID,owner:!!process.env.GEWECHAT_OWNER_WXID,friend:!!process.env.GEWECHAT_FRIEND_WXID,callbackSecret:(process.env.GEWECHAT_CALLBACK_SECRET?.length||0)>=24,notion:!!(process.env.NOTION_TOKEN&&process.env.NOTION_PAGE_ID),friendNotion:!!((process.env.NOTION_FRIEND_TOKEN||process.env.NOTION_TOKEN)&&process.env.NOTION_FRIEND_PAGE_ID)},null,2));
  }else{
   const client=new GewechatClient({baseUrl:process.env.GEWECHAT_BASE_URL,token:process.env.GEWECHAT_TOKEN,appId:process.env.GEWECHAT_APP_ID});
   if(command==='callback'){

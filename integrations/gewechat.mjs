@@ -4,15 +4,15 @@ export function authenticated(actual,expected){
  if(!expected||expected.length<24||typeof actual!=='string')return false;
  const digest=s=>createHash('sha256').update(s).digest();return timingSafeEqual(digest(actual),digest(expected));
 }
-export function normalizeEvent(payload,{appId,ownerWxid}){
- if(!appId||!ownerWxid)throw Error('Gewechat appId 和指定用户尚未配置');
+export function normalizeEvent(payload,{appId,ownerWxid,allowedWxids}){
+ if(!appId||(!ownerWxid&&!allowedWxids?.length))throw Error('Gewechat appId 和指定用户尚未配置');
  const type=payload?.TypeName??payload?.type_name;
  if(type!=='AddMsg')return null;
  if((payload.Appid??payload.appid)!==appId)return null;
  const d=payload.Data??payload.data;
  if(!d||Number(d.MsgType)!==1)return null;
  const from=str(d.FromUserName),to=str(d.ToUserName),self=str(payload.Wxid);
- if(from!==ownerWxid||from===self||!to||!self||to!==self||from.endsWith('@chatroom')||to.endsWith('@chatroom'))return null;
+ if(!(allowedWxids||[ownerWxid]).includes(from)||from===self||!to||!self||to!==self||from.endsWith('@chatroom')||to.endsWith('@chatroom'))return null;
  const text=str(d.Content).trim();if(!text||text.length>4000)return null;
  // NewMsgId is commonly beyond JS integer precision. Never coerce large numeric IDs.
  const raw=d.NewMsgId??d.MsgId;

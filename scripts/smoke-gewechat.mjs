@@ -7,9 +7,9 @@ const dir=await mkdtemp(join(tmpdir(),'habit-gewechat-')),sent=[];let child;
 const mock=http.createServer(async(req,res)=>{let body='';for await(const c of req)body+=c;sent.push({path:req.url,token:req.headers['x-gewe-token'],body:JSON.parse(body)});res.setHeader('Content-Type','application/json');res.end(JSON.stringify({ret:200,data:{}}));});
 try{
  const mockPort=await listen(mock),uiPort=await freePort(),hookPort=await freePort();
- for(const f of ['server.mjs','agent.mjs','chat.mjs','council.mjs','public','integrations'])await cp(new URL('../'+f,import.meta.url),join(dir,f),{recursive:true});
+ for(const f of ['server.mjs','agent.mjs','chat.mjs','council.mjs','workspace.mjs','negotiation.mjs','reminders.mjs','weave-chat.mjs','calendar.mjs','public','integrations'])await cp(new URL('../'+f,import.meta.url),join(dir,f),{recursive:true});
  const secret='test-callback-secret-1234567890';
- child=spawn(process.execPath,[join(dir,'server.mjs')],{env:{...process.env,PORT:String(uiPort),ANTHROPIC_API_KEY:'',NOTION_TOKEN:'',GEWECHAT_BASE_URL:`http://127.0.0.1:${mockPort}/v2/api`,GEWECHAT_TOKEN:'test-token',GEWECHAT_APP_ID:'test-app',GEWECHAT_OWNER_WXID:'owner',GEWECHAT_CALLBACK_SECRET:secret,GEWECHAT_WEBHOOK_HOST:'127.0.0.1',GEWECHAT_WEBHOOK_PORT:String(hookPort)},stdio:['ignore','pipe','pipe']});
+ child=spawn(process.execPath,[join(dir,'server.mjs')],{env:{...process.env,PORT:String(uiPort),ANTHROPIC_API_KEY:'',NOTION_TOKEN:'',GEWECHAT_BASE_URL:`http://127.0.0.1:${mockPort}/v2/api`,GEWECHAT_TOKEN:'test-token',GEWECHAT_APP_ID:'test-app',GEWECHAT_OWNER_WXID:'owner',GEWECHAT_FRIEND_WXID:'friend',GEWECHAT_CALLBACK_SECRET:secret,GEWECHAT_WEBHOOK_HOST:'127.0.0.1',GEWECHAT_WEBHOOK_PORT:String(hookPort)},stdio:['ignore','pipe','pipe']});
  let stderr='';child.stderr.on('data',c=>stderr+=c);
  const status=async()=>{const r=await fetch(`http://127.0.0.1:${uiPort}/api/status`);return r.json();};
  let ready=false;for(let i=0;i<100;i++){try{await status();ready=true;break;}catch{await delay(30);}}assert.ok(ready,'server should start: '+stderr);
@@ -24,6 +24,12 @@ try{
  await post(payload(5,'确认计划'));await waitSent(3);assert.ok((await status()).plans.at(-1).approved);
  await post(payload(6,'同步 Notion'));await waitSent(4);assert.match(sent[3].body.content,/尚未配置 Notion/);
  await post(payload(7,'反馈：午饭后活动更容易坚持'));await waitSent(5);assert.equal((await status()).checkins.length,1);
+ await post(payload(8,'约阿梦散步'));await waitSent(7);
+ const invite=(await status()).negotiations[0];assert.equal(invite.status,'awaiting_consent');assert.ok(sent.some(x=>x.body.toWxid==='friend'&&x.body.content.includes('邀请')));
+ await post(payload(9,'授权协商 '+invite.id.slice(0,8),'friend'));await waitSent(9);assert.equal((await status()).negotiations[0].status,'awaiting_confirmation');
+ await post(payload(10,'确认协商 '+invite.id.slice(0,8)));await waitSent(11);
+ await post(payload(11,'确认协商 '+invite.id.slice(0,8),'friend'));await waitSent(13);assert.equal((await status()).negotiations[0].status,'confirmed');assert.equal((await status()).calendar.length,1);
+ const friend=await(await fetch(`http://127.0.0.1:${uiPort}/api/status?person=meng`)).json();assert.equal(friend.calendar.length,1);assert.equal(friend.checkins.length,0);
  const isolated=await fetch(`http://127.0.0.1:${hookPort}/api/status`);assert.equal(isolated.status,403);
- console.log('PASS: authenticated webhook → shared Agent → Gewechat HTTP reply; duplicate/stranger rejection; confirm; Notion configuration guard; feedback persistence; isolated ingress.');
+ console.log('PASS: authenticated webhook → shared Agent → Gewechat HTTP reply; duplicate/stranger rejection; confirm; Notion configuration guard; feedback persistence; isolated ingress; two WeChat identities negotiate, mutually confirm and receive separate calendar entries.');
 }finally{if(child){const exit=new Promise(r=>child.once('exit',r));child.kill();await exit;}await close(mock);await rm(dir,{recursive:true,force:true});}

@@ -9,7 +9,7 @@ export function chatIntent(text,pending='') {
  if(typeof text!=='string'||!text.trim()||text.length>4000)throw new Error('请输入 1–4000 字消息');
  const clean=text.trim();
  if(/^(记录反馈|反馈|打卡)[：:]/.test(clean)){const feedback=clean.replace(/^(记录反馈|反馈|打卡)[：:]\s*/,'');if(!feedback||feedback.length>2000)throw new Error('反馈需要 1–2000 字');return {kind:'feedback',text:feedback};}
- if(/^(你好|嗨|hi|hello)[！!。\s]*$/i.test(clean))return {kind:'reply',text:'你好，我是你的个人习惯 Agent。今天想从什么开始？可以聊聊精力、计划和昨晚睡了多久，我会和运动、睡眠、饮食 Agent 一起帮你调整。'};
+ if(/^(你好|嗨|hi|hello)[！!。\s]*$/i.test(clean))return {kind:'reply',text:'你好，我是你的 Weave Personal Agent。可以聊聊今天的状态和睡眠，让习惯团队帮你调整计划；也可以说“约阿梦散步”或“约Lulu散步”，让我们的 Agent 协调一起行动。'};
  const sleep=sleepHours(clean);const combined=pending?pending+'\n补充：'+clean:clean;
  if(sleep===null)return {kind:'clarify',pending:combined.slice(-6000),text:'我先记住这些安排。为了让计划更适合你，昨晚大约睡了几个小时？例如“睡了 6 小时”。'};
  return {kind:'plan',context:{text:combined.slice(-4000),sleep}};

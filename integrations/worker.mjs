@@ -1,6 +1,6 @@
 import {processChat} from '../agent.mjs';
 import {formatReply} from './gewechat.mjs';
-export function createWorker({state,save,notion,client,exclusive}){
+export function createWorker({state,save,notion,client,exclusive,handleMessage}){
  let running=false;
  return async function drain(){
   if(running)return;running=true;
@@ -10,13 +10,10 @@ export function createWorker({state,save,notion,client,exclusive}){
    await exclusive(async()=>{
     if(entry.status==='queued'){
      entry.status='processing';await save();
-     // Work on a draft: model failures cannot leave a half-created conversation.
-     const draft=structuredClone(state);
-     try{const result=await processChat(draft,entry.text,notion,async()=>{ // Persist Notion uncertainty before issuing a remote write.
-       const p=draft.plans.at(-1);if(p?.syncStatus){const original=state.plans.find(x=>x.id===p.id);if(original)Object.assign(original,p);await save();}
-      });
-      state.plans=draft.plans;state.checkins=draft.checkins;state.messages=draft.messages;state.pending=draft.pending;
-      const reply=result.messages.at(-1);entry.reply=formatReply(reply,state.plans.find(p=>p.id===reply.planId));
+     try{
+      const result=handleMessage?await handleMessage(entry):await processChat(state,entry.text,notion,save);
+      const reply=result.messages.at(-1);const person=entry.personId?state.people[entry.personId]:state;
+      entry.reply=formatReply(reply,person.plans.find(p=>p.id===reply.planId));
      }catch(e){entry.reply='这次没有完成：'+e.message+'。请检查后重新发起请求。';}
      entry.status='ready';await save();
     }

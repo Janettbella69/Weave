@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {chatIntent} from './chat.mjs';
 import {demoCouncil,liveCouncil} from './council.mjs';
 export async function createPlan(state,context,notion){
- const memory=[await notion.memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
+ const memory=[state.profile?`个人目标：${state.profile.goal}；个人偏好：${state.profile.preferences}`:'',await notion.memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
  const live=!!(process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL);
  const result=live?await liveCouncil(context,memory):demoCouncil(context,memory);
  const plan={id:randomUUID(),createdAt:new Date().toISOString(),context,...result,mode:live?'live':'demo',approved:false};state.plans.push(plan);return plan;

@@ -1,74 +1,121 @@
-# Habit Council · 习惯议会
+# Weave · 让我的 Agent 与你的 Agent 一起行动
 
-第一版以 Chatbot 为主入口，是一个以 Notion 为长期记忆入口的 Personal Agent 黑客松原型。让运动、睡眠、饮食三个 Agent 协调当天的习惯计划，由用户确认后执行。
+微信连接的是人，Weave 探索 Agent 之间的连接。
 
-微信入口使用你指定的 **Gewechat** 历史 REST 接口适配；配置后与网页共享同一个人的习惯记忆。接入指南：[Gewechat + Notion](docs/GEWECHAT.md)。
+Weave 是以 **Agent to Agent 协作**为核心的个人生活助手。对内，运动、睡眠、饮食 Agent 协调当天的习惯计划；对外，两个 Personal Agent 根据各自用户授权的时间与偏好，经过提案、冲突处理、反提案，形成共同方案，再由双方用户确认。
 
-## 本地运行
+第一版是**可本地运行的双角色 Chatbot 原型**。采用 Node.js 22+ 标准库，无需安装依赖。默认规则演示；配置后可用真实模型完成内部团队协商，并接入 Gewechat 和 Notion。
 
-要求 Node.js 22+，无需安装依赖。
+## 立即体验
 
 ```sh
 npm run dev
 ```
 
-访问 http://127.0.0.1:4317 。默认是明确标注的规则演示模式。
+- [Lulu 的空间](http://127.0.0.1:4317/?person=lulu)
+- [阿梦的空间](http://127.0.0.1:4317/?person=meng)
 
-## 真实模型与 Notion
+可以分别打开两个标签页，或在右上角切换本地演示人物。界面每 2.5 秒刷新通知。人物切换是本机演示功能，**不是线上多用户登录**，不要直接公开 UI 端口。
 
-复制 `.env.example` 为 `.env`，填写：
+## 三分钟 A2A 演示
 
-- `ANTHROPIC_API_KEY` 和 `ANTHROPIC_MODEL`：使用你账号有权限的模型 ID。三个独立角色并行调用，再由第四次模型调用完成协调。失败会显示错误，不会悄悄退回演示。
-- `NOTION_TOKEN`：Notion integration token。
-- `NOTION_PAGE_ID`：一个普通父页面 ID（非 database ID）。在 Notion 页面菜单中将此页面连接到 integration，授予读写权限。
+1. Lulu 点击“让我们的 Agent 约一次散步”，勾选本次共享授权，邀请阿梦。
+2. 切到阿梦的视角，在“Agent 协作”中授权本次共享。
+3. 展开协商记录：Lulu 的 Agent 提议周三 20:00，阿梦的 Agent 发现不在自己的可用时间；反提议周五 18:30，Lulu 的 Agent 也不接受；再提议周三 18:30，双方 Agent 达成一致。
+4. 阿梦确认方案；此时仍不会写入日程。切回 Lulu 也确认，才分别写入两人的 Weave 本地日程。
+5. 各自可下载 `.ics` 日历文件，或手动同步到各自的 Notion 页面。
 
-重启服务。协商时读取父页面顶层文字及最近七份本项目创建的计划子页面，结合本地最近七条反馈作为上下文；用户确认后点击同步或发送“同步 Notion”，在父页面下新建计划子页面，并附带最近的反馈。反馈不单独自动回写。
+初始时间为按本机当前日期生成的未来示例，双方都可修改。若没有交集、用户拒绝、候选时间过期、方案版本改变或时间被其他已确认活动占用，系统不会伪造“约好了”。
 
-`.env` 和本地数据 `.data/` 均被 Git 忽略。密钥不传到浏览器。
+**协议明确区分授权、Agent 达成一致和用户确认。** 本地双方 Agent 各自只拿到本次授权的可用时间和活动类型；吃饭活动还会交换明确授权的饮食偏好。私聊、习惯反馈和其他 Notion 记忆不进入对外协商消息。该版本使用项目自定义的本地规则协议，不声称接入第三方 Agent 网络或实现 Google A2A 标准。
 
-## 两层协作
+## 个人习惯与长期记忆
 
-1. 内部协作：状态输入 → 三角色提案 → 冲突协调 → 用户确认 → Notion 同步。
-2. 外部协作：本地模拟双方 Agent 交换自选空闲时间、求交集。尚未连接真实朋友、日历或餐厅；个人微信通道已提供 Gewechat 适配，实际连接仍需要外部服务。
+在聊天中输入：
 
-规则演示根据睡眠、忙碌、聚餐及午饭后偏好调整计划，不等于真实 LLM 推理。真实模式使用独立角色调用，不声称已经完成外部行动。
+```text
+昨晚睡了 5 小时，今天想练腿，晚上和朋友聚餐，有点累。
+目标：每周做三次容易坚持的活动
+偏好：饭后活动更容易坚持
+反馈：今天午饭后散步五分钟，比晚上更容易做到
+确认计划
+同步 Notion
+```
 
-## 三分钟演示
+缺少睡眠信息时会追问并保留上文。内部三个角色给出建议，协调员说明冲突取舍，用户确认后保存。配置模型时，三个角色并行调用，第四次模型调用完成协调；模型故障显示错误，不偷偷回退为模拟。
 
-1. 在聊天里说“今天很累，原计划练腿，晚上和朋友聚餐”。
-2. Agent 追问睡眠，回答“5 小时”；系统保留上条上下文并生成计划。
-3. 在回复中展开三个 Agent 的建议，查看冲突取舍，确认计划。
-4. 在该消息内同步 Notion（配置后）或导出 Markdown。
-5. 输入“反馈：午饭后散步更容易坚持”，下一次协商会参考。
+每人都有独立的目标、偏好、聊天、习惯计划、反馈、待补充上下文、日程和提醒。旧版 `.data/state.json` 自动迁移到 Lulu 的空间，原文件先备份为 `.data/state-v1-backup.json`，不会覆盖到阿梦的空间。
 
-聊天记录保存在本地 `.data/state.json`，刷新后恢复。聊天入口目前为规则意图识别，支持状态输入、缺少睡眠信息的追问与显式反馈记录；不是通用闲聊模型。Enter 发送，Shift+Enter 换行。聊天主界面不再展示第二层时间协商，原有 `/api/match` 模拟接口保留。
+## Agent 协作聊天指令
 
-## 架构
+```text
+约阿梦散步
+约Lulu吃饭
+我的协商
+授权协商 <协商编号前8位>
+确认协商 <协商编号前8位>
+拒绝协商 <协商编号前8位>
+同步协商 <协商编号前8位>
+```
 
-- `public/`：中文响应式聊天界面，原生 HTML/CSS/JS。
-- `chat.mjs`：聊天意图、睡眠提取与追问上下文。
-- `council.mjs`：输入校验、规则策略、三角色模型编排、时间协商。
-- `agent.mjs`：网页和微信共用的个人 Agent、计划确认与同步。
-- `integrations/`：Gewechat 客户端、回调处理队列、Notion 连接。
-- `scripts/gewechat.mjs`：显式扫码、在线检查和回调注册命令。
-- `server.mjs`：本机 UI、独立微信回调入口、原子持久化。
-- `test/`：输入边界、冲突处理、外部授权时间边界。
+发起邀请即授权本次共享已选空闲时间与活动偏好；UI 需明确勾选授权。对方必须另外授权，双方必须分别确认。更新个人设置会撤销进行中协商的旧授权和确认。
 
-架构参考：Meta Muse 的主 Agent、子 Agent 和连接器思路（https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse）。当前未集成 Muse；cue、dots 的具体项目链接待确认。
+## 主动提醒
+
+在“日程与提醒”中设置内容和未来时间，也可以发送：
+
+```text
+提醒：2027-01-01 20:00 出门散步十分钟
+```
+
+服务每秒检查一次到期提醒，写入对应用户聊天；若配置该用户的微信映射，也排队发送到微信。一次性提醒可取消，到期不重复执行。需要保持 Node 服务运行；关机或停服务期间不能实时提醒，重启后补发到期任务。没有安装系统级后台守护程序。
+
+时间统一使用服务所在机器的时区，界面有明确显示；不是跨时区日程产品。
+
+## 微信与 Notion
+
+完整步骤：[Gewechat + Notion 接入说明](docs/GEWECHAT.md)。
+
+复制 `.env.example` 为 `.env`：
+
+| 配置 | 用途 |
+| --- | --- |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | 内部习惯团队的真实模型调用 |
+| `NOTION_TOKEN` / `NOTION_PAGE_ID` | Lulu 的 Notion 父页面 |
+| `NOTION_FRIEND_PAGE_ID` / `NOTION_FRIEND_TOKEN` | 阿梦的独立 Notion 父页面，可用独立 Token |
+| `GEWECHAT_BASE_URL` / `GEWECHAT_TOKEN` / `GEWECHAT_APP_ID` | 外部 Gewechat 服务与机器人登录设备 |
+| `GEWECHAT_OWNER_WXID` / `GEWECHAT_FRIEND_WXID` | 两个不同微信用户与 Lulu / 阿梦的映射 |
+| `GEWECHAT_CALLBACK_SECRET` / `GEWECHAT_PUBLIC_ORIGIN` | 回调认证路径及 HTTPS 代理域名 |
+
+Notion 读取个人父页面文字和最近七份 Weave/旧版习惯议会计划。各自确认后才手动写入个人页面，最近反馈会随同步一并保存。A2A 协作必须双方确认后，才允许每人同步自己的副本。阿梦页面未配置时，不会使用 Lulu 的页面。
+
+**Gewechat 上游已经停止维护，仓库不包含完整服务端。** 本项目提供兼容其历史 REST 接口的适配层，需要用户提供可用服务、登录会话和回调代理；不能把模拟收发验证说成真实微信在线。
+
+密钥和个人数据只保存在被 Git 忽略的 `.env` / `.data/`。开启云端模型或 Notion 后，必要上下文会发送到相应服务，不能宣称所有数据永不上云。
 
 ## 验证
 
 ```sh
 npm test
-node --check server.mjs
-node --check public/app.js
-node scripts/smoke-gewechat.mjs
+npm run test:e2e
+npm run test:wechat
 ```
 
-当前版本面向本机单人运行，不应直接暴露到公网。线上多用户版本需要身份验证、用户隔离和数据库迁移；当前不包含定时推送。
+- 单元测试覆盖用户隔离、授权、冲突与反提案、拒绝、版本失效、双方确认、重复预约、日历导出、提醒与连接器边界。
+- `test:e2e` 在临时目录启动独立服务，验证迁移备份、两个人的完整 HTTP 流程、私有记录隔离和提醒。
+- `test:wechat` 启动本机模拟 Gewechat，验证两个微信身份经真实 HTTP 回调和回复接口完成协商。不会联系实际微信账号或 Notion。
 
-## API 参考
+## 项目结构
 
-- [Notion block children](https://developers.notion.com/reference/get-block-children)
-- [Notion create page](https://developers.notion.com/reference/post-page)
-- [Anthropic Messages](https://platform.claude.com/docs/en/api/messages)
+| 文件 | 职责 |
+| --- | --- |
+| `workspace.mjs` | 个人空间、数据迁移、目标偏好和可用时间 |
+| `negotiation.mjs` | 两个独立上下文的 ParticipantAgent、本地协商协议及提交 |
+| `weave-chat.mjs` | 主 Agent 聊天路由、习惯与 A2A 指令 |
+| `agent.mjs` / `council.mjs` | 内部团队协商及个人计划 |
+| `reminders.mjs` / `calendar.mjs` | 到期提醒、本地日程和 ICS 导出 |
+| `integrations/` | Gewechat、Notion 和持久化发送队列 |
+| `server.mjs` | 本机 UI API、独立微信回调入口、原子持久化 |
+| `public/` | 响应式 Chatbot、双角色视角、协商记录与个人设置 |
+
+公开上线仍需身份验证、用户注册与邀请关系、持久数据库和部署维护。当前不包含餐厅订位、真实第三方日历写入或通用自由对话模型。
