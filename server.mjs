@@ -1,10 +1,12 @@
 import http from 'node:http';
+import {chatIntent} from './chat.mjs';
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {validateContext,demoCouncil,liveCouncil,matchSlots} from './council.mjs';
 const root=new URL('./public/',import.meta.url), dataDir=new URL('./.data/',import.meta.url);
 await mkdir(dataDir,{recursive:true});
 let state;try{state=JSON.parse(await readFile(new URL('state.json',dataDir),'utf8'));}catch{state={plans:[],checkins:[]};}
+state.messages??=[];state.pending??='';
 const save=()=>writeFile(new URL('state.json',dataDir),JSON.stringify(state,null,2));
 const configured=()=>!!(process.env.NOTION_TOKEN&&process.env.NOTION_PAGE_ID);
 async function notion(path,method='GET',body){
@@ -22,12 +24,32 @@ const locks=new Set();
 http.createServer(async(req,res)=>{
  try{
  const url=new URL(req.url,'http://localhost');
- if(req.method==='GET'&&url.pathname==='/api/status')return json(res,200,{model:process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL?'live':'demo',notion:configured(),plans:state.plans,checkins:state.checkins});
+ if(req.method==='GET'&&url.pathname==='/api/status')return json(res,200,{model:process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL?'live':'demo',notion:configured(),plans:state.plans,checkins:state.checkins,messages:state.messages});
  if(req.method==='GET'&&url.pathname==='/api/memory')return json(res,200,{text:await memory()});
  if(req.method==='POST'&&url.pathname.startsWith('/api/')){
   const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`)return json(res,403,{error:'不允许跨站请求'});
   if(!(req.headers['content-type']||'').startsWith('application/json'))return json(res,415,{error:'需要 JSON 请求'});
   let body='';for await(const chunk of req){body+=chunk;if(body.length>20000)return json(res,413,{error:'输入过长'});}let input;try{input=JSON.parse(body);}catch{return json(res,400,{error:'JSON 格式错误'});}
+  if(url.pathname==='/api/chat'){
+   if(locks.has('chat'))return json(res,409,{error:'上一条消息还在处理中'});
+   locks.add('chat');try{
+    const intent=chatIntent(input.text,state.pending);
+    const additions=[{id:randomUUID(),role:'user',text:input.text.trim(),createdAt:new Date().toISOString()}];
+    let reply;
+    if(intent.kind==='feedback'){
+     state.checkins.push({id:randomUUID(),text:intent.text,createdAt:new Date().toISOString()});
+     reply={text:'记下了：'+intent.text+'。下一次协商会参考这条反馈。'};
+    }else if(intent.kind==='plan'){
+     const mem=[await memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
+     const live=!!(process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL);
+     const result=live?await liveCouncil(intent.context,mem):demoCouncil(intent.context,mem);
+     const plan={id:randomUUID(),createdAt:new Date().toISOString(),context:intent.context,...result,mode:live?'live':'demo',approved:false};
+     state.plans.push(plan);state.pending='';reply={text:plan.summary,planId:plan.id};
+    }else {reply={text:intent.text};if(intent.kind==='clarify')state.pending=intent.pending;}
+    additions.push({id:randomUUID(),role:'assistant',...reply,createdAt:new Date().toISOString()});
+    state.messages.push(...additions);await save();return json(res,200,{messages:additions});
+   }finally{locks.delete('chat');}
+  }
   if(url.pathname==='/api/council'){
    const c=validateContext(input); const mem=[await memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
    const live=!!(process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL);

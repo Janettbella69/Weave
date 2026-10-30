@@ -1,6 +1,6 @@
 # Habit Council · 习惯议会
 
-一个以 Notion 为长期记忆入口的 Personal Agent 黑客松原型。让运动、睡眠、饮食三个 Agent 协调当天的习惯计划，由用户确认后执行。
+第一版以 Chatbot 为主入口，是一个以 Notion 为长期记忆入口的 Personal Agent 黑客松原型。让运动、睡眠、饮食三个 Agent 协调当天的习惯计划，由用户确认后执行。
 
 ## 本地运行
 
@@ -33,20 +33,23 @@ npm run dev
 
 ## 三分钟演示
 
-1. 使用默认“睡眠五小时、计划练腿、晚上聚餐”输入，召集 Agent。
-2. 展示各角色建议、冲突取舍和轻量计划，点击确认。
-3. 同步 Notion（配置后）或导出 Markdown。
-4. 记录“午饭后活动更容易坚持”，再召集团队，展示记忆对计划的影响。
-5. 切换 Agent 连接，展示时间交集和无共同空闲的情况。
+1. 在聊天里说“今天很累，原计划练腿，晚上和朋友聚餐”。
+2. Agent 追问睡眠，回答“5 小时”；系统保留上条上下文并生成计划。
+3. 在回复中展开三个 Agent 的建议，查看冲突取舍，确认计划。
+4. 在该消息内同步 Notion（配置后）或导出 Markdown。
+5. 输入“反馈：午饭后散步更容易坚持”，下一次协商会参考。
+
+聊天记录保存在本地 `.data/state.json`，刷新后恢复。聊天入口目前为规则意图识别，支持状态输入、缺少睡眠信息的追问与显式反馈记录；不是通用闲聊模型。Enter 发送，Shift+Enter 换行。聊天主界面不再展示第二层时间协商，原有 `/api/match` 模拟接口保留。
 
 ## 架构
 
-- `public/`：中文响应式工作台，原生 HTML/CSS/JS。
+- `public/`：中文响应式聊天界面，原生 HTML/CSS/JS。
+- `chat.mjs`：聊天意图、睡眠提取与追问上下文。
 - `council.mjs`：输入校验、规则策略、三角色模型编排、时间协商。
 - `server.mjs`：本机 HTTP 服务、持久化、Notion 读取与写入。
 - `test/`：输入边界、冲突处理、外部授权时间边界。
 
-Muse、cue、dots：用户提出的待研究架构参考，具体项目链接待确认。当前未集成或复用这些项目，不预先假定同名产品的实现方式。
+架构参考：Meta Muse 的主 Agent、子 Agent 和连接器思路（https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse）。当前未集成 Muse；cue、dots 的具体项目链接待确认。
 
 ## 验证
 
