@@ -1,1 +1,15 @@
-{"name":"habit-council","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"node --env-file-if-exists=.env server.mjs","start":"node --env-file-if-exists=.env server.mjs","test":"node --test"},"engines":{"node":">=22"}}
+{
+  "name": "habit-council",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "test": "node --test",
+    "gewechat": "node --env-file-if-exists=.env scripts/gewechat.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

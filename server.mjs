@@ -1,78 +1,72 @@
 import http from 'node:http';
-import {chatIntent} from './chat.mjs';
-import {readFile,mkdir,writeFile} from 'node:fs/promises';
+import {readFile,mkdir,writeFile,rename} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
-import {validateContext,demoCouncil,liveCouncil,matchSlots} from './council.mjs';
-const root=new URL('./public/',import.meta.url), dataDir=new URL('./.data/',import.meta.url);
+import {validateContext,matchSlots} from './council.mjs';
+import {processChat,createPlan,syncPlan} from './agent.mjs';
+import {NotionClient} from './integrations/notion.mjs';
+import {GewechatClient,authenticated,normalizeEvent} from './integrations/gewechat.mjs';
+import {createWorker} from './integrations/worker.mjs';
+const root=new URL('./public/',import.meta.url),dataDir=new URL('./.data/',import.meta.url);
 await mkdir(dataDir,{recursive:true});
-let state;try{state=JSON.parse(await readFile(new URL('state.json',dataDir),'utf8'));}catch{state={plans:[],checkins:[]};}
-state.messages??=[];state.pending??='';
-const save=()=>writeFile(new URL('state.json',dataDir),JSON.stringify(state,null,2));
-const configured=()=>!!(process.env.NOTION_TOKEN&&process.env.NOTION_PAGE_ID);
-async function notion(path,method='GET',body){
- const r=await fetch(`https://api.notion.com/v1/${path}`,{method,headers:{Authorization:`Bearer ${process.env.NOTION_TOKEN}`,'Notion-Version':'2025-09-03','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(20000)});
- if(!r.ok)throw new Error(`Notion 请求失败 (${r.status})，请检查页面授权和配置`);return r.json();
-}
-async function memory(){
- if(!configured())return '';
- let cursor, lines=[];
- do {const r=await notion(`blocks/${encodeURIComponent(process.env.NOTION_PAGE_ID)}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);for(const b of r.results){const t=b[b.type];if(t?.rich_text)lines.push(t.rich_text.map(x=>x.plain_text||x.text?.content||'').join(''));}cursor=r.has_more?r.next_cursor:null;}while(cursor&&lines.join('').length<12000);
- return lines.join('\n').slice(0,12000);
-}
+let state;try{state=JSON.parse(await readFile(new URL('state.json',dataDir),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;state={plans:[],checkins:[]};}
+state.messages??=[];state.pending??='';state.wechatInbox??={};
+for(const entry of Object.values(state.wechatInbox)){if(['processing','sending'].includes(entry.status)){entry.status='uncertain';entry.error='进程中断，执行结果需人工核对';}}
+for(const p of state.plans)if(p.syncStatus==='sending')p.syncStatus='uncertain';
+let diskQueue=Promise.resolve();
+function save(){const snapshot=JSON.stringify(state,null,2);const result=diskQueue.then(async()=>{const temp=new URL('state.tmp',dataDir);await writeFile(temp,snapshot,{mode:0o600});await rename(temp,new URL('state.json',dataDir));});diskQueue=result.catch(()=>{});return result;}
+await save();
+let operations=Promise.resolve();
+function exclusive(task){const result=operations.then(task);operations=result.catch(()=>{});return result;}
+const notion=new NotionClient({token:process.env.NOTION_TOKEN,pageId:process.env.NOTION_PAGE_ID});
 function json(res,status,data){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));}
-const locks=new Set();
+async function readJson(req,limit=20000){if(!(req.headers['content-type']||'').startsWith('application/json'))throw Error('需要 JSON 请求');let chunks=[],size=0;for await(const chunk of req){size+=chunk.length;if(size>limit)throw Error('输入过长');chunks.push(chunk);}try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw Error('JSON 格式错误');}}
+const geweEnabled=!!process.env.GEWECHAT_BASE_URL;
+let drain;
+const acknowledgements=new Map();
+if(geweEnabled){
+ const secret=process.env.GEWECHAT_CALLBACK_SECRET;
+ if(!secret||secret.length<24||!process.env.GEWECHAT_APP_ID||!process.env.GEWECHAT_OWNER_WXID)throw Error('微信接入需要 appId、指定用户和至少 24 字符的回调密钥');
+ const client=new GewechatClient({baseUrl:process.env.GEWECHAT_BASE_URL,token:process.env.GEWECHAT_TOKEN,appId:process.env.GEWECHAT_APP_ID});
+ drain=createWorker({state,save,notion,client,exclusive});
+ // Separate ingress: exposing the callback does not expose local chat history or controls.
+ http.createServer(async(req,res)=>{
+  try{
+   const url=new URL(req.url,'http://localhost');
+   const prefix='/webhooks/gewechat/';
+   if(req.method!=='POST'||!url.pathname.startsWith(prefix)||!authenticated(decodeURIComponent(url.pathname.slice(prefix.length)),secret))return json(res,403,{error:'回调鉴权失败'});
+   const payload=await readJson(req,100000),event=normalizeEvent(payload,{appId:process.env.GEWECHAT_APP_ID,ownerWxid:process.env.GEWECHAT_OWNER_WXID});
+   if(!event)return json(res,200,{ok:true,ignored:true});
+   const existing=state.wechatInbox[event.id];
+   if(existing){await acknowledgements.get(event.id);return json(res,200,{ok:true,duplicate:true});}
+   if(Object.keys(state.wechatInbox).length>=5000)return json(res,503,{error:'回调记录已达上限，请维护本地记录后重试'});
+   const entry={...event,status:'queued',createdAt:new Date().toISOString()};state.wechatInbox[event.id]=entry;
+   const durable=save();acknowledgements.set(event.id,durable);
+   try{await durable;}catch(e){delete state.wechatInbox[event.id];throw e;}finally{acknowledgements.delete(event.id);}
+   json(res,200,{ok:true});void drain().catch(()=>console.error('微信队列处理失败，请检查本地运行状态'));
+  }catch(e){json(res,400,{error:e.message});}
+ }).listen(Number(process.env.GEWECHAT_WEBHOOK_PORT)||4318,process.env.GEWECHAT_WEBHOOK_HOST||'127.0.0.1',()=>console.log('Gewechat callback listener enabled (separate from local UI)'));
+ void drain().catch(()=>console.error('微信队列恢复失败'));
+}
 http.createServer(async(req,res)=>{
  try{
  const url=new URL(req.url,'http://localhost');
- if(req.method==='GET'&&url.pathname==='/api/status')return json(res,200,{model:process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL?'live':'demo',notion:configured(),plans:state.plans,checkins:state.checkins,messages:state.messages});
- if(req.method==='GET'&&url.pathname==='/api/memory')return json(res,200,{text:await memory()});
+ if(req.method==='GET'&&url.pathname==='/api/status')return json(res,200,{model:process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL?'live':'demo',notion:notion.configured(),wechat:{configured:geweEnabled,online:'unchecked',queued:Object.values(state.wechatInbox).filter(x=>['queued','ready','processing'].includes(x.status)).length,uncertain:Object.values(state.wechatInbox).filter(x=>x.status==='uncertain').length},plans:state.plans,checkins:state.checkins,messages:state.messages});
+ if(req.method==='GET'&&url.pathname==='/api/memory')return json(res,200,{text:await notion.memory()});
  if(req.method==='POST'&&url.pathname.startsWith('/api/')){
   const origin=req.headers.origin;if(origin&&origin!==`http://${req.headers.host}`)return json(res,403,{error:'不允许跨站请求'});
-  if(!(req.headers['content-type']||'').startsWith('application/json'))return json(res,415,{error:'需要 JSON 请求'});
-  let body='';for await(const chunk of req){body+=chunk;if(body.length>20000)return json(res,413,{error:'输入过长'});}let input;try{input=JSON.parse(body);}catch{return json(res,400,{error:'JSON 格式错误'});}
-  if(url.pathname==='/api/chat'){
-   if(locks.has('chat'))return json(res,409,{error:'上一条消息还在处理中'});
-   locks.add('chat');try{
-    const intent=chatIntent(input.text,state.pending);
-    const additions=[{id:randomUUID(),role:'user',text:input.text.trim(),createdAt:new Date().toISOString()}];
-    let reply;
-    if(intent.kind==='feedback'){
-     state.checkins.push({id:randomUUID(),text:intent.text,createdAt:new Date().toISOString()});
-     reply={text:'记下了：'+intent.text+'。下一次协商会参考这条反馈。'};
-    }else if(intent.kind==='plan'){
-     const mem=[await memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
-     const live=!!(process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL);
-     const result=live?await liveCouncil(intent.context,mem):demoCouncil(intent.context,mem);
-     const plan={id:randomUUID(),createdAt:new Date().toISOString(),context:intent.context,...result,mode:live?'live':'demo',approved:false};
-     state.plans.push(plan);state.pending='';reply={text:plan.summary,planId:plan.id};
-    }else {reply={text:intent.text};if(intent.kind==='clarify')state.pending=intent.pending;}
-    additions.push({id:randomUUID(),role:'assistant',...reply,createdAt:new Date().toISOString()});
-    state.messages.push(...additions);await save();return json(res,200,{messages:additions});
-   }finally{locks.delete('chat');}
-  }
-  if(url.pathname==='/api/council'){
-   const c=validateContext(input); const mem=[await memory(),...state.checkins.slice(-7).map(x=>x.text)].join('\n').trim();
-   const live=!!(process.env.ANTHROPIC_API_KEY&&process.env.ANTHROPIC_MODEL);
-   const result=live?await liveCouncil(c,mem):demoCouncil(c,mem);
-   const plan={id:randomUUID(),createdAt:new Date().toISOString(),context:c,...result,mode:live?'live':'demo',approved:false};state.plans.push(plan);await save();return json(res,200,plan);
-  }
-  if(url.pathname==='/api/approve') {const p=state.plans.find(x=>x.id===input.id);if(!p)return json(res,404,{error:'计划不存在'});p.approved=true;await save();return json(res,200,p);}
-  if(url.pathname==='/api/checkin'){if(typeof input.text!=='string'||!input.text.trim()||input.text.length>2000)return json(res,400,{error:'请填写 1–2000 字反馈'});state.checkins.push({id:randomUUID(),text:input.text.trim(),createdAt:new Date().toISOString()});await save();return json(res,200,{ok:true});}
-  if(url.pathname==='/api/match')return json(res,200,{slots:matchSlots(input.mine,input.theirs),mode:'simulation',message:'本地双角色协商演示，不会联系朋友或创建真实日程'});
-  if(url.pathname==='/api/sync'){
-   const p=state.plans.find(x=>x.id===input.id);if(!p?.approved)return json(res,400,{error:'请先确认计划'});
-   if(!configured())return json(res,400,{error:'尚未配置 Notion；可先导出 Markdown'});
-   if(p.notionUrl)return json(res,200,{url:p.notionUrl});if(locks.has(p.id))return json(res,409,{error:'正在同步，请稍候'});
-   locks.add(p.id);try{
-    const block=text=>({object:'block',type:'paragraph',paragraph:{rich_text:[{type:'text',text:{content:text.slice(0,2000)}}]}});
-    const out=await notion('pages','POST',{parent:{page_id:process.env.NOTION_PAGE_ID},properties:{title:{type:'title',title:[{type:'text',text:{content:`习惯议会 · ${p.createdAt.slice(0,10)}`}}]}},children:[block(p.context.text),block(p.conflict),...p.actions.map(block),block(`来源：${p.mode==='demo'?'规则演示':'真实模型协商'}；计划 ID：${p.id}`)]});
-    p.notionUrl=out.url;await save();return json(res,200,{url:out.url});
-   }finally{locks.delete(p.id);}
-  }
-  return json(res,404,{error:'接口不存在'});
+  const input=await readJson(req);
+  const output=await exclusive(async()=>{
+   if(url.pathname==='/api/chat')return processChat(state,input.text,notion,save);
+   if(url.pathname==='/api/council'){const plan=await createPlan(state,validateContext(input),notion);await save();return plan;}
+   if(url.pathname==='/api/approve'){const p=state.plans.find(x=>x.id===input.id);if(!p)throw Error('计划不存在');p.approved=true;await save();return p;}
+   if(url.pathname==='/api/checkin'){if(typeof input.text!=='string'||!input.text.trim()||input.text.length>2000)throw Error('请填写 1–2000 字反馈');state.checkins.push({id:randomUUID(),text:input.text.trim(),createdAt:new Date().toISOString()});await save();return {ok:true};}
+   if(url.pathname==='/api/match')return {slots:matchSlots(input.mine,input.theirs),mode:'simulation',message:'本地双角色协商演示，不会联系朋友或创建真实日程'};
+   if(url.pathname==='/api/sync')return syncPlan(state,state.plans.find(x=>x.id===input.id),notion,save);
+   throw Error('接口不存在');
+  });return json(res,200,output);
  }
  if(req.method!=='GET')return json(res,405,{error:'方法不支持'});
- const files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'};const file=files[url.pathname];if(!file)return json(res,404,{error:'未找到'});
+ const files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'},file=files[url.pathname];if(!file)return json(res,404,{error:'未找到'});
  res.writeHead(200,{'Content-Type':file.endsWith('.js')?'text/javascript; charset=utf-8':file.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','X-Content-Type-Options':'nosniff'});res.end(await readFile(new URL(file,root)));
  }catch(e){json(res,400,{error:e.message||'操作失败，请重试'});}
 }).listen(Number(process.env.PORT)||4317,'127.0.0.1',()=>console.log('Habit Council: http://127.0.0.1:'+(Number(process.env.PORT)||4317)));

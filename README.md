@@ -2,6 +2,8 @@
 
 第一版以 Chatbot 为主入口，是一个以 Notion 为长期记忆入口的 Personal Agent 黑客松原型。让运动、睡眠、饮食三个 Agent 协调当天的习惯计划，由用户确认后执行。
 
+微信入口使用你指定的 **Gewechat** 历史 REST 接口适配；配置后与网页共享同一个人的习惯记忆。接入指南：[Gewechat + Notion](docs/GEWECHAT.md)。
+
 ## 本地运行
 
 要求 Node.js 22+，无需安装依赖。
@@ -20,14 +22,14 @@ npm run dev
 - `NOTION_TOKEN`：Notion integration token。
 - `NOTION_PAGE_ID`：一个普通父页面 ID（非 database ID）。在 Notion 页面菜单中将此页面连接到 integration，授予读写权限。
 
-重启服务。协商时读取该父页面顶层文字块，结合本地最近七条反馈作为上下文；用户确认后点击同步，在父页面下新建计划子页面。反馈当前只保存本地，不自动回写。历史计划子页面尚未递归读取；下一阶段需要增加结构化记忆索引。
+重启服务。协商时读取父页面顶层文字及最近七份本项目创建的计划子页面，结合本地最近七条反馈作为上下文；用户确认后点击同步或发送“同步 Notion”，在父页面下新建计划子页面，并附带最近的反馈。反馈不单独自动回写。
 
 `.env` 和本地数据 `.data/` 均被 Git 忽略。密钥不传到浏览器。
 
 ## 两层协作
 
 1. 内部协作：状态输入 → 三角色提案 → 冲突协调 → 用户确认 → Notion 同步。
-2. 外部协作：本地模拟双方 Agent 交换自选空闲时间、求交集。尚未连接真实朋友、日历、餐厅或消息服务。
+2. 外部协作：本地模拟双方 Agent 交换自选空闲时间、求交集。尚未连接真实朋友、日历或餐厅；个人微信通道已提供 Gewechat 适配，实际连接仍需要外部服务。
 
 规则演示根据睡眠、忙碌、聚餐及午饭后偏好调整计划，不等于真实 LLM 推理。真实模式使用独立角色调用，不声称已经完成外部行动。
 
@@ -46,7 +48,10 @@ npm run dev
 - `public/`：中文响应式聊天界面，原生 HTML/CSS/JS。
 - `chat.mjs`：聊天意图、睡眠提取与追问上下文。
 - `council.mjs`：输入校验、规则策略、三角色模型编排、时间协商。
-- `server.mjs`：本机 HTTP 服务、持久化、Notion 读取与写入。
+- `agent.mjs`：网页和微信共用的个人 Agent、计划确认与同步。
+- `integrations/`：Gewechat 客户端、回调处理队列、Notion 连接。
+- `scripts/gewechat.mjs`：显式扫码、在线检查和回调注册命令。
+- `server.mjs`：本机 UI、独立微信回调入口、原子持久化。
 - `test/`：输入边界、冲突处理、外部授权时间边界。
 
 架构参考：Meta Muse 的主 Agent、子 Agent 和连接器思路（https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse）。当前未集成 Muse；cue、dots 的具体项目链接待确认。
@@ -57,6 +62,7 @@ npm run dev
 npm test
 node --check server.mjs
 node --check public/app.js
+node scripts/smoke-gewechat.mjs
 ```
 
 当前版本面向本机单人运行，不应直接暴露到公网。线上多用户版本需要身份验证、用户隔离和数据库迁移；当前不包含定时推送。
