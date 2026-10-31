@@ -1,0 +1,33 @@
+name: Weave checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: hosted/package-lock.json
+      - name: Business rules, auth and SQLite concurrency
+        run: npm test
+      - name: HTTP and legacy connector regression
+        run: |
+          npm run test:e2e
+          npm run test:wechat
+      - name: Install product dependencies
+        working-directory: hosted
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck and build production Worker
+        working-directory: hosted
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          npx tsc --noEmit
+          npm run build

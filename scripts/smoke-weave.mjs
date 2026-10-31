@@ -18,8 +18,17 @@ try{
  await api('negotiations/action','meng',{id,action:'confirm',revision:1});assert.equal((await api('status')).data.calendar.length,1);assert.equal((await api('status','meng')).data.calendar.length,1);
  const ics=await(await fetch(`http://127.0.0.1:${port}/api/calendar.ics?person=lulu`)).text();assert.match(ics,/BEGIN:VEVENT/);
  assert.equal((await api('negotiations/action','meng',{id,action:'sync'})).status,400);
+ const noMatch=await api('negotiations/start','lulu',{peer:'meng',activity:'散步',consent:true});
+ const noMatchReply=await api('chat','meng',{text:'授权协商 '+noMatch.data.id.slice(0,8)});
+ assert.equal(noMatchReply.status,200);assert.match(noMatchReply.data.messages.at(-1).text,/没有找到双方都接受/);
+ assert.equal((await api('status')).data.negotiations.at(-1).status,'no_match');
+ assert.equal((await api('status')).data.calendar.length,1);
  await api('chat','meng',{text:'反馈：FRIEND_PRIVATE_MEMORY'});assert.ok(!JSON.stringify((await api('status')).data).includes('FRIEND_PRIVATE_MEMORY'));
  await api('chat','lulu',{text:'昨晚睡了 5 小时，有点累'});const plan=(await api('status')).data.plans.at(-1);assert.ok(plan);assert.equal((await api('approve','meng',{id:plan.id})).status,400);
+ const invalidDate=(new Date().getFullYear()+1)+'-02-30T20:00';
+ assert.equal((await api('reminders','meng',{text:'不存在的日期',dueAt:invalidDate})).status,400);
+ assert.equal((await api('chat','meng',{text:'提醒：'+invalidDate.replace('T',' ')+' 不存在的日期'})).status,400);
+ assert.equal((await api('status','meng')).data.reminders.length,0);
  const due=await api('reminders','meng',{text:'测试提醒',dueAt:new Date(Date.now()+1000).toISOString()});assert.equal(due.status,200);
  let delivered=false;for(let i=0;i<150;i++){if((await api('status','meng')).data.reminders[0].status==='delivered'){delivered=true;break;}await delay(20);}assert.ok(delivered);assert.ok((await api('status','meng')).data.messages.some(m=>m.reminderId));assert.ok(!(await api('status')).data.messages.some(m=>m.reminderId));
  const html=await(await fetch(`http://127.0.0.1:${port}/`)).text();assert.match(html,/Weave/);assert.match(html,/id="connections-view"/);assert.match(html,/id="composer"/);

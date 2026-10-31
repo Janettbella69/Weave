@@ -28,6 +28,7 @@ try{
  const invite=(await status()).negotiations[0];assert.equal(invite.status,'awaiting_consent');assert.ok(sent.some(x=>x.body.toWxid==='friend'&&x.body.content.includes('邀请')));
  await post(payload(9,'授权协商 '+invite.id.slice(0,8),'friend'));await waitSent(9);assert.equal((await status()).negotiations[0].status,'awaiting_confirmation');
  await post(payload(10,'确认协商 '+invite.id.slice(0,8)));await waitSent(11);
+ assert.ok(sent.some(x=>x.body.toWxid==='friend'&&x.body.content.includes('Lulu 已确认本次方案，等待你的确认')));
  await post(payload(11,'确认协商 '+invite.id.slice(0,8),'friend'));await waitSent(13);assert.equal((await status()).negotiations[0].status,'confirmed');assert.equal((await status()).calendar.length,1);
  const friend=await(await fetch(`http://127.0.0.1:${uiPort}/api/status?person=meng`)).json();assert.equal(friend.calendar.length,1);assert.equal(friend.checkins.length,0);
  const isolated=await fetch(`http://127.0.0.1:${hookPort}/api/status`);assert.equal(isolated.status,403);

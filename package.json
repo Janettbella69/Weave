@@ -1,17 +1,20 @@
 {
   "name": "weave-personal-agent",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env server.mjs",
-    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "npm --prefix hosted run dev",
+    "start": "npm --prefix hosted start",
     "test": "node --test",
     "gewechat": "node --env-file-if-exists=.env scripts/gewechat.mjs",
     "test:e2e": "node scripts/smoke-weave.mjs",
-    "test:wechat": "node scripts/smoke-gewechat.mjs"
+    "test:wechat": "node scripts/smoke-gewechat.mjs",
+    "demo": "node --env-file-if-exists=.env server.mjs",
+    "product:build": "npm --prefix hosted run build",
+    "product:install": "npm --prefix hosted ci"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   }
 }
