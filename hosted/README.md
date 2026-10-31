@@ -23,16 +23,20 @@ WEAVE_ENCRYPTION_KEY=<64位十六进制随机密钥>
 
 ## 模型与 SDK
 
-默认模型 `deepseek-flash`，也支持 `deepseek-v4-pro`。用户在页面中填写自己的 DeepSeek Key，点击实际连接测试。Web 适配器使用 `https://api.deepseek.com/anthropic/v1/messages`。
+默认模型 `deepseek-flash`，也支持 `deepseek-v4-pro`。用户在页面中填写自己的 DeepSeek Key，点击实际连接测试。Weave 的正式 Agent 运行时是独立的 Claude Agent SDK 服务，DeepSeek 通过 Anthropic 兼容接口提供模型能力。
 
-启用 Claude Agent SDK：
+配置 Claude Agent SDK：
 
 1. 进入 `agent-service/`，执行 `npm ci`。
 2. 设置至少32字符随机 `AGENT_SERVICE_TOKEN`，`npm start`；生产可使用该目录 Dockerfile，部署后须由 HTTPS 代理提供入口。
 3. 网站设置 `AGENT_SERVICE_URL=https://<你的服务>` 与相同的 `AGENT_SERVICE_TOKEN`。
 4. 运行 SDK 服务的 `/health` 检查，并在网站设置中执行真实模型连接测试，确认整个链路。
 
-SDK 每次调用使用独立临时目录、独立配置目录和明确传入的 DeepSeek Key；`ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`。不继承用户技能或项目配置，不开放文件或 shell 工具，不保存会话到磁盘。业务计划、协商记录与记忆由 D1 保存。运行服务不等于实际模型调用通过，需有有效 Key 与余额。
+SDK 每次调用使用独立临时目录、独立配置目录和明确传入的 DeepSeek Key；`ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`。不继承用户技能或项目配置，不开放文件或 shell 工具，不保存会话到磁盘。业务计划、协商记录与记忆由 D1 保存。运行服务不等于实际模型调用通过，仍需有效 Key 与余额。
+
+未配置 `AGENT_SERVICE_URL` 时，Worker 使用显式的 DeepSeek Anthropic HTTP 适配器作为本地和兼容回退；这条路径不改变业务授权和数据隔离。正式部署应配置 Agent SDK 服务，让网页聊天、习惯议会和朋友协商统一走 Claude Agent SDK。
+
+Hermes runner 是独立的后台主动判断组件，不替代 Claude Agent SDK。它只在用户主动开启并授权后读取最小化的个人上下文，返回“保持安静、提出建议或跟进已有建议”的结构化判断；Weave 服务端再次校验事实、权限、冷却时间和每日预算后，才写入通知或微信队列。
 
 ## 数据与并发
 
@@ -44,13 +48,37 @@ SDK 每次调用使用独立临时目录、独立配置目录和明确传入的 
 
 ## Notion
 
-每位用户在设置中配置自己的集成 Token 和父页面 ID，先向集成授权页面。读取页面用于本人习惯建议，不进入对外协商。已确认计划可手动同步。同步前先持久化发送状态，结果不明确时不自动重发，需先在 Notion 核对。
+设置页的 Channels 只显示连接状态。用户点击“一键连接”后完成 Notion OAuth，再从已授权页面中选择一个作为长期记忆与计划归档页面；Token 只在服务端交换并加密保存，浏览器不会收到 Token、客户端密钥或内部地址。部署者将 OAuth 应用配置放在 Sites secret 中（`NOTION_OAUTH_CLIENT_ID`、`NOTION_OAUTH_CLIENT_SECRET`、`NOTION_OAUTH_REDIRECT_URI`），不放入前端或提交到 Git。读取页面用于本人习惯建议，不进入对外协商。已确认计划可手动同步；同步前先持久化发送状态，结果不明确时不自动重发，需先在 Notion 核对。
+
+## 微信通道（Gewechat）
+
+正式产品使用 Gewechat 作为可选微信桥接层。管理员在 Sites 环境变量中配置 `GEWECHAT_BASE_URL`、`GEWECHAT_TOKEN`、`GEWECHAT_APP_ID`、`GEWECHAT_CALLBACK_SECRET` 和 `GEWECHAT_PUBLIC_ORIGIN`。远程 Gewechat 地址必须是 HTTPS，回调地址为：
+
+```text
+https://<站点域名>/api/gewechat/callback/<GEWECHAT_CALLBACK_SECRET>
+```
+
+回调地址为 `/api/gewechat/callback/<GEWECHAT_CALLBACK_SECRET>`。回调会校验密钥，只接受私聊文字并按消息 ID 去重；消息先写入 D1 队列，由正式 Worker 的每分钟 Cron 处理，不在回调请求中直接调用 Agent。
+
+登录 Weave 后进入“个人设置”里的 Channels，点击微信“连接”，再在自己的微信中发送页面显示的一次性 `绑定 <code>` 消息。微信身份才会绑定到当前 ChatGPT 账号。之后微信消息进入该账号自己的 Personal Agent、反馈记录和 Notion 长期记忆；每个账号最多绑定一个微信身份，可随时断开。Gewechat 的服务地址、令牌、应用 ID、回调密钥和回调域名均由部署者配置在 Sites secret 中，普通用户不会看到这些配置。
+
+微信提醒与网页提醒共用同一个账户提醒。没有配置 Gewechat 时，网页通知和聊天提醒仍然正常工作。
 
 ## 后台提醒
 
-`worker/index.ts` 实现 `scheduled`，构建配置声明每分钟 Cron；读取 D1 并将到期提醒写入所属账号的通知与聊天。提交发生竞争时重试，已经投递的不重复执行。需要确认托管平台保留并启用 Worker Cron；若平台不支持，应使用外部计划任务调用受保护的任务入口。网页打开时也补发过期提醒。
+`worker/index.ts` 实现 `scheduled`，`vite.config.ts` 声明 `* * * * *`，即每分钟执行一次。每次 Cron 会读取 D1：
 
-当前提醒不是系统 Push、短信或微信送达。导出 .ics 也需用户导入自己的日历，不自动写入第三方账号。
+- 投递到期账户提醒；
+- 发送已绑定用户的微信提醒；
+- 处理微信入站消息并发送 Agent 回复；
+- 通过持久化队列避免重复发送；
+- 发送或处理失败时保留 `uncertain` 状态，不盲目自动重试。
+
+提交发生竞争时会重试，已经投递的提醒不会重复执行。部署后应在平台日志中确认 Cron 已触发；本地预览可用 Wrangler 的 scheduled 模拟验证。网页打开时也会补发过期提醒。
+
+根目录的兼容服务 `server.mjs` 另有一个每秒轮询器，仅用于本地兼容模式；它不是正式 Worker 的调度频率。Hermes runner 独立每 30 秒轮询一次主动判断队列，模型是否介入仍由用户授权和服务端策略决定。
+
+当前提醒不是系统 Push 或短信送达；配置 Gewechat 并完成绑定后可以通过微信文字送达。导出 .ics 仍需用户导入自己的日历，不自动写入第三方账号。
 
 ## 发布
 

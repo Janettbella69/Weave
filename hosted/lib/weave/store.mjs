@@ -8,7 +8,7 @@ export class Store {
       this.db.prepare("SELECT revision FROM weave_commits WHERE id='world'"),
       this.db.prepare("SELECT id, kind, document FROM weave_documents"),
     ]);
-    const world = { people: {}, negotiations: {}, invites: {}, links: {} };
+    const world = { people: {}, negotiations: {}, invites: {}, links: {}, runtime: {}, wechat: {} };
     this.original = new Map();
     for (const row of docs.results) {
       world[row.kind][row.id] = JSON.parse(row.document);
@@ -19,7 +19,7 @@ export class Store {
   }
   async save(world, attempt=0) {
     const changes = [], next = new Map();
-    for (const kind of ['people', 'negotiations', 'invites', 'links']) {
+    for (const kind of ['people', 'negotiations', 'invites', 'links', 'runtime', 'wechat']) {
       for (const [id, value] of Object.entries(world[kind])) {
         const document = JSON.stringify(value); next.set(id, document);
         if (this.original.get(id) !== document) changes.push({ id, kind, document });
@@ -38,7 +38,7 @@ export class Store {
       if(!this.strict && attempt<3 && [...touched].every(id=>latest.original.get(id)===this.original.get(id))){
         // An unrelated account changed: merge only untouched documents. Changes
         // to either participant or the proposal itself require explicit retry.
-        for(const kind of ['people','negotiations','invites','links']){
+        for(const kind of ['people','negotiations','invites','links','runtime','wechat']){
           for(const id of Object.keys(world[kind]))if(!touched.has(id)&&!fresh[kind][id])delete world[kind][id];
           for(const [id,value] of Object.entries(fresh[kind]))if(!touched.has(id))world[kind][id]=value;
         }

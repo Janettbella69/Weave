@@ -1,21 +1,12 @@
 import handler from "vinext/server/fetch-handler";
 import { runWithConnectorBinding } from "../lib/connector-context";
 import type { ConnectorBinding } from "../lib/connector-contract.mjs";
-import {Store} from '../lib/weave/store.mjs';
-import {deliverReminders} from '../lib/weave/domain.mjs';
+import {runScheduled} from '../lib/weave/scheduler.mjs';
 
 const worker = {
   async scheduled(_event: ScheduledController, env: Cloudflare.Env) {
-    if(!env.DB)throw Error('Reminder database is unavailable');
-    for(let attempt=0;attempt<3;attempt++){
-      try{
-        const store=new Store(env.DB),world=await store.load();
-        if(!deliverReminders(world))return;
-        await store.save(world);return;
-      }catch(error){
-        if(attempt===2){console.error('Reminder scheduler failed:',error instanceof Error?error.message:'unknown');throw error;}
-      }
-    }
+    try { await runScheduled({db:env.DB,secret:env.WEAVE_ENCRYPTION_KEY,env,agentServiceUrl:env.AGENT_SERVICE_URL,agentServiceToken:env.AGENT_SERVICE_TOKEN,agentProviderApiKey:env.AGENT_PROVIDER_API_KEY,now:Date.now()}); }
+    catch(error){ console.error('Reminder scheduler failed:',error instanceof Error?error.message:'unknown'); throw error; }
   },
   fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {
     let binding = ctx.props?.CONNECTORS;

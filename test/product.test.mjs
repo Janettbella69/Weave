@@ -1,17 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DatabaseSync} from 'node:sqlite';
-import {readFileSync} from 'node:fs';
+import {D1} from './helpers/product-db.mjs';
 import {Store} from '../hosted/lib/weave/store.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {seal,unseal} from '../hosted/lib/weave/crypto.mjs';
 import * as domain from '../hosted/lib/weave/domain.mjs';
 import {runAgent} from '../hosted/agent-service/runtime.mjs';
-class D1 {
-  constructor(){this.sql=new DatabaseSync(':memory:');this.sql.exec(readFileSync(new URL('../hosted/drizzle/0000_aromatic_slapstick.sql',import.meta.url),'utf8'));}
-  prepare(query){const statement=this.sql.prepare(query);let args=[];const run=()=>{if(/^SELECT/.test(query)){return {results:statement.all(...args),meta:{changes:0}};}const result=statement.run(...args);return {results:[],meta:{changes:Number(result.changes)}};};return {bind(...values){args=values;return this;},run,all:run};}
-  async batch(statements){this.sql.exec('BEGIN');try{const result=statements.map(s=>s.run());this.sql.exec('COMMIT');return result;}catch(e){this.sql.exec('ROLLBACK');throw e;}}
-}
 const secret='ab'.repeat(32),identity=name=>({userId:name,displayName:name,email:name+'@example.test'});
 function harness(){
  const db=new D1(),requests=[];
@@ -109,10 +103,40 @@ test('each user owns their Notion memory and confirmed plan sync is idempotent',
  await h.api('Alice','plans/approve',{id:plan.id});await h.api('Alice','plans/sync',{id:plan.id});await h.api('Alice','plans/sync',{id:plan.id});
  const writes=h.requests.filter(r=>r.url==='https://api.notion.com/v1/pages');assert.equal(writes.length,1);assert.equal(writes[0].options.headers.Authorization,'Bearer ntn-private-alice-token');assert.ok(!JSON.stringify((await h.api('Bob','export')).data).includes('NOTION_PRIVATE_MEMORY'));assert.ok(!JSON.stringify((await h.api('Alice','status')).data).includes('ntn-private-alice-token'));
 });
+test('Notion one-click OAuth keeps the token server-side and lets the owner choose a page',async()=>{
+ const db=new D1(),oauth={clientId:'notion-client',clientSecret:'notion-secret',redirectUri:'https://weave.test/api/connections/notion/callback'},requests=[];
+ const fetcher=async(url,options)=>{
+  requests.push({url,options});
+  if(url==='https://api.notion.com/v1/oauth/token')return Response.json({access_token:'ntn-oauth-private-token'});
+  if(url==='https://api.notion.com/v1/search')return Response.json({results:[{id:'123456781234123412341234567890ab',url:'https://notion.so/private-page',properties:{title:{type:'title',title:[{plain_text:'我的长期记忆'}]}}}],has_more:false});
+  throw Error('unexpected Notion request');
+ };
+ const call=async(name,path,data)=>{
+  const request=new Request('https://weave.test/api/'+path,{method:data===undefined?'GET':'POST',...(data===undefined?{}:{headers:{'Content-Type':'application/json',Origin:'https://weave.test'},body:JSON.stringify(data)})});
+  const response=await handleAPI(request,{db,identity:name?identity(name):null,secret,fetcher,notionOAuth:oauth});
+  return {status:response.status,data:response.status===303?response.headers.get('location'):await response.json()};
+ };
+ const started=await call('Alice','connections/notion/start',{});assert.equal(started.status,200);const authURL=new URL(started.data.url),state=authURL.searchParams.get('state');assert.match(state,/^[a-f0-9]{48}$/);
+ const callback=await call(null,'connections/notion/callback?code=oauth-code&state='+state);assert.equal(callback.status,303);assert.match(callback.data,/status=ready/);
+ const pending=await call('Alice','connections/notion/pending');assert.deepEqual(pending.data.pages,[{id:'123456781234123412341234567890ab',title:'我的长期记忆',url:'https://notion.so/private-page'}]);
+ const completed=await call('Alice','connections/notion/complete',{pageId:pending.data.pages[0].id});assert.equal(completed.status,200);
+ const status=await call('Alice','status');assert.equal(status.data.settings.notion,true);assert.equal(JSON.stringify(status.data).includes('ntn-oauth-private-token'),false);
+ const raw=JSON.stringify(db.sql.prepare('SELECT * FROM weave_documents').all());assert.equal(raw.includes('ntn-oauth-private-token'),false);assert.equal(requests.filter(x=>x.url==='https://api.notion.com/v1/oauth/token').length,1);
+ assert.equal((await call('Alice','connections/notion/disconnect',{})).status,200);assert.equal((await call('Alice','status')).data.settings.notion,false);
+});
 test('missing model credentials do not silently produce a demo plan; private plans cannot be approved by friends',async()=>{
  const h=harness();await h.api('Alice','status');assert.equal((await h.api('Alice','chat',{text:'帮我调整计划'})).status,428);assert.equal((await h.api('Alice','status')).data.plans.length,0);
  await h.api('Alice','settings',{apiKey:'sk-private-key-123456',model:'deepseek-flash'});assert.equal((await h.api('Alice','chat',{text:'昨晚睡了5小时，帮我调整计划'})).status,200);
  const plan=(await h.api('Alice','status')).data.plans[0];assert.equal(plan.agents.length,3);assert.equal(plan.mode,'deepseek');assert.equal((await h.api('Bob','plans/approve',{id:plan.id})).status,404);
+});
+test('managed provider connection keeps its credential server-side while enabling chat',async()=>{
+ const h=harness(),managed='sk-managed-provider-123456';
+ const fetcher=async()=>Response.json({stop_reason:'end_turn',content:[{type:'text',text:'托管连接成功'}]});
+ const request=async(name,path,data)=>{const r=await handleAPI(new Request('https://weave.test/api/'+path,{method:data===undefined?'GET':'POST',...(data===undefined?{}:{headers:{'Content-Type':'application/json',Origin:'https://weave.test'},body:JSON.stringify(data)})}),{db:h.db,identity:identity(name),secret,fetcher,agentProviderApiKey:managed});return {status:r.status,data:await r.json()};};
+ const status=await request('Alice','status');assert.equal(status.data.settings.agent,true);assert.equal(JSON.stringify(status.data).includes(managed),false);
+ assert.equal((await request('Alice','connections/agent/start',{})).status,200);
+ assert.equal((await request('Alice','chat',{text:'你好'})).status,200);
+ const raw=JSON.stringify(h.db.sql.prepare('SELECT * FROM weave_documents').all());assert.equal(raw.includes(managed),false);
 });
 test('product reminders are validated and remain exactly once after reopening the database',async()=>{
  const h=harness();await h.api('Alice','status');assert.equal((await h.api('Alice','reminders',{text:'散步',dueAt:'2028-02-30T20:00:00Z'})).status,400);

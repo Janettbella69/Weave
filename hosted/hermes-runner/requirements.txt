@@ -1,0 +1,2 @@
+# Official Hermes, pinned to the inspected upstream commit.
+hermes-agent[anthropic] @ https://github.com/NousResearch/hermes-agent/archive/f30105a0b4b3d0c1baa6c464189755ccdbc1ac7f.tar.gz

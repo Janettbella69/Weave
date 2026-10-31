@@ -1,0 +1,1 @@
+{"name":"weave-hermes-runner","private":true,"type":"module","engines":{"node":">=22"},"scripts":{"start":"node --env-file-if-exists=.env runner.mjs","once":"node --env-file-if-exists=.env runner.mjs --once"}}

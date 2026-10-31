@@ -17,6 +17,8 @@ jobs:
           cache-dependency-path: hosted/package-lock.json
       - name: Business rules, auth and SQLite concurrency
         run: npm test
+      - name: Hermes adapter isolation and protocol configuration
+        run: python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
       - name: HTTP and legacy connector regression
         run: |
           npm run test:e2e
