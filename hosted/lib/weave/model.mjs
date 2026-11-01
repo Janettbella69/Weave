@@ -10,12 +10,16 @@ export async function completion({apiKey, model=DEFAULT_MODEL, system, input, js
         system:system+(json?' 只输出有效的 JSON 对象，不要 Markdown。':''),
         messages:[{role:'user',content:typeof input==='string'?input:JSON.stringify(input)}]}),
     });
-  } catch { throw Error('Agent 连接超时或网络异常，没有执行任何外部操作，请稍后重试'); }
-  if (!response.ok) throw Error(response.status===401?'Agent 连接无效，请重新连接':response.status===402?'Agent 余额不足，请稍后重试':`Agent 请求失败（${response.status}），请稍后重试`);
+  } catch(err) { const error=Error('Agent 连接超时或网络异常，没有执行任何外部操作，请稍后重试');error.status=503;throw error; }
+  if (!response.ok) {
+    const error=Error(response.status===401?'Agent 连接无效，请重新连接':response.status===402?'Agent 余额不足，请稍后重试':`Agent 请求失败（${response.status}），请稍后重试`);
+    error.status=response.status===401||response.status===402?428:502;
+    throw error;
+  }
   const data=await response.json(),text=data.content?.filter(x=>x.type==='text').map(x=>x.text).join('');
-  if(data.stop_reason!=='end_turn'||typeof text!=='string'||!text.trim())throw Error('Agent 返回不完整，请重试');
+  if(data.stop_reason!=='end_turn'||typeof text!=='string'||!text.trim()){const error=Error('Agent 返回不完整，请重试');error.status=502;throw error;}
   if(!json)return text;
-  try{return JSON.parse(text.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}catch{throw Error('Agent 返回格式错误，请重试');}
+  try{return JSON.parse(text.replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}catch{const error=Error('Agent 返回格式错误，请重试');error.status=502;throw error;}
 }
 export function modelClient(settings) {
   return (system,input,json=false)=>completion({...settings,system,input,json});
