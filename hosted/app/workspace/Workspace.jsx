@@ -6,12 +6,28 @@ import Link from 'next/link';
 const labels={awaiting_consent:'等待授权',awaiting_confirmation:'等待双方确认',confirmed:'已加入日程',declined:'已拒绝',no_match:'没有共同安排',cancelled:'已取消'};
 const eventLabels={request:'邀请',consent:'授权',proposal:'提案',counterproposal:'反提案',reject:'时间冲突',accept:'接受',agreement:'Agent 达成一致',user_confirm:'本人确认',committed:'加入日程',no_match:'未达成一致',invalidate:'安排更新',decline:'拒绝'};
 const localTime=value=>{const d=new Date(value);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;};
-async function api(path,data){const r=await fetch('/api/'+path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const result=await r.json();if(r.status===401){window.location.href='/signin-with-chatgpt?return_to=%2F';throw Error('请重新登录');}if(!r.ok)throw Error(result.error||'请求失败');return result;}
+async function api(path,data){
+  try{
+    const r=await fetch('/api/'+path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    if(r.status===401){
+      const returnTo=encodeURIComponent(window.location.pathname+window.location.search);
+      window.location.href='/signin-with-chatgpt?return_to='+returnTo;
+      throw Error('请重新登录');
+    }
+    const result=await r.json();
+    if(!r.ok)throw Error(result?.error||'请求失败');
+    return result;
+  }catch(e){
+    if(e.message==='请重新登录')throw e;
+    throw Error(e.message||'网络连接失败，请重试');
+  }
+}
 export default function Workspace(){
  const [state,setState]=useState(null),[view,setView]=useState('chat'),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[text,setText]=useState(''),[draft,setDraft]=useState(null),[inviteURL,setInviteURL]=useState(''),[join,setJoin]=useState(()=>typeof window==='undefined'?'':new URL(window.location.href).searchParams.get('join')||''),[peer,setPeer]=useState(''),[activity,setActivity]=useState('散步'),[consent,setConsent]=useState(false),[reminder,setReminder]=useState(''),[due,setDue]=useState('');
  const bottom=useRef(null),locked=useRef(false);
  const [originSuggestion,setOriginSuggestion]=useState(null);
  const [notionPages,setNotionPages]=useState([]),[wechatCode,setWechatCode]=useState(''),[quickMenu,setQuickMenu]=useState(false);
+ const [showNotifications,setShowNotifications]=useState(false);
  const refresh=async()=>{const result=await api('status');setState(result);return result;};
  useEffect(()=>{
   const params=new URL(location.href).searchParams;
@@ -20,7 +36,7 @@ export default function Workspace(){
   if(params.get('connection')==='notion'){
    if(params.get('status')==='error')setTimeout(()=>{if(!cancelled)setError('Notion 连接未完成，请重试');},0);
    else if(params.get('status')==='ready'){
-    let cancelled=false,attempt=0;
+    let attempt=0;
     const poll=async()=>{try{const pending=await api('connections/notion/pending');if(cancelled)return;if(pending.ready){setNotionPages(pending.pages||[]);setView('settings');return;}if(attempt++<10)setTimeout(poll,800);}catch(e){if(!cancelled)setError(e.message);}};
     poll();
    }
@@ -30,8 +46,23 @@ export default function Workspace(){
  },[]);
  useEffect(()=>{const timer=setInterval(()=>{if(!locked.current&&!document.hidden)refresh().catch(()=>{});},5000);return()=>clearInterval(timer);},[]);
  useEffect(()=>{if(view==='chat')bottom.current?.scrollIntoView({behavior:'smooth'});},[state?.messages.length,view]);
- async function act(task,success=''){if(locked.current)return;locked.current=true;setBusy(true);setError('');setNotice('');try{await task();await refresh();if(success)setNotice(success);}catch(e){setError(e.message);}finally{locked.current=false;setBusy(false);}}
- function settings(){if(!state)return;setDraft({...state.profile,slots:state.profile.slots.filter(x=>Date.parse(x)>Date.now()).map(localTime)});setWechatCode('');setView('settings');}
+ useEffect(()=>{
+  if(wechatCode){
+    const checkBinding=setInterval(async()=>{
+      try{
+        const result=await api('status');
+        setState(result);
+        if(result.settings.wechat?.bound){
+          setWechatCode('');
+          setNotice('微信已成功绑定');
+        }
+      }catch{}
+    },3000);
+    return()=>clearInterval(checkBinding);
+  }
+ },[wechatCode]);
+ async function act(task,success=''){if(locked.current)return;locked.current=true;setBusy(true);setError('');setNotice('');try{await task();await refresh();if(success)setNotice(success);}catch(e){setError(e.message||'操作失败，请重试');}finally{locked.current=false;setBusy(false);}}
+ function settings(){if(!state)return;const validSlots=state.profile.slots.filter(x=>{try{const parsed=Date.parse(x);return !isNaN(parsed)&&parsed>Date.now();}catch{return false;}});setDraft({...state.profile,slots:validSlots.map(localTime)});setWechatCode('');setView('settings');}
  async function connectNotion(){await act(async()=>{const pending=await api('connections/notion/pending');if(pending.ready&&pending.pages?.length){setNotionPages(pending.pages);return;}const result=await api('connections/notion/start');window.location.assign(result.url);});}
  async function finishNotion(pageId){await act(()=>api('connections/notion/complete',{pageId}),'Notion 已连接');}
  function openGroupComposer(){setQuickMenu(false);setView('connections');}
@@ -49,14 +80,14 @@ export default function Workspace(){
  {n.status==='confirmed'&&<button onClick={()=>setView('calendar')}>查看日程 →</button>}</div><small>仅本次授权的时间与活动偏好进入协商。双方本人确认后才加入日程。</small></article>;}
  if(!state)return <main className="loading"><div className="symbol">w</div><h1>正在打开你的空间…</h1>{error&&<><p role="alert">{error}</p><button onClick={()=>refresh().catch(e=>setError(e.message))}>重试</button></>}</main>;
  return <fieldset className="app-fieldset" disabled={busy}><div className="workspace-rail" aria-label="主导航"><button className={view==='chat'?'selected':''} title="聊天" aria-label="聊天" onClick={()=>setView('chat')}>◌</button><button className={view==='connections'?'selected':''} title="协作" aria-label="协作" onClick={()=>setView('connections')}>⇄</button><button className={view==='calendar'?'selected':''} title="日程与提醒" aria-label="日程与提醒" onClick={()=>setView('calendar')}>▦</button><button className={view==='proactive'?'selected':''} title="主动提醒" aria-label="主动提醒" onClick={()=>setView('proactive')}>✧</button><button className={view==='memory'?'selected':''} title="记忆与通知" aria-label="记忆与通知" onClick={()=>setView('memory')}>◈</button><div className="workspace-rail-bottom"><button title="个人设置" aria-label="个人设置" onClick={settings}><Settings size={18} strokeWidth={1.8}/></button><b>{state.profile.name.slice(0,1)}</b></div></div><aside className="sidebar"><Link className="wordmark" href="/">w <span>Weave</span></Link><div className="sidebar-tools"><label className="sidebar-search"><span aria-hidden="true">⌕</span><input aria-label="搜索" placeholder="搜索"/></label><button type="button" className="sidebar-add" aria-label="新建" title="新建" onClick={()=>setQuickMenu(true)}>＋</button></div><p className="eyebrow">WEAVE 工作台</p><nav>{[['chat','聊天'],['connections','协作'],['calendar','日程与提醒'],['proactive','主动提醒'],['memory','记忆与通知']].map(([id,label])=><button key={id} className={view===id?'selected':''} onClick={()=>setView(id)}>{label}{id==='memory'&&unread>0&&<span className="count">{unread}</span>}</button>)}</nav><div className="sidebar-bottom"><p className="muted">对内，找到自己的节奏。<br/>对外，让彼此一起行动。</p><button onClick={settings}>个人设置与模型连接 ↗</button><div className="identity"><b>{state.profile.name.slice(0,1)}</b><span>{state.profile.name}<small>我的独立空间</small></span></div><a href="/signout-with-chatgpt?return_to=%2F" target="_top">退出登录</a></div></aside>
- <main className="workspace"><header><span>{view==='settings'?'个人设置':'我的 Personal Agent'}</span><div className="header-tools"><span className="muted connection-label">{state.settings.verifiedAt?'Agent 已连接':state.settings.agent?'Agent 待测试':'等待连接 Agent'}</span><button className="icon-button" aria-label="通知" title="通知"><Bell size={18} strokeWidth={1.8}/>{unread>0&&<span className="notification-dot"/>}</button><button className="icon-button" onClick={settings} aria-label="设置" title="设置"><Settings size={18} strokeWidth={1.8}/></button><div className="quick-actions"><button className="icon-button plus-button" onClick={()=>setQuickMenu(open=>!open)} aria-label="创建或添加" aria-expanded={quickMenu} title="创建或添加"><Plus size={22} strokeWidth={1.8}/></button>{quickMenu&&<><button className="quick-backdrop" aria-label="关闭菜单" onClick={()=>setQuickMenu(false)}/><div className="quick-menu" role="menu"><button role="menuitem" onClick={openGroupComposer}><span className="quick-icon"><UsersRound size={18}/></span><span><b>创建群聊</b><small>让多个 Agent 一起商量</small></span><ChevronDown className="quick-arrow" size={15}/></button><button role="menuitem" onClick={addFriend}><span className="quick-icon"><UserPlus size={18}/></span><span><b>添加好友 Agent</b><small>生成一次性邀请链接</small></span><ChevronDown className="quick-arrow" size={15}/></button></div></>}</div></div></header><nav className="mobile-nav">{[['chat','聊天'],['connections','协作'],['calendar','日程'],['proactive','主动'],['memory','记忆']].map(([id,label])=><button key={id} className={view===id?'selected':''} onClick={()=>setView(id)}>{label}</button>)}</nav>
+ <main className="workspace"><header><span>{view==='settings'?'个人设置':'我的 Personal Agent'}</span><div className="header-tools"><span className="muted connection-label">{state.settings.verifiedAt?'Agent 已连接':state.settings.agent?'Agent 待测试':'等待连接 Agent'}</span><button className="icon-button" aria-label="通知" title="通知" onClick={()=>{if(unread>0){setView('memory');setShowNotifications(true);}else{setShowNotifications(!showNotifications);}}}><Bell size={18} strokeWidth={1.8}/>{unread>0&&<span className="notification-dot"/>}</button><button className="icon-button" onClick={settings} aria-label="设置" title="设置"><Settings size={18} strokeWidth={1.8}/></button><div className="quick-actions"><button className="icon-button plus-button" onClick={()=>setQuickMenu(open=>!open)} aria-label="创建或添加" aria-expanded={quickMenu} title="创建或添加"><Plus size={22} strokeWidth={1.8}/></button>{quickMenu&&<><button className="quick-backdrop" aria-label="关闭菜单" onClick={()=>setQuickMenu(false)}/><div className="quick-menu" role="menu"><button role="menuitem" onClick={openGroupComposer}><span className="quick-icon"><UsersRound size={18}/></span><span><b>创建群聊</b><small>让多个 Agent 一起商量</small></span><ChevronDown className="quick-arrow" size={15}/></button><button role="menuitem" onClick={addFriend}><span className="quick-icon"><UserPlus size={18}/></span><span><b>添加好友 Agent</b><small>生成一次性邀请链接</small></span><ChevronDown className="quick-arrow" size={15}/></button></div></>}</div></div></header><nav className="mobile-nav">{[['chat','聊天'],['connections','协作'],['calendar','日程'],['proactive','主动'],['memory','记忆']].map(([id,label])=><button key={id} className={view===id?'selected':''} onClick={()=>setView(id)}>{label}</button>)}</nav>
  <div className="content">{error&&<div className="banner error" role="alert">{error}<button onClick={()=>setError('')} aria-label="关闭错误">×</button></div>}{notice&&<p className="banner" role="status">{notice}</p>}
- {busy&&<p className="working" role="status">Agent 正在处理，请稍候…</p>}
+ {busy&&<p className="working" role="status">{busy===true?'Agent 正在处理，请稍候…':busy}</p>}
  {join&&<article className="card invitation"><h3>收到一份朋友邀请</h3><p>接受后，双方可以发起活动协商。接受邀请不会共享你的私聊或个人时间；每次协作还需要另外授权。</p><button className="primary" onClick={()=>act(async()=>{const r=await api('friends/accept',{token:join});setJoin('');history.replaceState(null,'','/');setView('connections');setNotice('已和'+r.name+'建立朋友关系');})}>接受邀请，连接朋友</button><button onClick={()=>{setJoin('');history.replaceState(null,'','/');}}>暂时不接受</button></article>}
  {view==='chat'&&<><section className="welcome"><div className="symbol">w</div><p className="eyebrow">MY AGENT. YOUR AGENT. OUR NEXT STEP.</p><h1>一个人有节奏，一起有行动。</h1><p className="muted">聊聊今天的状态，让习惯团队与你一起找到适合的下一步。</p></section>{(!state.settings.agent||!state.profile.slots.length)&&<div className="banner"><span>{!state.settings.agent?'先连接 Personal Agent，让你的 Agent 开始了解你。':'想和朋友一起行动？先添加你的未来可用时间。'}</span><button onClick={settings}>去设置 →</button></div>}
  {!state.messages.length&&<div className="suggestions"><button onClick={()=>setText('昨晚睡了5小时，今天想练腿，晚上还要聚餐，有点累。帮我调整计划。')}>调整今天的习惯计划 ↗</button><button onClick={()=>setView('connections')}>和朋友的 Agent 商量散步 ↗</button><button onClick={()=>setText('反馈：今天午饭后散步5分钟，比晚上更容易坚持。')}>记录一个小进步 ↗</button></div>}
  <section className="messages" role="log" aria-label="与个人 Agent 的对话">{state.messages.map(m=><article key={m.id} className={'message '+m.role}><small>{m.role==='user'?state.profile.name:'我的 Agent'}</small><div className="bubble">{m.text}</div>{m.planId&&state.plans.find(p=>p.id===m.planId)&&planCard(state.plans.find(p=>p.id===m.planId))}</article>)}<div ref={bottom}/></section><form className="composer" onSubmit={send}><label className="sr-only" htmlFor="message">发送消息</label><textarea id="message" rows="2" maxLength="4000" value={text} onChange={e=>setText(e.target.value)} placeholder="说说今天的状态，或记录「反馈：今天的小进展」…" required/><div className="row between"><span className="muted">个人记忆只用于你的建议</span><button type="submit" className="primary">发送 ↑</button></div></form></>}
- {view==='connections'&&<><p className="eyebrow">AGENT TO AGENT</p><h1>我的 Agent，遇见你的 Agent。</h1><p className="muted">明确授权 → 独立提案 → 冲突与反提案 → 双方本人确认</p><div className="card"><h2>连接真正的朋友</h2><p>生成一次性邀请链接，分享给朋友。对方登录并接受后，就能一起行动。</p><button onClick={()=>act(async()=>{const r=await api('friends/invite',{});setInviteURL(location.origin+'/?join='+r.token);})}>生成朋友邀请链接</button>{inviteURL&&<div className="share"><label>邀请链接（7天有效，仅能接受一次）<input readOnly value={inviteURL}/></label><button onClick={()=>act(async()=>{await navigator.clipboard.writeText(inviteURL);},'已复制邀请链接')}>复制链接</button></div>}
+ {view==='connections'&&<><p className="eyebrow">AGENT TO AGENT</p><h1>我的 Agent，遇见你的 Agent。</h1><p className="muted">明确授权 → 独立提案 → 冲突与反提案 → 双方本人确认</p><div className="card"><h2>连接真正的朋友</h2><p>生成一次性邀请链接，分享给朋友。对方登录并接受后，就能一起行动。</p><button onClick={()=>act(async()=>{const r=await api('friends/invite',{});setInviteURL(location.origin+'/?join='+r.token);})}>生成朋友邀请链接</button>{inviteURL&&<div className="share"><label>邀请链接（7天有效，仅能接受一次）<input readOnly value={inviteURL}/></label><button onClick={()=>act(async()=>{if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(inviteURL);}else{const input=document.createElement('textarea');input.value=inviteURL;input.style.position='fixed';input.style.opacity='0';document.body.appendChild(input);input.select();document.execCommand('copy');document.body.removeChild(input);}},'已复制邀请链接')}>复制链接</button></div>}
  {!!state.invites.length&&<details><summary>管理有效邀请（{state.invites.length}）</summary>{state.invites.map(i=><div className="row between" key={i.id}><span className="muted">{format(i.expiresAt)}到期</span><button onClick={()=>act(()=>api('friends/revoke',{id:i.id}),'邀请已撤销')}>撤销</button></div>)}</details>}
  <p className="muted">{state.people.length?'已连接：'+state.people.map(p=>p.name).join('、'):'还没有连接朋友。接受邀请后才能查看彼此的姓名，不公开账号目录。'}</p></div>
  {state.people.length>0&&<form className="card" onSubmit={e=>{e.preventDefault();act(async()=>{await api('negotiations/start',{peer:peer||state.people[0].id,activity,consent,suggestionId:originSuggestion});setConsent(false);setOriginSuggestion(null);},'邀请已发起，等待朋友授权');}}><h2>一起做点什么？</h2><div className="form-grid"><label>和谁一起<select value={peer||state.people[0].id} onChange={e=>setPeer(e.target.value)}>{state.people.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label><label>活动<select value={activity} onChange={e=>setActivity(e.target.value)}>{['散步','运动','学习','吃饭'].map(a=><option key={a}>{a}</option>)}</select></label></div><label className="checkbox"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>我授权本次共享个人设置里的未来可用时间与活动偏好；吃饭活动也共享饮食偏好。</label><button type="submit" className="primary">交给我们的 Agent ↗</button></form>}
