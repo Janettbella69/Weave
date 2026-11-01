@@ -698,7 +698,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   background:#111;color:#fff;font:italic 20px Georgia;
 }
 .landing-name{font-size:18px;letter-spacing:-.3px}
-.landing-nav-cta{min-height:38px;padding:8px 18px;font-size:13px;background:#fff}
+.landing-nav-cta{
+  min-height:38px;padding:8px 18px;font-size:13px;
+  background:#1a1a1a;border-color:#1a1a1a;color:#fff;
+}
+.landing-nav-cta:hover{background:#333;border-color:#333;color:#fff}
 .landing-hero-band{
   background:linear-gradient(180deg,#f7f7f7 0%,#fff 100%);
   border-bottom:1px solid #ececec;
