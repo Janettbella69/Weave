@@ -674,11 +674,16 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   min-height:100dvh;
   background:#fff;
   color:#1a1a1a;
+  width:100%;
+}
+.landing-container{
+  box-sizing:border-box;
+  width:100%;
   max-width:1080px;
   margin:0 auto;
-  padding:0 clamp(20px,4vw,40px) 56px;
+  padding:0 clamp(20px,4vw,40px);
 }
-.landing-top{
+.landing-top-row{
   display:flex;align-items:center;justify-content:space-between;
   gap:16px;padding:22px 0;border-bottom:1px solid #ececec;
 }
@@ -692,59 +697,61 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   background:#111;color:#fff;font:italic 20px Georgia;
 }
 .landing-name{font-size:18px;letter-spacing:-.3px}
-.landing-nav-cta{min-height:38px;padding:8px 18px;font-size:13px}
-.landing-hero{padding:clamp(48px,8vw,88px) 0 clamp(40px,6vw,64px);max-width:680px}
-.landing-hero h1{
-  margin:12px 0 20px;
-  font:600 clamp(32px,5.5vw,46px)/1.15 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif;
-  letter-spacing:-.6px;
+.landing-nav-cta{min-height:38px;padding:8px 18px;font-size:13px;background:#fff}
+.landing-hero-band{
+  background:linear-gradient(180deg,#f7f7f7 0%,#fff 100%);
+  border-bottom:1px solid #ececec;
 }
+.landing-hero{padding:clamp(48px,8vw,80px) 0 clamp(36px,5vw,56px);max-width:720px}
+.landing-hero h1{
+  margin:10px 0 18px;
+  font:600 clamp(30px,5.5vw,44px)/1.18 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif;
+  letter-spacing:-.5px;
+}
+.landing-hero h1 strong{font-weight:600}
 .landing-lede{
-  margin:0 0 28px;
+  margin:0 0 26px;
   font-size:clamp(15px,2vw,17px);
   line-height:1.75;
-  color:#555;
-  max-width:36em;
+  color:#444;
+  max-width:38em;
 }
+.landing-lede strong{font-weight:600;color:#111}
 .landing-hero-actions{display:flex;flex-direction:column;align-items:flex-start;gap:12px}
 .landing-hero-cta{min-height:44px;padding:10px 22px;font-size:14px;font-weight:500}
-.landing-hero-note{max-width:28em;line-height:1.6}
-.landing-block{padding:clamp(40px,6vw,56px) 0;border-top:1px solid #ececec}
+.landing-hero-note{max-width:32em;line-height:1.65;font-size:12px}
+.landing-block{padding:clamp(36px,5vw,52px) 0;border-top:1px solid #ececec}
 .landing-section-title{
-  margin:0 0 28px;
-  font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#888;
+  margin:0 0 24px;
+  font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#888;
 }
-.landing-story-grid{
-  display:grid;gap:20px;
+.landing-values{
+  display:grid;gap:16px;
   grid-template-columns:repeat(3,minmax(0,1fr));
 }
-.landing-story-card{
-  padding:22px 20px;border:1px solid #e8e8e8;border-radius:14px;background:#fafafa;
+.landing-value{
+  padding:22px 18px;border:1px solid #e6e6e6;border-radius:14px;background:#fafafa;
 }
-.landing-kicker{
-  margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.06em;color:#666;text-transform:uppercase;
-}
-.landing-story-card h3{margin:0 0 10px;font-size:17px;font-weight:600;line-height:1.35;color:#111}
-.landing-story-card p{margin:0;font-size:14px;line-height:1.7;color:#555}
-.landing-benefits{
+.landing-value h3{margin:0 0 10px;font-size:16px;font-weight:600;color:#111}
+.landing-value p{margin:0;font-size:14px;line-height:1.7;color:#555}
+.landing-features{
   list-style:none;margin:0;padding:0;
-  display:grid;gap:14px;
+  display:grid;gap:12px;
   grid-template-columns:repeat(2,minmax(0,1fr));
 }
-.landing-benefit{
-  padding:18px 16px;border:1px solid #eee;border-radius:12px;background:#fff;
-  display:flex;flex-direction:column;gap:6px;
+.landing-features li{
+  padding:16px 14px;border:1px solid #eee;border-radius:12px;background:#fff;
+  display:flex;flex-direction:column;gap:4px;
 }
-.landing-benefit strong{font-size:14px;font-weight:600;color:#111}
-.landing-benefit span{font-size:13px;line-height:1.65;color:#666}
+.landing-feature-title{font-size:14px;font-weight:600;color:#111}
+.landing-feature-desc{font-size:13px;line-height:1.6;color:#666}
 .landing-steps{
   list-style:none;margin:0;padding:0;
-  display:grid;gap:18px;
-  counter-reset:landing-step;
+  display:grid;gap:0;
 }
 .landing-steps li{
   display:flex;gap:16px;align-items:flex-start;
-  padding:18px 0;border-bottom:1px solid #f0f0f0;
+  padding:20px 0;border-bottom:1px solid #f0f0f0;
 }
 .landing-steps li:last-child{border-bottom:0;padding-bottom:0}
 .landing-step-num{
@@ -754,24 +761,25 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 }
 .landing-steps strong{display:block;font-size:15px;font-weight:600;margin-bottom:4px;color:#111}
 .landing-steps p{margin:0;font-size:14px;line-height:1.65;color:#555}
-.landing-cta-strip{
-  margin-top:8px;padding:clamp(32px,5vw,48px) clamp(20px,4vw,32px);
-  text-align:center;border-radius:16px;
-  background:#f5f5f5;border:1px solid #e8e8e8;
-}
+.landing-cta-band{background:#111;color:#fff;margin-top:8px}
+.landing-cta-strip{padding:clamp(40px,6vw,56px) 0;text-align:center}
 .landing-cta-strip h2{
-  margin:0 0 10px;font-size:clamp(22px,3vw,26px);font-weight:600;letter-spacing:-.3px;
+  margin:0 0 10px;font-size:clamp(22px,3vw,28px);font-weight:600;letter-spacing:-.3px;color:#fff;
 }
-.landing-cta-strip p{margin:0 0 22px;font-size:14px;color:#555;line-height:1.65}
-.landing-cta-strip .button{min-height:44px;padding:10px 24px}
+.landing-cta-strip p{margin:0 0 22px;font-size:14px;color:#bbb;line-height:1.65}
+.landing-cta-strip .button{
+  min-height:44px;padding:10px 26px;
+  background:#fff;color:#111;border-color:#fff;
+}
+.landing-cta-strip .button:hover{background:#f0f0f0;border-color:#f0f0f0}
 .landing-foot{
-  margin-top:40px;padding-top:24px;border-top:1px solid #ececec;
+  padding:32px 0 48px;
   text-align:center;font-size:12px;color:#888;line-height:1.8;
 }
 .landing-foot p{margin:4px 0}
-@media(max-width:800px){
-  .landing-story-grid{grid-template-columns:1fr}
-  .landing-benefits{grid-template-columns:1fr}
+@media(max-width:860px){
+  .landing-values{grid-template-columns:1fr}
+  .landing-features{grid-template-columns:1fr}
 }
 @media(max-width:480px){
   .landing-nav-cta{padding:8px 14px}
