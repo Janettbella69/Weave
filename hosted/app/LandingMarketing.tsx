@@ -1,10 +1,17 @@
 import Link from "next/link";
+import {
+  chatGPTSignInPath,
+  guestStartPath,
+} from "./weave-auth";
 
 type Props = {
-  signInHref: string;
+  returnTo: string;
 };
 
-export default function LandingMarketing({ signInHref }: Props) {
+export default function LandingMarketing({ returnTo }: Props) {
+  const startHref = guestStartPath(returnTo);
+  const chatgptHref = chatGPTSignInPath(returnTo);
+
   return (
     <main className="landing-page">
       <div className="landing-container landing-top-row">
@@ -12,8 +19,8 @@ export default function LandingMarketing({ signInHref }: Props) {
           <span className="landing-mark">w</span>
           <span className="landing-name">Weave</span>
         </Link>
-        <a className="button landing-nav-cta" href={signInHref} target="_top">
-          登录
+        <a className="button primary landing-nav-cta" href={startHref}>
+          直接开始
         </a>
       </div>
 
@@ -31,16 +38,15 @@ export default function LandingMarketing({ signInHref }: Props) {
             放在同一空间：你授权什么，Agent 就记住什么；约见前 Agent 先商量，最后仍由你确认。
           </p>
           <div className="landing-hero-actions">
-            <a
-              className="button primary landing-hero-cta"
-              href={signInHref}
-              target="_top"
-            >
-              用 ChatGPT 登录，开启我的空间
+            <a className="button primary landing-hero-cta" href={startHref}>
+              直接开始，进入我的空间
             </a>
             <p className="muted landing-hero-note">
-              沿用现有登录流程 · 支持好友邀请链接（join）自动回跳 ·
-              连接 Agent / 微信 / Notion 均可选
+              无需注册 · 数据保存在当前浏览器 · 支持好友邀请链接（join）自动回跳 ·
+              也可{" "}
+              <a className="inline-link" href={chatgptHref} target="_top">
+                使用 ChatGPT 登录
+              </a>
             </p>
           </div>
         </div>
@@ -115,8 +121,8 @@ export default function LandingMarketing({ signInHref }: Props) {
                 1
               </span>
               <div>
-                <strong>ChatGPT 登录</strong>
-                <p>进入个人空间，在 Channels 连接 Personal Agent。</p>
+                <strong>直接开始</strong>
+                <p>进入个人空间，在 Channels 连接 Personal Agent（可选 ChatGPT 登录）。</p>
               </div>
             </li>
             <li>
@@ -145,8 +151,8 @@ export default function LandingMarketing({ signInHref }: Props) {
         <div className="landing-container landing-cta-strip">
           <h2>今天就开始你的 Agent 工作台</h2>
           <p>免费使用核心聊天与协作；高级通道连接由你决定。</p>
-          <a className="button primary" href={signInHref} target="_top">
-            登录，开启我的空间
+          <a className="button primary" href={startHref}>
+            直接开始
           </a>
         </div>
       </div>
