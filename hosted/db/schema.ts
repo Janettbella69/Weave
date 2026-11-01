@@ -9,3 +9,7 @@ export const commits = sqliteTable("weave_commits", {
   revision: integer("revision").notNull().default(0),
   token: text("token").notNull().default(""),
 });
+export const guestSessions = sqliteTable("weave_guest_sessions", {
+  id: text("id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});

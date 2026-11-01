@@ -1,6 +1,6 @@
 # Weave 正式应用
 
-采用 Sites 管理登录、Vinext/React 页面、Cloudflare Worker API 与 D1 数据库。每次请求从服务端登录上下文取得身份；不接受 `?person=` 切换账户。朋友只能通过一次性邀请建立关系，不能浏览全站账号目录。
+采用 Sites 管理登录、Vinext/React 页面、Cloudflare Worker API 与 D1 数据库。每次请求从服务端登录上下文取得身份（访客 Cookie 或 ChatGPT Sites 头）；不接受 `?person=` 切换账户。朋友只能通过一次性邀请建立关系，不能浏览全站账号目录。
 
 ## 本机开发
 
@@ -8,10 +8,11 @@
 npm ci
 npm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_aromatic_slapstick.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_guest_sessions.sql
 npm run dev
 ```
 
-仅首次初始化空预览数据库时执行以上 SQL；后续迁移按编号追加，不重复应用已执行迁移。本机预览数据库独立于线上 D1。本机登录是 Sites 的开发模拟，不构成生产认证。
+仅首次初始化空预览数据库时执行以上 SQL；后续迁移按编号追加，不重复应用已执行迁移。本机预览数据库独立于线上 D1。首页点击「直接开始」会写入 `weave_guest` HttpOnly Cookie 并在 D1 记录匿名会话 id；本机也可继续使用 Sites 的 ChatGPT 登录模拟（`/signin-with-chatgpt`），不构成生产认证。
 
 创建被 Git 忽略的 `.dev.vars`：
 

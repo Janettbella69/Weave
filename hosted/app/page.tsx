@@ -1,6 +1,6 @@
-import { getChatGPTUser, chatGPTSignInPath } from "./chatgpt-auth";
-import Workspace from "./workspace/Workspace";
+import { getWeaveUser } from "./weave-auth";
 import LandingMarketing from "./LandingMarketing";
+import Workspace from "./workspace/Workspace";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 
 export const dynamic = "force-dynamic";
@@ -10,11 +10,11 @@ export default async function Home({
 }: {
   searchParams: Promise<{ join?: string }>;
 }) {
-  const user = await getChatGPTUser();
+  const user = await getWeaveUser();
   if (user) {
     return (
       <ErrorBoundary>
-        <Workspace />
+        <Workspace authKind={user.authKind} />
       </ErrorBoundary>
     );
   }
@@ -23,5 +23,5 @@ export default async function Home({
   const returnTo =
     join && /^[a-f0-9]{48}$/.test(join) ? "/?join=" + join : "/";
 
-  return <LandingMarketing signInHref={chatGPTSignInPath(returnTo)} />;
+  return <LandingMarketing returnTo={returnTo} />;
 }

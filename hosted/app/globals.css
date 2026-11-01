@@ -282,6 +282,7 @@ summary{cursor:pointer;font-size:13px;min-height:32px;color:var(--muted)}
 .landing-notes h2{font-size:18px;margin:8px 0}
 .landing-notes p{font-size:13px;color:var(--muted)}
 .landing footer{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding:24px 0}
+.landing .inline-link{color:inherit;text-decoration:underline;text-underline-offset:3px}
 
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
 
@@ -777,6 +778,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   text-align:center;font-size:12px;color:#888;line-height:1.8;
 }
 .landing-foot p{margin:4px 0}
+.landing-page .inline-link{color:inherit;text-decoration:underline;text-underline-offset:3px}
 @media(max-width:860px){
   .landing-values{grid-template-columns:1fr}
   .landing-features{grid-template-columns:1fr}
