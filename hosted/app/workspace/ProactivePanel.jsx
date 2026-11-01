@@ -5,9 +5,9 @@ const outcomes={quiet:'保持安静',suggested:'提出建议',follow_up:'跟进�
 export default function ProactivePanel({request,act,profile,onInvite,hasModel}){
   const [data,setData]=useState(null),[draft,setDraft]=useState(null),[consent,setConsent]=useState(false),[error,setError]=useState('');
   const load=async()=>{const next=await request('proactivity');setData(next);setDraft(old=>old||next.policy);return next;};
-  useEffect(()=>{let cancelled=false;const initial=setTimeout(()=>{if(!cancelled)load().catch(e=>{if(!cancelled)setError(e.message);});},0);const timer=setInterval(()=>{if(!cancelled)load().catch(()=>{});},15000);return()=>{cancelled=true;clearTimeout(initial);clearInterval(timer);};},[]);
+  useEffect(()=>{let cancelled=false;const initial=setTimeout(()=>{if(!cancelled)load().catch(e=>{if(!cancelled)setError(e.message);});},0);const timer=setInterval(()=>{if(!cancelled&&!document.hidden)load().catch(()=>{});},15000);return()=>{cancelled=true;clearTimeout(initial);clearInterval(timer);};},[]);
   const run=(task,message='')=>act(async()=>{await task();await load();},message);
-  const format=value=>new Intl.DateTimeFormat('zh-CN',{timeZone:profile.timezone,dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
+  const format=value=>new Intl.DateTimeFormat('zh-CN',{timeZone:profile?.timezone||'Asia/Shanghai',dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
   if(!data||!draft)return <p role="status">{error||'正在读取主动判断设置…'}</p>;
   const save=e=>{e.preventDefault();run(async()=>{await request('proactivity/configure',{...draft,consent});setConsent(false);},'主动判断设置已保存');};
   const feedback=(s,action,minutes)=>run(()=>request('proactivity/action',{id:s.id,action,minutes}),({accept:'已接受，之后会按时跟进',snooze:'已延后跟进',complete:'已记录完成，结束本次跟进',dismiss:'已停止跟进这条建议'})[action]);
