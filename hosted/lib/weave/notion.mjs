@@ -2,7 +2,7 @@ export class NotionClient{
  constructor({token,pageId,fetcher=fetch}){this.token=token;this.pageId=pageId;this.fetcher=fetcher;}
  configured(){return !!(this.token&&this.pageId);}
  async request(path,method='GET',body){
-  let r;try{r=await this.fetcher('https://api.notion.com/v1/'+path,{method,headers:{Authorization:`Bearer ${this.token}`,'Notion-Version':'2025-09-03','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(20000),redirect:'error'});}catch{throw Error('Notion 请求未确认，请检查网络连接');}
+  let r;try{r=await this.fetcher('https://api.notion.com/v1/'+path,{method,headers:{Authorization:`Bearer ${this.token}`,'Notion-Version':'2025-09-03','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(20000),redirect:'manual'});}catch{throw Error('Notion 请求未确认，请检查网络连接');}
   if(!r.ok)throw Error(`Notion 请求失败 (${r.status})，请检查页面授权和配置`);return r.json();
  }
  async children(id){let cursor,blocks=[];do{const r=await this.request(`blocks/${encodeURIComponent(id)}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);blocks.push(...r.results);cursor=r.has_more?r.next_cursor:null;}while(cursor&&blocks.length<500);return blocks;}
@@ -54,7 +54,7 @@ export function notionOAuthURL(config,state){
 export async function exchangeNotionOAuth(config,code,fetcher=fetch){
  if(!config?.clientId||!config?.clientSecret||!config?.redirectUri||typeof code!=='string'||!code)throw Error('Notion 连接暂不可用，请稍后重试');
  let response;
- try{response=await fetcher('https://api.notion.com/v1/oauth/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.clientId}:${config.clientSecret}`)}`,'Content-Type':'application/json'},body:JSON.stringify({grant_type:'authorization_code',code,redirect_uri:config.redirectUri}),redirect:'error',signal:AbortSignal.timeout(20000)});}catch{throw Error('Notion 连接未完成，请稍后重试');}
+ try{response=await fetcher('https://api.notion.com/v1/oauth/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.clientId}:${config.clientSecret}`)}`,'Content-Type':'application/json'},body:JSON.stringify({grant_type:'authorization_code',code,redirect_uri:config.redirectUri}),redirect:'manual',signal:AbortSignal.timeout(20000)});}catch{throw Error('Notion 连接未完成，请稍后重试');}
  if(!response.ok)throw Error('Notion 连接未完成，请稍后重试');
  let result;try{result=await response.json();}catch{throw Error('Notion 连接返回格式错误');}
  if(typeof result?.access_token!=='string'||!result.access_token)throw Error('Notion 连接未完成，请稍后重试');

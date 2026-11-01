@@ -26,7 +26,7 @@ function runPython(python,args,payload,home,spawnImpl=spawn){
 }
 export async function pollOnce({origin,token,python,dataDir,fetcher=fetch,execute=executeHermes}){
   const post=async(path,data)=>{
-    const response=await fetcher(origin+'/api/internal/hermes/'+path,{method:'POST',redirect:'error',signal:AbortSignal.timeout(25000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data)});
+    const response=await fetcher(origin+'/api/internal/hermes/'+path,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(25000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data)});
     if(!response.ok){const error=Error('Hermes queue rejected request ('+response.status+')');error.status=response.status;throw error;}return response.json();
   };
   const {job}=await post('claim',{version:REVISION});if(!job)return {idle:true};
