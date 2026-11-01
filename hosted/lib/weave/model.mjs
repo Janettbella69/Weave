@@ -4,7 +4,7 @@ export async function completion({apiKey, model=DEFAULT_MODEL, system, input, js
   let response;
   try {
     response=await fetcher('https://api.deepseek.com/anthropic/v1/messages',{
-      method:'POST',redirect:'error',signal:AbortSignal.timeout(90000),
+      method:'POST',redirect:'manual',signal:AbortSignal.timeout(90000),
       headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01'},
       body:JSON.stringify({model,max_tokens:2400,stream:false,thinking:{type:'disabled'},
         system:system+(json?' 只输出有效的 JSON 对象，不要 Markdown。':''),

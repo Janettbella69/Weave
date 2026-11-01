@@ -25,7 +25,7 @@ export async function chatFor(person,world,text,{secret,fetcher,agentServiceUrl,
     if(!settings.deepseekKey&&!managedAgent&&!managedProvider)domain.fail('你尚未连接 Agent，请先连接 Agent',428);
     const apiKey=settings.deepseekKey?await unseal(settings.deepseekKey,secret,owner):managedProvider?agentProviderApiKey:'';
     if(managedAgent){
-      return async(system,input,jsonOutput=false)=>{const response=await fetcher(agentServiceUrl.replace(/\/$/,'')+'/query',{method:'POST',redirect:'error',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+agentServiceToken},body:JSON.stringify({apiKey,model:settings.model,system,input,json:jsonOutput})});if(!response.ok)throw Error('Agent SDK 服务请求失败，请稍后重试');return (await response.json()).output;};
+      return async(system,input,jsonOutput=false)=>{const response=await fetcher(agentServiceUrl.replace(/\/$/,'')+'/query',{method:'POST',redirect:'manual',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+agentServiceToken},body:JSON.stringify({apiKey,model:settings.model,system,input,json:jsonOutput})});if(!response.ok)throw Error('Agent SDK 服务请求失败，请稍后重试');return (await response.json()).output;};
     }
     return modelClient({apiKey,model:settings.model,fetcher});
   }
@@ -85,7 +85,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       const apiKey=settings.deepseekKey?await unseal(settings.deepseekKey,secret,owner):managedProvider?agentProviderApiKey:'';
       if(managedAgent){
         return async(system,input,jsonOutput=false)=>{
-          const response=await fetcher(agentServiceUrl.replace(/\/$/,'')+'/query',{method:'POST',redirect:'error',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+agentServiceToken},body:JSON.stringify({apiKey,model:settings.model,system,input,json:jsonOutput})});
+          const response=await fetcher(agentServiceUrl.replace(/\/$/,'')+'/query',{method:'POST',redirect:'manual',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+agentServiceToken},body:JSON.stringify({apiKey,model:settings.model,system,input,json:jsonOutput})});
           if(!response.ok)throw Error('Agent SDK 服务请求失败，请稍后重试');return (await response.json()).output;
         };
       }

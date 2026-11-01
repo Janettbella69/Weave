@@ -42,7 +42,7 @@ export class GewechatClient{
     this.baseUrl=url.href.replace(/\/$/,'');this.token=token;this.appId=appId;this.fetcher=fetcher;
   }
   async request(path,body){
-    let response;try{response=await this.fetcher(this.baseUrl+path,{method:'POST',headers:{'Content-Type':'application/json','X-GEWE-TOKEN':this.token},body:JSON.stringify(body),redirect:'error',signal:AbortSignal.timeout(20000)});}catch{throw Error('Gewechat 请求未确认，请检查服务连接');}
+    let response;try{response=await this.fetcher(this.baseUrl+path,{method:'POST',headers:{'Content-Type':'application/json','X-GEWE-TOKEN':this.token},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(20000)});}catch{throw Error('Gewechat 请求未确认，请检查服务连接');}
     if(!response.ok)throw Error(`Gewechat HTTP 请求失败 (${response.status})`);
     let data;try{data=await response.json();}catch{throw Error('Gewechat 返回格式错误');}
     if(Number(data.ret)!==200)throw Error('Gewechat 服务未确认成功，请检查服务端状态');
