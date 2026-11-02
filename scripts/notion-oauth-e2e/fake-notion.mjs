@@ -3,6 +3,7 @@
 //   POST /v1/search               列出这个 token 看得到的页面（最近编辑的在前，和真实 Notion 默认一样）
 //   POST /v1/pages                在看得到的页面下面建子页面（Weave 的「同步计划」）
 //   GET  /v1/blocks/:id/children  读页面内容（Weave 的「记忆」）
+//   PATCH /v1/blocks/:id/children 在页面末尾追加内容（只加不改，和真实 Notion 一样每次最多 100 块、每块文字最多 2000 字）
 // 每个授权码对应一份「授权结果」：换到的 token、用户在 Notion 里勾选的页面，以及想让哪一步出错。
 import http from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -23,13 +24,25 @@ export function notionPage({ id = randomUUID(), title = '无标题', parent = 'w
   };
 }
 
+// 造一个块（段落、标题、列表……），字段和真实 API 一致。extra: {id, hasChildren, checked, language, url, caption, ...}
+export function notionBlock(type, text = '', { id = randomUUID(), hasChildren = false, ...data } = {}) {
+  const richText = value => (value ? [{ type: 'text', text: { content: value }, plain_text: value }] : []);
+  const { caption, ...rest } = data;
+  const body = type === 'child_page' || type === 'child_database' ? { title: text, ...rest } : { rich_text: richText(text), ...rest };
+  if (caption !== undefined) body.caption = richText(caption);
+  return { object: 'block', id, type, has_children: hasChildren, [type]: body };
+}
+
 export function createFakeNotion({ clientId, clientSecret, redirectUri }) {
   const grants = new Map();   // 授权码 → 授权结果
   const tokens = new Map();   // access token → 授权结果
   const requests = [];        // 收到的每个请求：{method, path, authorization, version, body}
   const written = [];         // 通过 POST /v1/pages 建出来的页面
+  const appended = [];        // 通过 PATCH /v1/blocks/:id/children 追加的内容
   const hanging = new Set();  // 故意不回话的连接，close() 时一起断掉
   const issued = new Set();   // 发出过的所有 token（reset 也不清），最后用来检查有没有漏到别处
+  const blocks = new Map();   // 页面或块的 id → 它的子块（没登记的页面返回一个固定段落）
+  const blockStatus = new Map(); // 页面或块的 id → 让读它的子块时返回这个状态码（模拟读不出来）
 
   const send = (res, status, body) => {
     res.writeHead(status, { 'content-type': 'application/json' });
@@ -79,7 +92,9 @@ export function createFakeNotion({ clientId, clientSecret, redirectUri }) {
     if (grant.search === 'server_error') return apiError(res, 500, 'internal_server_error', 'Unexpected error.');
     if (grant.search === 'unauthorized') return apiError(res, 401, 'unauthorized', 'API token is invalid.');
     // 真实 Notion 的搜索索引有延迟：刚授权完的头几次搜索可能什么都搜不到。
-    const visible = grant.searches <= grant.emptySearches ? [] : grant.pages.filter(page => body.filter?.value !== 'page' || page.object === 'page');
+    const titleOf = page => Object.values(page.properties || {}).find(property => property.type === 'title')?.title?.map(part => part.plain_text).join('') || '';
+    const query = typeof body.query === 'string' ? body.query.toLowerCase() : '';
+    const visible = grant.searches <= grant.emptySearches ? [] : grant.pages.filter(page => (body.filter?.value !== 'page' || page.object === 'page') && (!query || titleOf(page).toLowerCase().includes(query)));
     const sorted = [...visible].sort((a, b) => b.last_edited_time.localeCompare(a.last_edited_time));
     const size = Math.min(Number(body.page_size) || 100, 100), start = Number(body.start_cursor) || 0;
     const results = sorted.slice(start, start + size), more = start + size < sorted.length;
@@ -98,11 +113,34 @@ export function createFakeNotion({ clientId, clientSecret, redirectUri }) {
     send(res, 200, { ...page, request_id: randomUUID() });
   }
 
-  function handleChildren(req, res, id) {
+  function handleChildren(req, res, id, url) {
     const grant = authorized(req, res);
     if (!grant) return;
-    if (!grant.pages.some(page => page.id === id)) return apiError(res, 404, 'object_not_found', 'Could not find block.');
-    send(res, 200, { object: 'list', results: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ plain_text: '我的长期目标：每天走路。' }] } }], next_cursor: null, has_more: false });
+    if (blockStatus.has(id)) return apiError(res, blockStatus.get(id), blockStatus.get(id) === 404 ? 'object_not_found' : 'internal_server_error', 'Could not read the block.');
+    const isPage = grant.pages.some(page => page.id === id);
+    if (!isPage && !blocks.has(id)) return apiError(res, 404, 'object_not_found', 'Could not find block.');
+    const all = blocks.get(id) || (isPage ? [{ object: 'block', id: randomUUID(), type: 'paragraph', has_children: false, paragraph: { rich_text: [{ plain_text: '我的长期目标：每天走路。' }] } }] : []);
+    const size = Math.min(Number(url.searchParams.get('page_size')) || 100, 100), start = Number(url.searchParams.get('start_cursor')) || 0;
+    const more = start + size < all.length;
+    send(res, 200, { object: 'list', results: all.slice(start, start + size), next_cursor: more ? String(start + size) : null, has_more: more });
+  }
+
+  function handleAppend(req, res, id, body) {
+    const grant = authorized(req, res);
+    if (!grant) return;
+    if (!grant.pages.some(page => page.id === id) && !blocks.has(id)) return apiError(res, 404, 'object_not_found', `Could not find block with ID: ${id}.`);
+    const children = body.children;
+    if (!Array.isArray(children) || !children.length || children.length > 100) return apiError(res, 400, 'validation_error', 'body.children must be an array of 1 to 100 blocks.');
+    for (const child of children) {
+      const parts = child?.paragraph?.rich_text;
+      if (child?.object !== 'block' || child.type !== 'paragraph' || !Array.isArray(parts) || parts.some(part => String(part?.text?.content ?? '').length > 2000)) {
+        return apiError(res, 400, 'validation_error', 'body.children[0].paragraph.rich_text[0].text.content.length should be ≤ 2000.');
+      }
+    }
+    const created = children.map(child => ({ ...child, id: randomUUID(), has_children: false }));
+    blocks.set(id, [...(blocks.get(id) || []), ...created]);
+    appended.push({ id, children, token: [...tokens].find(([, g]) => g === grant)?.[0], version: req.headers['notion-version'] });
+    send(res, 200, { object: 'list', results: created, next_cursor: null, has_more: false });
   }
 
   const server = http.createServer(async (req, res) => {
@@ -114,12 +152,14 @@ export function createFakeNotion({ clientId, clientSecret, redirectUri }) {
     if (req.method === 'POST' && url.pathname === '/v1/search') return handleSearch(req, res, body);
     if (req.method === 'POST' && url.pathname === '/v1/pages') return handleCreatePage(req, res, body);
     const children = req.method === 'GET' && url.pathname.match(/^\/v1\/blocks\/([^/]+)\/children$/);
-    if (children) return handleChildren(req, res, decodeURIComponent(children[1]));
+    if (children) return handleChildren(req, res, decodeURIComponent(children[1]), url);
+    const append = req.method === 'PATCH' && url.pathname.match(/^\/v1\/blocks\/([^/]+)\/children$/);
+    if (append) return handleAppend(req, res, decodeURIComponent(append[1]), body);
     apiError(res, 404, 'invalid_request_url', `Invalid request URL: ${url.pathname}`);
   });
 
   return {
-    requests, written,
+    requests, written, appended,
     // 登记一次授权：用户在 Notion 里勾选了 pages，授权码是 code。
     //   exchange: 'ok' | 'hang' | 'server_error' | 'garbage' | 'no_token'  换 token 这一步怎么样
     //   search:   'ok' | 'hang' | 'server_error' | 'unauthorized'          搜页面这一步怎么样
@@ -134,11 +174,14 @@ export function createFakeNotion({ clientId, clientSecret, redirectUri }) {
     },
     grantOf: token => tokens.get(token),
     allTokens: () => [...issued],
+    // 登记一个页面（或块）的子块；让读它时出错用 failBlocks。
+    setBlocks(id, list) { blocks.set(id, list); },
+    failBlocks(id, status) { if (status) blockStatus.set(id, status); else blockStatus.delete(id); },
     // 用户在 Notion 里撤销了授权。
     revoke(token) { const grant = tokens.get(token); if (grant) grant.revoked = true; },
     // 之后用这个 token 搜索能看到的页面（比如用户后来多分享了一个页面）。
     setPages(token, pages) { const grant = tokens.get(token); if (grant) grant.pages = pages; },
-    reset() { grants.clear(); tokens.clear(); requests.length = 0; written.length = 0; },
+    reset() { grants.clear(); tokens.clear(); blocks.clear(); blockStatus.clear(); requests.length = 0; written.length = 0; appended.length = 0; },
     listen: port => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); }),
     port: () => server.address().port,
     close: () => new Promise(resolve => { for (const res of hanging) res.destroy(); server.closeAllConnections?.(); server.close(resolve); }),

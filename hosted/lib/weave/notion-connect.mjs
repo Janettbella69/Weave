@@ -8,12 +8,11 @@ import {withWorld} from './store.mjs';
 import {Store} from './store.mjs';
 import {hash,seal,unseal} from './crypto.mjs';
 import {fail} from './domain.mjs';
-import {NotionClient,exchangeNotionOAuth,scrubNotionError} from './notion.mjs';
+import {NotionClient,exchangeNotionOAuth,scrubNotionError,sameNotionId as sameId} from './notion.mjs';
 
 const STATE_PREFIX='notion-oauth:',PENDING_PREFIX='notion-pending:';
 const PENDING_MS=15*60*1000;
 const PAGE_ID=/^[a-f0-9-]{32,36}$/i;
-const sameId=(a,b)=>String(a).replaceAll('-','').toLowerCase()===String(b).replaceAll('-','').toLowerCase();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const validSecret=secret=>typeof secret==='string'&&/^[a-f0-9]{64}$/i.test(secret);
 
