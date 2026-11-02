@@ -1,14 +1,23 @@
-// 谁该醒（docs/ARCHITECTURE.md 第 7 节）。第 1 步只有一种：本人在网页上发消息。
-// 定时、事件、微信和打卡群在第 3 步加。醒了做什么由 Agent 决定，这里只负责叫醒和存结果。
+// 谁该醒（docs/ARCHITECTURE.md 第 7 节）。叫醒 Agent 服务只有一个入口 wake()，各个通道（网页、微信私聊、
+// 打卡群 @，以后还有定时和事件）只是传不同的参数：范围（owner / group）、通道、触发信息。
+// 醒了做什么由 Agent 决定，这里只负责叫醒、算出结果、存回复。
 //
 // 顺序很重要：先存用户消息，再叫醒，回来重新读一遍再存回复。叫醒期间工具后端会单独写 world，
-// 拿着叫醒前读到的 world 存回去会覆盖那些写入，或者报 409。
+// 拿着叫醒前读到的 world 存回去会覆盖那些写入，或者报 409。所以这里每一步都是自己的 withWorld，
+// 调用方也不要把 world 拿着等一轮醒来。
 import {withWorld} from './store.mjs';
 import {unseal} from './crypto.mjs';
 import {fail, record} from './domain.mjs';
 import {localClock} from './proactivity.mjs';
 import {DEFAULT_MODEL} from './model.mjs';
 import {issueCapability} from './capability.mjs';
+
+// 一次 tick（网页 / Cloudflare Cron / 微信桥接每分钟调一次）总共不能超过约 150 秒：桥接 170 秒放弃，nginx 200 秒放弃。
+// 所以 60 秒以后不再开始新的一轮，每一轮最多等到 tick 结束。主动唤醒也用同样的预算。
+export const TICK_BUDGET_MS = 150_000;
+export const START_BY_MS = 60_000;
+const WAKE_TIMEOUT_MS = 180_000;
+const SCOPES = ['owner', 'group'], CHANNELS = ['web', 'wechat'];
 
 // 草稿文案，待确认。
 export const REPLIES = {
@@ -40,11 +49,25 @@ export function localISO(timezone, now) {
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
 }
 
-export async function wakeForMessage({db, secret, ownerId, text, service, fetcher = fetch, now = Date.now()}) {
-  const runId = crypto.randomUUID();
+// 叫醒一轮：全仓库唯一向 Agent 服务发 /wake 的地方。只管叫醒和算结果，不替调用方存任何东西。
+//   scope     'owner'（本人）或 'group'（打卡群）。群范围要给 groupId：群 id 的哈希，不是微信的群号。
+//   ownerId   本人；群范围里是开启这个群的人，用他的模型和 Key。
+//   channel   通行证上的通道（web / wechat），决定 send_message 发到哪。
+//   trigger   {kind, channel, direct, text}：kind 默认 message，direct 默认 true；at 由这里按本人时区补上。
+//   beforeWake  可选，在读模型设置的同一个事务里先跑（网页和微信用它先存用户的消息）。
+// 返回 {outcome, reply, uncertain, retryable, runId}：
+//   retryable  Agent 服务明确说没开始跑（429 / 400 401 403 404 413 503），可以说「没有处理」，稍后重试也安全；
+//   uncertain  其余没拿到完整结果的情况（超时、断线、500、这一轮没成功）可能已经做了一部分，不自动重试。
+export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake}) {
+  if (!SCOPES.includes(scope)) throw Error(`不支持的范围：${scope}`);
+  if (!CHANNELS.includes(channel)) throw Error(`不支持的通道：${channel}`);
+  if (scope === 'group' && (typeof groupId !== 'string' || !groupId)) throw Error('群范围需要 groupId');
+  if (scope === 'owner' && groupId !== undefined) throw Error('本人范围不能带 groupId');
+  const direct = trigger.direct ?? true, runId = crypto.randomUUID();
   const run = await withWorld(db, async world => {
     const person = world.people[ownerId];
-    person.messages.push({id: crypto.randomUUID(), role: 'user', text, createdAt: new Date(now).toISOString()});
+    if (!person) fail('账号不存在', 404);
+    await beforeWake?.(world, person);
     return {
       model: person.settings?.model || DEFAULT_MODEL,
       // 用自己 Key 的人自己付费，模型代理不计他的额度（沿用 budget.mjs 的口径）。
@@ -53,21 +76,21 @@ export async function wakeForMessage({db, secret, ownerId, text, service, fetche
       at: localISO(person.profile.timezone, now),
     };
   });
-  const capability = await issueCapability(secret, {owner: ownerId, scope: 'owner', runId, channel: 'web', direct: true}, now);
+  const capability = await issueCapability(secret, {owner: ownerId, scope, runId, channel, direct, ...(scope === 'group' ? {group: groupId} : {})}, now);
 
-  let outcome = 'error', reply = null;
+  let outcome = 'error', reply = null, retryable = false;
   try {
     const response = await fetcher(service.url + '/wake', {
-      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(180_000),
+      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + service.token},
       body: JSON.stringify({
-        scope: 'owner', id: ownerId, capability, localDate: run.localDate,
-        trigger: {kind: 'message', channel: 'web', direct: true, at: run.at, text},
+        scope, id: scope === 'group' ? groupId : ownerId, capability, localDate: run.localDate,
+        trigger: {kind: trigger.kind ?? 'message', channel: trigger.channel, direct, at: run.at, text: trigger.text},
         provider: 'deepseek', model: run.model, ...(run.userKey ? {userKey: run.userKey} : {}),
       }),
     });
-    if (response.status === 429) { outcome = 'busy'; reply = REPLIES.busy; }
-    else if (NOT_STARTED.has(response.status)) { outcome = 'unavailable'; reply = REPLIES.unavailable; }
+    if (response.status === 429) { outcome = 'busy'; retryable = true; }
+    else if (NOT_STARTED.has(response.status)) { outcome = 'unavailable'; retryable = true; }
     else if (response.status === 200) {
       const out = await response.json();
       outcome = typeof out?.outcome === 'string' ? out.outcome : 'error';
@@ -77,23 +100,50 @@ export async function wakeForMessage({db, secret, ownerId, text, service, fetche
     // 超时或断线：Agent 可能已经跑了一部分。
   }
   // 不自动重试：可能已经记过东西或发过消息（文档第 2 节「出错时」）。
-  const uncertain = reply === null;
-  if (uncertain) reply = REPLIES.uncertain;
-  await withWorld(db, world => {
-    const person = world.people[ownerId];
-    if (person) record(person, reply, {source: 'agent', runId, outcome, ...(uncertain ? {uncertain: true} : {})});
-  });
-  return {reply, outcome};
+  // 有人直接找它的那一轮，成功就必须有最后一段话；没人找它的那一轮（定时、事件），不说话是正常的。
+  const uncertain = !retryable && !(outcome === 'success' && (reply !== null || !direct));
+  return {outcome, reply, uncertain, retryable, runId};
 }
 
-// 注销时先删 Agent 的工作目录和会话记录，删不掉就不删账号，免得留下没人管的个人数据。
-export async function forgetAgentWorkspace({service, ownerId, fetcher = fetch}) {
+// 有人直接找它的那一轮一定要有一句话回给人：没有拿到结果时用这三句。
+function answerFor(result) {
+  if (result.reply !== null) return result.reply;
+  return result.outcome === 'busy' ? REPLIES.busy : result.outcome === 'unavailable' ? REPLIES.unavailable : REPLIES.uncertain;
+}
+
+// 本人发来一条消息（网页或微信私聊）：先存用户消息，叫醒，回来重读再存回复。
+// afterWake(world, person, done) 在存回复的同一个事务里跑，微信用它把回复排进发送队列。
+export async function wakeForMessage({db, secret, ownerId, text, service, fetcher = fetch, now = Date.now(), channel = 'web', timeoutMs, afterWake}) {
+  const result = await wake({
+    db, secret, service, fetcher, now, ownerId, channel, timeoutMs, trigger: {channel, text},
+    beforeWake: (world, person) => { person.messages.push({id: crypto.randomUUID(), role: 'user', text, createdAt: new Date(now).toISOString()}); },
+  });
+  const reply = answerFor(result), done = {reply, outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};
+  await withWorld(db, async world => {
+    const person = world.people[ownerId];
+    if (person) record(person, reply, {source: 'agent', runId: done.runId, outcome: done.outcome, ...(done.uncertain ? {uncertain: true} : {})});
+    await afterWake?.(world, person, done);
+  });
+  return done;
+}
+
+// 打卡群里有人 @ 它：群范围，通道是微信，触发信息的通道是 group。
+// 不往本人的任何记录里写东西；回复排进哪个群、@ 谁，由 afterWake 决定。
+export async function wakeForGroup({db, secret, ownerId, groupId, text, service, fetcher = fetch, now = Date.now(), timeoutMs, afterWake}) {
+  const result = await wake({db, secret, service, fetcher, now, ownerId, scope: 'group', groupId, channel: 'wechat', timeoutMs, trigger: {channel: 'group', text}});
+  const done = {reply: answerFor(result), outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};
+  if (afterWake) await withWorld(db, world => afterWake(world, world.people[ownerId], done));
+  return done;
+}
+
+// 注销或关闭群时先删 Agent 的工作目录和会话记录，删不掉就不往下走，免得留下没人管的个人数据。
+export async function forgetAgentWorkspace({service, scope = 'owner', id, ownerId, fetcher = fetch}) {
   let done = false;
   try {
     const response = await fetcher(service.url + '/forget', {
       method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(30_000),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + service.token},
-      body: JSON.stringify({scope: 'owner', id: ownerId}),
+      body: JSON.stringify({scope, id: id ?? ownerId}),
     });
     done = response.status === 200;
   } catch {

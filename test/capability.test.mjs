@@ -10,10 +10,30 @@ test('签发后能验证，拿回同样的 owner、scope、runId、channel、dir
   const token = await issueCapability(secret, claims, now);
   assert.match(token, /^wcap1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   assert.deepEqual(await verifyCapability(secret, token, now + 60_000), {...claims, exp: now + 15 * 60_000});
-  const group = await issueCapability(secret, {...claims, scope: 'group', channel: 'wechat', direct: false}, now);
+  const group = await issueCapability(secret, {...claims, scope: 'group', channel: 'wechat', direct: false, group: 'g1'}, now);
   const back = await verifyCapability(secret, group, now);
   assert.equal(back.scope, 'group');
   assert.equal(back.direct, false);
+  assert.equal(back.group, 'g1');
+});
+
+test('a group capability names its group, and an owner capability never does', async () => {
+  const group = {...claims, scope: 'group', channel: 'wechat', direct: true};
+  await assert.rejects(issueCapability(secret, group, now), /通行证内容无效/);
+  await assert.rejects(issueCapability(secret, {...group, group: ''}, now), /通行证内容无效/);
+  await assert.rejects(issueCapability(secret, {...group, group: 'g'.repeat(201)}, now), /通行证内容无效/);
+  await assert.rejects(issueCapability(secret, {...group, group: 42}, now), /通行证内容无效/);
+  await assert.rejects(issueCapability(secret, {...claims, group: 'g1'}, now), /通行证内容无效/);
+  const token = await issueCapability(secret, {...group, group: 'g1'}, now);
+  assert.equal((await verifyCapability(secret, token, now)).group, 'g1');
+  assert.equal('group' in await verifyCapability(secret, await issueCapability(secret, claims, now), now), false);
+});
+
+test('a forged group claim added to an owner capability is rejected even with a valid signature shape', async () => {
+  const token = await issueCapability(secret, claims, now);
+  const [prefix, , signature] = token.split('.');
+  const forged = Buffer.from(JSON.stringify({...claims, group: 'g1', exp: now + 900_000})).toString('base64url');
+  await rejects401(verifyCapability(secret, `${prefix}.${forged}.${signature}`, now));
 });
 
 test('改一个字符、换密钥、过期，都是 401', async () => {
