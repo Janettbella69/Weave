@@ -1,8 +1,14 @@
 export class NotionClient{
- constructor({token,pageId,fetcher=fetch}){this.token=token;this.pageId=pageId;this.fetcher=fetcher;}
+ constructor({token,pageId,fetcher=fetch,apiProxy=''}){this.token=token;this.pageId=pageId;this.fetcher=fetcher;this.apiProxy=apiProxy;}
  configured(){return !!(this.token&&this.pageId);}
  async request(path,method='GET',body){
-  let r;try{r=await this.fetcher('https://api.notion.com/v1/'+path,{method,headers:{Authorization:`Bearer ${this.token}`,'Notion-Version':'2025-09-03','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(20000),redirect:'manual'});}catch{throw Error('Notion 请求未确认，请检查网络连接');}
+  let r;try{
+  if(this.apiProxy){
+    r=await this.fetcher(this.apiProxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({method,path,token:this.token,body,notionVersion:'2022-06-28'})});
+  }else{
+    r=await this.fetcher('https://api.notion.com/v1/'+path,{method,headers:{Authorization:`Bearer ${this.token}`,'Notion-Version':'2022-06-28','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+  }
+ }catch{throw Error('Notion 请求未确认，请检查网络连接');}
   if(!r.ok)throw Error(`Notion 请求失败 (${r.status})，请检查页面授权和配置`);return r.json();
  }
  async children(id){let cursor,blocks=[];do{const r=await this.request(`blocks/${encodeURIComponent(id)}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);blocks.push(...r.results);cursor=r.has_more?r.next_cursor:null;}while(cursor&&blocks.length<500);return blocks;}
@@ -37,7 +43,7 @@ export function notionOAuthConfig(env){
  const clientSecret=env?.clientSecret||env?.NOTION_OAUTH_CLIENT_SECRET||'';
  const publicOrigin=(env?.publicOrigin||env?.NOTION_PUBLIC_ORIGIN||'').replace(/\/$/,'');
  const redirectUri=env?.redirectUri||env?.NOTION_OAUTH_REDIRECT_URI||(publicOrigin?`${publicOrigin}/api/connections/notion/callback`:'');
- return {clientId,clientSecret,redirectUri,publicOrigin};
+ return {clientId,clientSecret,redirectUri,publicOrigin,exchangeUrl:env?.exchangeUrl||env?.NOTION_OAUTH_EXCHANGE_URL||'',apiProxyUrl:env?.apiProxyUrl||env?.NOTION_API_PROXY_URL||''};
 }
 
 export function notionOAuthURL(config,state){
@@ -54,8 +60,15 @@ export function notionOAuthURL(config,state){
 export async function exchangeNotionOAuth(config,code,fetcher=fetch){
  if(!config?.clientId||!config?.clientSecret||!config?.redirectUri||typeof code!=='string'||!code)throw Error('Notion 连接暂不可用，请稍后重试');
  let response;
- try{response=await fetcher('https://api.notion.com/v1/oauth/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.clientId}:${config.clientSecret}`)}`,'Content-Type':'application/json'},body:JSON.stringify({grant_type:'authorization_code',code,redirect_uri:config.redirectUri}),redirect:'manual',signal:AbortSignal.timeout(20000)});}catch{throw Error('Notion 连接未完成，请稍后重试');}
- if(!response.ok)throw Error('Notion 连接未完成，请稍后重试');
+ const proxy=typeof config.exchangeUrl==='string'?config.exchangeUrl.trim():'';
+ try{
+  if(proxy){
+   response=await fetcher(proxy,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId:config.clientId,clientSecret:config.clientSecret,code,redirectUri:config.redirectUri})});
+  }else{
+   response=await fetcher('https://api.notion.com/v1/oauth/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.clientId}:${config.clientSecret}`)}`,'Content-Type':'application/json'},body:JSON.stringify({grant_type:'authorization_code',code,redirect_uri:config.redirectUri})});
+  }
+ }catch(err){throw Error(`Notion 连接未完成，请稍后重试: ${err&&err.message||err}`);}
+ if(!response.ok){let body='';try{body=await response.text()}catch{} throw Error(`Notion 连接未完成 (${response.status}) ${body.slice(0,200)}`);}
  let result;try{result=await response.json();}catch{throw Error('Notion 连接返回格式错误');}
  if(typeof result?.access_token!=='string'||!result.access_token)throw Error('Notion 连接未完成，请稍后重试');
  return result;

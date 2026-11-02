@@ -38,6 +38,23 @@ export async function getGuestUserFromCookie(): Promise<ChatGPTUser | null> {
 }
 
 export async function getWeaveUser(): Promise<WeaveUser | null> {
+  // VPS single-user: prefer env identity (must read env before Next ALS-bound awaits).
+  try {
+    const { env } = await import("cloudflare:workers");
+    const vps = env as unknown as Record<string, string | undefined>;
+    if (vps.WEAVE_VPS_MODE === "true" && vps.WEAVE_VPS_USER_ID && vps.WEAVE_VPS_EMAIL) {
+      return {
+        userId: vps.WEAVE_VPS_USER_ID,
+        displayName: vps.WEAVE_VPS_NAME || vps.WEAVE_VPS_EMAIL,
+        email: vps.WEAVE_VPS_EMAIL,
+        fullName: vps.WEAVE_VPS_NAME || null,
+        authKind: "chatgpt",
+      };
+    }
+  } catch {
+    /* not on workers */
+  }
+
   const chatgpt = await getChatGPTUser();
   if (chatgpt) return { ...chatgpt, authKind: "chatgpt" };
 
