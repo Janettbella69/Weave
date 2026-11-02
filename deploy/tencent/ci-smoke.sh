@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# CI 用：拿测试配置把整套 compose 起一遍，检查完拆掉。用假的 DeepSeek Key，不花钱。
+set -euo pipefail
+cd "$(dirname "$0")"
+data=$(mktemp -d)
+token=$(openssl rand -hex 24)
+cat > .env <<EOF
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+WEAVE_BIND_IP=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d/ -f1)
+WEAVE_AGENT_DATA=$data
+EOF
+cat > web.env <<EOF
+WEAVE_ENCRYPTION_KEY=$(openssl rand -hex 32)
+WEAVE_VPS_MODE=true
+WEAVE_VPS_USER_ID=ci@example.test
+WEAVE_VPS_EMAIL=ci@example.test
+WEAVE_VPS_NAME=CI
+WEAVE_BASIC_AUTH=weave:ci-password
+WEAVE_AGENT_RUNTIME=sdk
+AGENT_SERVICE_TOKEN=$token
+EOF
+printf 'AGENT_SERVICE_TOKEN=%s\nDEEPSEEK_API_KEY=sk-ci-not-a-real-key\n' "$token" > agent.env
+trap 'docker compose logs --tail 60 || true; docker compose down -v || true; rm -f .env web.env agent.env' EXIT
+set -a; . ./.env; set +a
+
+docker build -q -f ../../hosted/agent-service/Dockerfile.agent -t weave-agent:0.3.316 ../../hosted/agent-service
+docker compose up -d --build
+url="http://$WEAVE_BIND_IP:4317"
+code=000
+for _ in $(seq 1 90); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+  [ "$code" = 401 ] && break
+  sleep 2
+done
+[ "$code" = 401 ] || { echo "FAIL 网站没有要访问密码：HTTP $code"; exit 1; }
+echo "PASS 没带密码是 401"
+
+status=$(curl -s -u weave:ci-password "$url/api/status")
+echo "$status" | grep -q '"personId":"u:' || { echo "FAIL 带上密码后单用户模式没进去：$status"; exit 1; }
+echo "PASS 带上密码进得去，单用户模式认出了本人"
+
+internal=$(curl -s -X POST -H 'Content-Type: application/json' -d '{"args":{},"toolUseId":"t"}' "$url/api/internal/agent/tools/list_habits")
+echo "$internal" | grep -q '通行证' || { echo "FAIL 内部接口应该由通行证把关：$internal"; exit 1; }
+echo "PASS 内部接口不被访问密码挡住，由通行证把关"
+
+docker compose exec -T agent node -e "fetch('http://127.0.0.1:4320/health').then(r=>r.json()).then(j=>{if(!j.ok)process.exit(1)})"
+echo "PASS Agent 服务健康"
+
+reply=$(curl -s -u weave:ci-password -X POST -H 'Content-Type: application/json' -H "Origin: $url" -d '{"text":"你好"}' "$url/api/chat")
+echo "chat: $reply"
+echo "$reply" | grep -q '"reply"' || { echo "FAIL 聊天没有回复"; exit 1; }
+if echo "$reply" | grep -q '还没有配置好\|暂时不可用'; then echo "FAIL 网站没连上 Agent 服务"; exit 1; fi
+# 假 Key 会被 DeepSeek 拒绝，所以回复是「结果不确定」；要确认的是一次性容器真的起来过：CLI 会在配置目录里写东西。
+find "$data/owner" -path '*/claude/*' -type f | head -3 | grep -q . || { echo "FAIL 一次性容器没有起来（配置目录是空的）"; exit 1; }
+echo "PASS 网站 → Agent 服务 → 一次性容器整条链路走通了"
