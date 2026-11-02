@@ -22,6 +22,7 @@ import {isolationFor} from './sandbox.mjs';
 import {wake} from './runner.mjs';
 import {createRunQueue} from './queue.mjs';
 import * as workspace from './workspace.mjs';
+import {fetchSnapshot, writeSnapshot, mirroringRpc} from './snapshot.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('./plugin', import.meta.url));
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -102,6 +103,14 @@ export async function createAgentService({
     return queue.run(`${scope.kind}:${input.id}`, async () => {
       const dirs = workspace.scopeDirs(dataDir, scope.kind, input.id);
       await workspace.prepare(dirs);
+      // 叫醒前把数据写进工作目录（教材 p.16、p.20）。取不到就不醒：回 503，dispatcher 当成「没有处理」。
+      let dbPath;
+      try {
+        ({dbPath} = await writeSnapshot(dirs, await fetchSnapshot({weaveUrl, capability: input.capability, fetcher})));
+      } catch (error) {
+        console.error('Agent service: snapshot unavailable:', error instanceof Error ? error.message : 'unknown');
+        fail(503, '取不到 Weave 的数据快照，这一轮没有叫醒');
+      }
       const memory = await workspace.readMemory(dirs);
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
       const run = proxy.openRun({account: input.id, provider: provider.name, model: input.model, userKey: input.userKey});
@@ -110,7 +119,7 @@ export async function createAgentService({
         const result = await wake({
           scope, trigger: input.trigger, memory, provider, model: input.model, runToken: run.token, sessionId, queryFn,
           isolation: isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory}),
-          rpc: toolBackend({weaveUrl, capability: input.capability, fetcher}),
+          rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
