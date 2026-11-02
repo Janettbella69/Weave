@@ -139,22 +139,28 @@ async function tickLoop({weave,isStopping}){
     await delay(60000);
   }
 }
+// 3 s after the first failure, doubling up to 60 s. A logged-out daemon refuses every time; waiting longer keeps the log short.
+export const reconnectDelay=failures=>Math.min(3000*2**failures,60000);
 async function follow({daemon,weave,cursors,isStopping}){
-  let cursor=await cursors.load();
+  let cursor=await cursors.load(),failures=0;
   while(!isStopping()){
     const controller=new AbortController();
     try{
       const response=await daemon.stream(cursor,controller.signal);
+      // Connected: whatever was wrong before is over, even if nothing arrives for a long while.
+      failures=0;
       for await(const event of sseEvents(response.body)){
         await handleEvent(event,{daemon,weave,saveCursor:async next=>{cursor=next;await cursors.save(next);}});
         if(isStopping())break;
       }
     }catch(error){console.error('事件连接中断，将从保存的位置继续：'+error.message);}
     finally{controller.abort();}
-    if(!isStopping())await delay(3000);
+    if(!isStopping()){await delay(reconnectDelay(failures));failures++;}
   }
 }
 export async function main(env=process.env){
+  // launchd's log has no times of its own, and times are what you need when WeChat starts acting up.
+  for(const level of ['log','error'])console[level]=(write=>(...args)=>write(new Date().toISOString(),...args))(console[level].bind(console));
   const origin=(env.WEAVE_ORIGIN||'').replace(/\/$/,'');
   if(!origin.startsWith('https://')&&!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin))throw Error('WEAVE_ORIGIN 必须是 HTTPS（本机测试可用 127.0.0.1）');
   if(!env.WECHAT_BRIDGE_TOKEN||env.WECHAT_BRIDGE_TOKEN.length<32)throw Error('请配置 WECHAT_BRIDGE_TOKEN（至少 32 字符）');

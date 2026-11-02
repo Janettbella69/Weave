@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createDaemon,createThrottle,createWeave,cursorStore,deliverOnce,forwardable,handleEvent,sseEvents,throttleFromEnv} from '../hosted/wechat-bridge/bridge.mjs';
+import {createDaemon,createThrottle,createWeave,cursorStore,deliverOnce,forwardable,handleEvent,reconnectDelay,sseEvents,throttleFromEnv} from '../hosted/wechat-bridge/bridge.mjs';
 
 const sse=text=>new Response(text).body;
 const collect=async iterable=>{const items=[];for await(const item of iterable)items.push(item);return items;};
@@ -207,4 +207,8 @@ test('delivery: a send that never reached WeChat (logged out, offline) does not 
   assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 0);
   fail = false;
   assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 1);
+});
+
+test('reconnecting to the daemon backs off while it is down or logged out, so the log does not fill up and nobody is hammered', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 50].map(reconnectDelay), [3000, 6000, 12000, 24000, 48000, 60000, 60000, 60000]);
 });
