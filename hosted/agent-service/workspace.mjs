@@ -29,7 +29,8 @@ export async function readMemory(dirs) {
   let handle;
   try {
     // O_NOFOLLOW：是链接就直接打不开，检查和读取之间没有空隙。
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK：Agent 能把它换成命名管道（FIFO），阻塞的 open 会一直等写入方、占住线程池；普通文件不受影响。
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (!(await handle.stat()).isFile()) return '';
     return (await handle.readFile('utf8')).slice(0, MEMORY_LIMIT);
   } catch {
