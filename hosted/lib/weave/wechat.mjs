@@ -197,12 +197,15 @@ export function receiveReceipt(world,{id,state},now=Date.now()){
   return {ok:true};
 }
 
-export async function wechatQueue(request,{db,secret,token,readBody,now=Date.now()}){
+export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Date.now()}){
   const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   try{
     if(typeof token!=='string'||token.length<32||await hash(request.headers.get('authorization')||'')!==await hash('Bearer '+token))return json({error:'未授权'},401);
     if(request.method!=='POST'||!db)return json({error:'方法不支持'},405);
-    const input=await readBody(request),store=new Store(db,{strict:true}),world=await store.load(),path=new URL(request.url).pathname;
+    const path=new URL(request.url).pathname;
+    // Scheduled work loads and saves on its own and may call the model, so it holds no state here.
+    if(path==='/api/internal/wechat/tick')return json(await tick());
+    const input=await readBody(request),store=new Store(db,{strict:true}),world=await store.load();
     world.runtime??={};
     // A heartbeat at most once a minute: the bridge polls often and D1 writes are not free.
     const seen=world.runtime['runtime:wechat-bridge']?.lastSeenAt;

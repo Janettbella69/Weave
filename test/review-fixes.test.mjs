@@ -78,6 +78,13 @@ test('a WeChat user who hits the limit is told so instead of hearing nothing',as
   assert.ok(texts.some(t=>t.includes('额度')),JSON.stringify(texts));assert.equal(h.calls,0);
 });
 
+test('the tick endpoint obeys the same budget as Cron',async()=>{
+  const h=harness({modelBudget:{perAccount:0,total:100}});
+  const code=(await h.request('Alice','wechat/bind',{})).data.instruction;
+  const say=(id,body)=>h.request(null,'internal/wechat/events',{id,threadId:'wxid-alice',senderId:'wxid-alice',type:1,direction:'incoming',body,createdAt:new Date(start).toISOString()},bridgeHeaders);
+  await say('m1',code);await say('m2','你好');
+  assert.equal((await h.request(null,'internal/wechat/tick',{},bridgeHeaders)).status,200);assert.equal(h.calls,0);
+});
 test('deleting an account requires explicit confirmation',async()=>{
   const h=harness();await h.request('Alice','status');
   assert.equal((await h.request('Alice','account/delete',{})).status,400);

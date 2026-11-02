@@ -44,15 +44,13 @@
    npm start
    ```
 
-## 每分钟要有东西触发 Cron
+## 每分钟要有东西触发定时任务
 
-回复和到期提醒都由 Worker 的每分钟 Cron 生成。Cloudflare 上会自动触发，但 **`wrangler dev` 不会**（[官方文档](https://developers.cloudflare.com/workers/configuration/cron-triggers/)：「Local development does not run Cron Triggers automatically」）。用 `wrangler dev` 部署时，要自己每分钟请求一次：
+回复和到期提醒都由每分钟一次的定时任务生成。部署在 Cloudflare 上时 Cron 会自动触发，这一节可以跳过。
 
-```sh
-while true; do curl -fsS "http://127.0.0.1:$PORT/cdn-cgi/local/scheduled" >/dev/null || true; sleep 60; done
-```
+**用 `wrangler dev` 部署时 Cron 不会触发**（[官方文档](https://developers.cloudflare.com/workers/configuration/cron-triggers/)：「Local development does not run Cron Triggers automatically」），手动触发的 `/cdn-cgi/handler/scheduled` 也会报错，因为静态资源那层转发不了定时事件。
 
-不触发的话，消息能收到，但永远不会有回复。
+这种情况在桥接的 `.env` 里设 `WEAVE_TICK=1`，桥接就会每分钟调用一次 `/api/internal/wechat/tick`。不设的话，消息能收到，但永远不会有回复。**不要在 Cloudflare 上同时开启**，两边同时跑可能重复回复。
 
 ## 私聊
 

@@ -6,8 +6,12 @@ import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from 
 import {hermesQueue} from './hermes-queue.mjs';
 import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction} from './proactivity.mjs';
 import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wechat.mjs';
+<<<<<<< HEAD
 import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
+=======
+import {runScheduled} from './scheduler.mjs';
+>>>>>>> feat/agent-wechat
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
   if(!request.headers.get('content-type')?.startsWith('application/json'))domain.fail('需要 JSON 请求',415);
@@ -60,8 +64,15 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
     const requestURL=new URL(request.url),requestPath=requestURL.pathname;
+<<<<<<< HEAD
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,now});
+=======
+    if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,readBody:body,now});
+    // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
+    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
+    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
+>>>>>>> feat/agent-wechat
     if(requestPath==='/api/connections/notion/callback'){
       const redirect=(status)=>Response.redirect(new URL(`/`+`?connection=notion&status=${status}`,request.url),303);
       if(request.method!=='GET'||!db||!notionOAuth?.clientId||!notionOAuth?.clientSecret||!notionOAuth?.redirectUri)return redirect('error');

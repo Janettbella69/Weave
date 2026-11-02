@@ -90,5 +90,5 @@ python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
 部署时要注意：
 
 - `WEAVE_ENCRYPTION_KEY` 丢失后，已保存的 Key 和 Token 都无法解密，请安全备份。
-- 回复和提醒靠每分钟的 Cron 生成。`wrangler dev` 不会自动触发 Cron，要自己定时请求，见 [`docs/WECHAT.md`](docs/WECHAT.md)。
+- 回复和提醒靠每分钟的 Cron 生成。`wrangler dev` 不会触发 Cron，要在微信桥接里设 `WEAVE_TICK=1`，见 [`docs/WECHAT.md`](docs/WECHAT.md)。
 - 数据库访问每次都读取全部用户的数据，只适合早期规模。上线规模扩大前还需要索引、任务队列、负载测试和安全审计。
