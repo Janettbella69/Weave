@@ -352,3 +352,23 @@ test('我们这边出错（库读不了、存不进去）：回调照样 303 回
   assert.ok(!s.logs.join('\n').includes(CLIENT.clientSecret));
   assert.equal((await s.call('connections/notion')).data.state, 'disconnected', '什么都没存进去');
 });
+
+test('GET /api/status 的 settings.notionConfigured：网站配好了 Notion 授权才是 true，其余字段不变', async t => {
+  const configured = await setup(t);
+  const status = (await configured.call('status')).data;
+  assert.equal(status.settings.notionConfigured, true);
+  assert.deepEqual(Object.keys(status.settings).sort(), ['agent', 'model', 'notion', 'notionConfigured', 'verifiedAt', 'wechat']);
+  assert.equal(status.settings.notion, false);
+  // 三样缺一样都不算配好；没有配置对象也不算
+  for (const missing of ['clientId', 'clientSecret', 'redirectUri']) {
+    const s = await setup(t, {[missing]: '', publicOrigin: ''});
+    assert.equal((await s.call('status')).data.settings.notionConfigured, false, missing);
+  }
+  const none = new Request('https://weave.test/api/status');
+  const bare = await (await handleAPI(none, {db: new D1(), identity, secret})).json();
+  assert.equal(bare.settings.notionConfigured, false);
+  // 连上之后：notion 变 true，notionConfigured 不变
+  await configured.authorize([notionPage({title: '页面'})]);
+  const after = (await configured.call('status')).data.settings;
+  assert.deepEqual([after.notion, after.notionConfigured], [true, true]);
+});

@@ -122,6 +122,7 @@ scenario('一键连接，只分享了一个页面：同意之后直接连好', a
   check('旧接口 pending：已经没有待选的东西', pending.json?.ready === false && Array.isArray(pending.json?.pages) && pending.json.pages.length === 0, pending.json);
   const status = await get('status');
   check('GET /api/status：settings.notion 为 true', status.json?.settings?.notion === true);
+  check('GET /api/status：settings.notionConfigured 为 true（网站配好了 Notion 授权）', status.json?.settings?.notionConfigured === true, status.json?.settings);
   check('status 里没有 token', !JSON.stringify(status.json).includes(token));
   check('库里没有明文 token 和 client secret', !db.raw().includes(token) && !db.raw().includes(CLIENT.secret));
 
@@ -369,6 +370,7 @@ scenario('没有配置 Notion 的网站：连接不可用，回调回到 error�
   check('start：503「暂不可用」', started.status === 503 && /暂不可用/.test(started.json?.error), started.json);
   const state = await get('connections/notion');
   check('GET connections/notion：unavailable', state.json?.state === 'unavailable', state.json);
+  check('GET /api/status：settings.notionConfigured 为 false（前端据此藏起「连接」按钮）', (await get('status')).json?.settings?.notionConfigured === false);
   const cb = landing(await callback({ code: 'x', state: state32() }, {}, 'GET callback 网站没配置'));
   check('回调：error / missing_config', cb.status === 'error' && cb.detail === 'missing_config', cb);
   // 没有公开地址可用时，回到哪里取决于 Host 和 X-Forwarded-Proto

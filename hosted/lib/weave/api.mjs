@@ -3,7 +3,7 @@ import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import * as domain from './domain.mjs';
 import {modelClient,habitCouncil,DEFAULT_MODEL} from './model.mjs';
 import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from './notion.mjs';
-import {notionCallback,connectionState,finishNotion,listNotionPages,selectNotionPage,sweepNotionRuntime,forgetNotionRuntime,clearNotionSettings} from './notion-connect.mjs';
+import {notionCallback,notionConfigured,connectionState,finishNotion,listNotionPages,selectNotionPage,sweepNotionRuntime,forgetNotionRuntime,clearNotionSettings} from './notion-connect.mjs';
 import {hermesQueue} from './hermes-queue.mjs';
 import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction} from './proactivity.mjs';
 import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wechat.mjs';
@@ -92,7 +92,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     if(request.method==='GET'){
       await save();
-      if(path==='status')return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user'});
+      if(path==='status')return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user'});
       if(path==='connections/notion/pending'){
         const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now){if(value.reason)continue;return json({ready:true,pages:value.pages||[]});}delete world.runtime[key];}
         await save();return json({ready:false,pages:[]});

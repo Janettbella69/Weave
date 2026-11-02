@@ -43,6 +43,9 @@ export function chooseDefaultPage(pages){
  return ranked.find(page=>/weave/i.test(page.title))||ranked[0]||pages[0]||null;
 }
 
+// 网站有没有配好 Notion 授权（没配好时「连接」按钮点了也只会失败）。GET /api/status 的 settings.notionConfigured 也用它。
+export const notionConfigured=config=>!!(config?.clientId&&config?.clientSecret&&config?.redirectUri);
+
 // ---- 给前端看的状态 ----
 // state: connected | disconnected | needs_pages（授权了但没有可用的页面，带 reason）| unavailable（网站没配置 Notion）
 export function connectionState(world,person,ownerId,config,now){
@@ -53,7 +56,7 @@ export function connectionState(world,person,ownerId,config,now){
  }
  const pending=latestPending(world,ownerId,now);
  if(pending)return {state:'needs_pages',reason:pending.value.reason||(pending.value.pages?.length?'not_finished':'no_pages')};
- if(!config?.clientId||!config?.clientSecret||!config?.redirectUri)return {state:'unavailable'};
+ if(!notionConfigured(config))return {state:'unavailable'};
  return {state:'disconnected'};
 }
 
