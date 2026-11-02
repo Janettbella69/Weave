@@ -57,8 +57,15 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/AIAzora-v3 && 
 
 ## 5. Azora 的 nginx（只做一次）
 
-1. 合并 Azora 仓库里加 Weave 转发的那个 PR。它只加了 `weave.azorashopping.site` 的两个 server 块，Azora 原有的配置一行不动。
-2. 部署 Azora：GitHub 上打开 AIAzora-v3 → Actions → deploy → Run workflow，`deploy_ref` 选 `feat/ai-styling`。部署时会重建 Azora 的后端，**Azora 会断一两分钟**，挑人少的时候。部署最后会自动重载 nginx。
+1. **先测新配置。** Azora 的部署在 nginx 重载失败时会重启 nginx，配置有错 Azora 就会挂，所以一定先测。下面这条用一个一次性的 nginx 容器检查，不碰正在跑的 nginx：
+
+   ```
+   ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/AIAzora-v3 && git fetch -q origin feat/weave-subdomain && git show origin/feat/weave-subdomain:nginx.conf > /tmp/nginx-weave-test.conf && docker run --rm --network aiazora-v3_web --add-host host.docker.internal:host-gateway -v ~/AIAzora-v3/certbot/conf:/etc/letsencrypt:ro -v ~/AIAzora-v3/certbot/www:/var/www/certbot:ro -v /tmp/nginx-weave-test.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t'
+   ```
+
+   最后看到 `syntax is ok` 和 `test is successful` 才往下走。
+2. 合并 Azora 仓库里加 Weave 转发的那个 PR（AIAzora-v3 #5）。它只加了 `weave.azorashopping.site` 的两个 server 块，Azora 原有的配置一行不动。
+3. 部署 Azora：GitHub 上打开 AIAzora-v3 → Actions → deploy → Run workflow，`deploy_ref` 选 `feat/ai-styling`。部署时会重建 Azora 的后端，**Azora 会断一两分钟**，挑人少的时候。部署最后会自动重载 nginx。
 
 ## 6. 打开网站
 
