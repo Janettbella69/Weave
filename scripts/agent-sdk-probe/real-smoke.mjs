@@ -84,7 +84,6 @@ const options = {
   cwd: WORK,
   // 第 0 步还没有模型代理，真 Key 直接放在 ANTHROPIC_AUTH_TOKEN 这个位置。
   env: cliEnv({provider, model: provider.main, runToken: key, baseUrl, home: join(ROOT, 'home'), configDir: join(ROOT, 'config'), path: process.env.PATH}),
-  maxTurns: 8,
   maxBudgetUsd: 2,
   thinking: {type: 'disabled'},
 };

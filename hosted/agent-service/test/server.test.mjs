@@ -39,7 +39,7 @@ const wakeBody = (extra = {}) => ({
 });
 const post = (path, body, token = TOKEN) => fetch(service.url + path, {method: 'POST', headers: {'Content-Type': 'application/json', ...(token ? {Authorization: 'Bearer ' + token} : {})}, body: JSON.stringify(body)});
 const modelCalls = () => fake.captured.filter(c => c.path.startsWith('/v1/messages') && isMain(c.body));
-const fresh = route => { fake.captured.length = 0; weave.seen.length = 0; fake.script(route); };
+const fresh = (route, usage) => { fake.captured.length = 0; weave.seen.length = 0; fake.script(route, usage); };
 
 test('/health 不需要令牌；/wake、/forget 没有令牌或令牌错误时 401', async () => {
   assert.deepEqual(await (await fetch(service.url + '/health')).json(), {ok: true});
@@ -89,10 +89,11 @@ test('同一个人同一天第二次 /wake 接上会话；换一天开新会话'
   assert.notEqual(next.sessionId, one.sessionId);
 });
 
-test('这一轮出错（到了 maxTurns）就不接着用这段会话', async () => {
-  fresh(b => isMain(b) ? {tool: 'Bash', input: {command: 'echo loop', description: 'x'}} : {text: 't'});
+test('这一轮出错（熔断）就不接着用这段会话', async () => {
+  // owner 的熔断是 $2；这一轮的用量按 SDK 估价远超它（探针：80 万入 + 10 万出 ≈ $6.5）。
+  fresh(b => isMain(b) ? {tool: 'Bash', input: {command: 'echo loop', description: 'x'}} : {text: 't'}, {input: 800000, output: 100000});
   const failed = await (await post('/wake', wakeBody({id: 'u:erin'}))).json();
-  assert.equal(failed.outcome, 'error_max_turns');
+  assert.equal(failed.outcome, 'error_max_budget_usd');
   fresh(steps([{text: '重新开始'}]));
   const next = await (await post('/wake', wakeBody({id: 'u:erin'}))).json();
   assert.notEqual(next.sessionId, failed.sessionId);

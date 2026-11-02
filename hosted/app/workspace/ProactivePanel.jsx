@@ -12,11 +12,10 @@ export default function ProactivePanel({request,act,profile,onInvite,hasModel}){
   const save=e=>{e.preventDefault();run(async()=>{await request('proactivity/configure',{...draft,consent});setConsent(false);},'主动判断设置已保存');};
   const feedback=(s,action,minutes)=>run(()=>request('proactivity/action',{id:s.id,action,minutes}),({accept:'已接受，之后会按时跟进',snooze:'已延后跟进',complete:'已记录完成，结束本次跟进',dismiss:'已停止跟进这条建议'})[action]);
   return <>
-    <p className="eyebrow">NOTICE, ASK, FOLLOW THROUGH</p>
     <h1>该出现时出现，该安静时安静。</h1>
     <p className="muted">根据近期的生活线索判断下一步，先给出建议，由你决定是否行动。接受后才继续跟进。</p>
     <div className="banner"><span>{data.runtime.connected?'● 后台服务在线':'○ 后台服务未连接'} · {data.policy.enabled?'后台判断已开启':'后台判断已暂停'}</span>{data.runtime.lastSeenAt&&<small>最近连接：{format(data.runtime.lastSeenAt)}</small>}</div>
-    {!hasModel&&<p className="banner">请先在个人设置中连接 Personal Agent，后台判断才会开始。</p>}
+    {!hasModel&&<p className="banner">请先在个人设置中连接 Agent，后台判断才会开始。</p>}
     {data.policy.lastError&&<p className="banner error" role="alert">{data.policy.lastError}</p>}
     <form className="card" onSubmit={save}>
       <h2>让 Agent 帮你留意什么？</h2>

@@ -6,7 +6,7 @@ import {cliEnv} from './providers.mjs';
 import {weaveServer} from './mcp/tools.mjs';
 
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
-const LIMIT_OUTCOMES = ['error_max_turns', 'error_max_budget_usd'];
+const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 
 export async function wake({scope, trigger, memory = '', provider, model, runToken, isolation, rpc, sessionId, queryFn = sdkQuery}) {
   const tools = [];
@@ -33,7 +33,7 @@ export async function wake({scope, trigger, memory = '', provider, model, runTok
     ...(isolation.spawnClaudeCodeProcess ? {spawnClaudeCodeProcess: isolation.spawnClaudeCodeProcess} : {}),
     ...(isolation.sandbox ? {sandbox: isolation.sandbox} : {}),
     ...(sessionId ? {resume: sessionId} : {}),
-    maxTurns: scope.maxTurns,
+    // 不设轮数上限（教材 p.22、p.26）；兜底是 maxBudgetUsd 熔断和 10 分钟超时。
     maxBudgetUsd: scope.circuitBreakerUsd,
     thinking: {type: 'disabled'},
     // 失败的工具调用不触发 PostToolUse，要另挂 PostToolUseFailure，审计才不漏（实测）。
@@ -48,7 +48,7 @@ export async function wake({scope, trigger, memory = '', provider, model, runTok
       if (message.type === 'result') last = message;
     }
   } catch (error) {
-    // maxTurns 和预算到了也会抛错，这时 last 里有原因（实测）。
+    // 预算到了会抛错，这时 last 里有原因（实测）。
     failure = error;
   } finally {
     clearTimeout(timer);
