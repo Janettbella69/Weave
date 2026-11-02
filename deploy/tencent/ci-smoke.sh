@@ -54,6 +54,19 @@ unknown=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Conte
 [ "$unknown" = 401 ] || { echo "FAIL 别的 /api/internal/ 地址没带密码应该是 401：HTTP $unknown"; exit 1; }
 echo "PASS 别的内部地址照样要密码"
 
+# Worker 没读完请求体就回答时，wrangler dev 的代理转发会失败：POST 收到 503，路径是 / 时 wrangler 直接退出。
+# 网站入口先读完请求体（hosted/lib/weave/request-body.mjs）。修之前本机每次约两到三成失败，60 次几乎必然露馅。
+bad=0
+for _ in $(seq 30); do
+  for p in /api/internal/x /; do
+    c=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"x":1}' "$url$p" || true)
+    [ "$c" = 401 ] || bad=$((bad + 1))
+  done
+done
+alive=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' "$url/" || true)
+[ "$bad" = 0 ] && [ "$alive" = 401 ] || { echo "FAIL 带请求体的 POST 有 $bad 次不是 401，网站现在回 HTTP $alive"; exit 1; }
+echo "PASS 带请求体的 POST 连发 60 次都是 401，网站还在"
+
 # 关掉后 wrangler 对这个地址不回答（会一直挂着），所以设短超时；只要不返回 200（不吐数据）就算关着。
 explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
