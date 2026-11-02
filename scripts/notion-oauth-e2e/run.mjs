@@ -189,6 +189,8 @@ scenario('授权了，但没有勾选任何页面：给出明确的状态，不�
   check('库里的待办没有明文 token', !db.raw().includes(token));
   const state = await get('connections/notion');
   check('GET connections/notion：needs_pages / no_pages', state.json?.state === 'needs_pages' && state.json?.reason === 'no_pages', state.json);
+  const legacy = await get('connections/notion/pending');
+  check('旧接口 pending：没有页面可选，不是 ready', legacy.json?.ready === false && legacy.json?.pages?.length === 0, legacy.json);
   check('status.settings.notion 仍为 false', (await get('status')).json?.settings?.notion === false);
   const again = await post('connections/notion/finish');
   check('什么都没分享时 finish 还是 needs_pages', again.status === 200 && again.json?.state === 'needs_pages', again.json);

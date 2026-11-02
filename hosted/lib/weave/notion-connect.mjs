@@ -4,8 +4,7 @@
 //   所以 Weave 只用这些页面。勾了一个就用它；勾了好几个就按 chooseDefaultPage 选一个，之后可以改；一个都没勾就明确告诉前端。
 // - token 在这里加密后存进本人的设置，不进浏览器，不进日志。
 // - 回调永远 303 回到网站（成功和失败都是），失败带 detail，页面不会空白。
-import {withWorld} from './store.mjs';
-import {Store} from './store.mjs';
+import {Store,withWorld} from './store.mjs';
 import {hash,seal,unseal} from './crypto.mjs';
 import {fail} from './domain.mjs';
 import {NotionClient,exchangeNotionOAuth,scrubNotionError,sameNotionId as sameId} from './notion.mjs';
@@ -109,7 +108,13 @@ function redirectBack(request,config,status,detail){
  return new Response(null,{status:303,headers:{Location:location,'Cache-Control':'no-store'}});
 }
 
-export async function notionCallback(request,{db,secret,fetcher=fetch,notionOAuth,now=Date.now()}){
+// Whatever goes wrong on our side (database down, a bug), the browser still gets a redirect with a reason, never a bare JSON error.
+export async function notionCallback(request,context){
+ try{return await handleCallback(request,context);}
+ catch(error){console.error('notion_callback_failed',scrubNotionError(error&&error.message||error,context.notionOAuth));return redirectBack(request,context.notionOAuth,'error','server_error');}
+}
+
+async function handleCallback(request,{db,secret,fetcher=fetch,notionOAuth,now=Date.now()}){
  const requestURL=new URL(request.url),redirect=(status,detail='')=>redirectBack(request,notionOAuth,status,detail);
  if(request.method!=='GET'||!db||!notionOAuth?.clientId||!notionOAuth?.clientSecret||!notionOAuth?.redirectUri||!validSecret(secret))return redirect('error','missing_config');
  const code=requestURL.searchParams.get('code'),state=requestURL.searchParams.get('state'),providerError=requestURL.searchParams.get('error');
@@ -140,7 +145,7 @@ export async function notionCallback(request,{db,secret,fetcher=fetch,notionOAut
    return result.connected?{status:'connected'}:{status:'error',detail:result.reason};
   });
   return redirect(outcome.status,outcome.detail);
- }catch(error){console.error('notion_oauth_save_failed',scrubNotionError(error&&error.message||error,notionOAuth,code));return redirect('error','save_failed');}
+ }catch(error){console.error('notion_oauth_save_failed',scrubNotionError(error&&error.message||error,notionOAuth,code));return redirect('error','server_error');}
 }
 
 // ---- 已登录用户的接口（api.mjs 把路由接到这里）----

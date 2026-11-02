@@ -27,10 +27,10 @@ async function setup(t, oauth = {}) {
   console.error = (...args) => { logs.push(args.join(' ')); };
   t.after(() => { console.error = original; });
   let clock = NOW;
-  async function call(path, data, {who = identity, headers = {}, method} = {}) {
+  async function call(path, data, {who = identity, headers = {}, method, useDb = db} = {}) {
     const verb = method || (data === undefined ? 'GET' : 'POST');
     const request = new Request('https://weave.test/api/' + path, {method: verb, ...(verb === 'POST' ? {headers: {'Content-Type': 'application/json', Origin: 'https://weave.test', ...headers}, body: JSON.stringify(data ?? {})} : {headers})});
-    const response = await handleAPI(request, {db, identity: who, secret, fetcher, notionOAuth, now: clock});
+    const response = await handleAPI(request, {db: useDb, identity: who, secret, fetcher, notionOAuth, now: clock});
     return {status: response.status, location: response.headers.get('location'), data: response.status === 303 ? null : await response.json()};
   }
   const landing = result => { const url = new URL(result.location); return {origin: url.origin, status: url.searchParams.get('status'), detail: url.searchParams.get('detail')}; };
@@ -121,6 +121,7 @@ test('授权了但一个页面都没勾：回调回 no_pages，状态 needs_page
   const {token, result} = await s.authorize([]);
   assert.deepEqual(result, {origin: 'https://weave.test', status: 'error', detail: 'no_pages'});
   assert.deepEqual((await s.call('connections/notion')).data, {state: 'needs_pages', reason: 'no_pages'});
+  assert.deepEqual((await s.call('connections/notion/pending')).data, {ready: false, pages: []}, '旧的 pending 只在真有页面可选时才 ready');
   assert.equal((await s.call('status')).data.settings.notion, false);
   assert.ok(!s.raw().includes(token), 'the saved authorization is encrypted');
   assert.deepEqual((await s.call('connections/notion/finish', {})).data, {state: 'needs_pages', reason: 'no_pages'});
@@ -319,4 +320,35 @@ test('计划同步写到用户的页面下面，用的是这个用户自己的 t
   assert.match(JSON.stringify(s.fake.written[0].children), /降低强度/);
   assert.equal((await s.call('plans/sync', {id: 'p1'})).status, 200);
   assert.equal(s.fake.written.length, 1, '同步过的计划不会再写一次');
+});
+
+// 一个表现得像真的 D1 的库，但写入（提交修订号那条语句）会失败。
+function failingWrites(real) {
+  return {
+    prepare: query => { const statement = real.prepare(query); statement.sql = query; return statement; },
+    batch: statements => { if (statements.some(statement => /^UPDATE weave_commits/.test(statement.sql || ''))) throw Error('D1_ERROR: disk full'); return real.batch(statements); },
+  };
+}
+
+test('我们这边出错（库读不了、存不进去）：回调照样 303 回到网站，说明是 server_error，不是一页 JSON；日志里没有密钥', async t => {
+  const s = await setup(t);
+  const {code, state} = await (async () => {
+    const started = await s.call('connections/notion/start', {});
+    const state = new URL(started.data.url).searchParams.get('state');
+    const code = 'code-db-down';
+    s.fake.grant(code, {pages: [notionPage({title: '写不进去'})]});
+    return {code, state};
+  })();
+  const unreadable = {prepare() { throw Error('D1_ERROR: database is down'); }, batch() { throw Error('D1_ERROR: database is down'); }};
+  const down = await s.call('connections/notion/callback?' + new URLSearchParams({code, state}), undefined, {who: null, useDb: unreadable});
+  assert.equal(down.status, 303);
+  assert.deepEqual(s.landing(down), {origin: 'https://weave.test', status: 'error', detail: 'server_error'});
+  // 换完 token、搜完页面，最后一步存不进去
+  s.fake.grant('code-save-fails', {pages: [notionPage({title: '存不进去'})]});
+  const second = await s.call('connections/notion/callback?' + new URLSearchParams({code: 'code-save-fails', state}), undefined, {who: null, useDb: failingWrites(s.db)});
+  assert.equal(second.status, 303);
+  assert.equal(s.landing(second).detail, 'server_error');
+  assert.ok(s.logs.some(line => line.startsWith('notion_oauth_save_failed')));
+  assert.ok(!s.logs.join('\n').includes(CLIENT.clientSecret));
+  assert.equal((await s.call('connections/notion')).data.state, 'disconnected', '什么都没存进去');
 });
