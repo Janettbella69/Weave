@@ -103,7 +103,7 @@ test('each user owns their Notion memory and confirmed plan sync is idempotent',
  await h.api('Alice','plans/approve',{id:plan.id});await h.api('Alice','plans/sync',{id:plan.id});await h.api('Alice','plans/sync',{id:plan.id});
  const writes=h.requests.filter(r=>r.url==='https://api.notion.com/v1/pages');assert.equal(writes.length,1);assert.equal(writes[0].options.headers.Authorization,'Bearer ntn-private-alice-token');assert.ok(!JSON.stringify((await h.api('Bob','export')).data).includes('NOTION_PRIVATE_MEMORY'));assert.ok(!JSON.stringify((await h.api('Alice','status')).data).includes('ntn-private-alice-token'));
 });
-test('Notion one-click OAuth keeps the token server-side and lets the owner choose a page',async()=>{
+test('Notion one-click OAuth keeps the token server-side and connects the shared page without a second step',async()=>{
  const db=new D1(),oauth={clientId:'notion-client',clientSecret:'notion-secret',redirectUri:'https://weave.test/api/connections/notion/callback'},requests=[];
  const fetcher=async(url,options)=>{
   requests.push({url,options});
@@ -117,10 +117,10 @@ test('Notion one-click OAuth keeps the token server-side and lets the owner choo
   return {status:response.status,data:response.status===303?response.headers.get('location'):await response.json()};
  };
  const started=await call('Alice','connections/notion/start',{});assert.equal(started.status,200);const authURL=new URL(started.data.url),state=authURL.searchParams.get('state');assert.match(state,/^[a-f0-9]{48}$/);
- const callback=await call(null,'connections/notion/callback?code=oauth-code&state='+state);assert.equal(callback.status,303);assert.match(callback.data,/status=ready/);
- const pending=await call('Alice','connections/notion/pending');assert.deepEqual(pending.data.pages,[{id:'123456781234123412341234567890ab',title:'我的长期记忆',url:'https://notion.so/private-page'}]);
- const completed=await call('Alice','connections/notion/complete',{pageId:pending.data.pages[0].id});assert.equal(completed.status,200);
+ const callback=await call(null,'connections/notion/callback?code=oauth-code&state='+state);assert.equal(callback.status,303);assert.match(callback.data,/status=connected/);
+ const pending=await call('Alice','connections/notion/pending');assert.deepEqual(pending.data,{ready:false,pages:[]});
  const status=await call('Alice','status');assert.equal(status.data.settings.notion,true);assert.equal(JSON.stringify(status.data).includes('ntn-oauth-private-token'),false);
+ assert.deepEqual((await call('Alice','connections/notion')).data,{state:'connected',page:{title:'我的长期记忆'}});
  const raw=JSON.stringify(db.sql.prepare('SELECT * FROM weave_documents').all());assert.equal(raw.includes('ntn-oauth-private-token'),false);assert.equal(requests.filter(x=>x.url==='https://api.notion.com/v1/oauth/token').length,1);
  assert.equal((await call('Alice','connections/notion/disconnect',{})).status,200);assert.equal((await call('Alice','status')).data.settings.notion,false);
 });

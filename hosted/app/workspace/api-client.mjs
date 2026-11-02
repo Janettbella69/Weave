@@ -1,6 +1,6 @@
 // Calls to /api/*, shared by the workspace. Pure of React so it can be tested with a fake fetch.
 
-const GET_PATHS = new Set(['status', 'connections/notion/pending', 'wechat', 'memory', 'proactivity', 'export', 'calendar.ics']);
+const GET_PATHS = new Set(['status', 'connections/notion', 'connections/notion/pending', 'connections/notion/pages', 'wechat', 'memory', 'proactivity', 'export', 'calendar.ics']);
 const RELOAD_KEY = 'weave:reloaded-for-401';
 
 export class ApiError extends Error {
