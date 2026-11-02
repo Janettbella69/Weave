@@ -2,8 +2,9 @@ import {Store} from './store.mjs';
 import {hash,unseal} from './crypto.mjs';
 import {deliverReminders,fail} from './domain.mjs';
 import {claimAssessment,receiveAssessment,HERMES_REVISION,ASSESSMENT_SYSTEM} from './proactivity.mjs';
+import {spendManagedCall} from './budget.mjs';
 
-export async function hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,readBody,now=Date.now()}){
+export async function hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody,now=Date.now()}){
   const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   try{
     if(typeof runnerToken!=='string'||runnerToken.length<32||await hash(request.headers.get('authorization')||'')!==await hash('Bearer '+runnerToken))return json({error:'未授权'},401);
@@ -18,6 +19,7 @@ export async function hermesQueue(request,{db,secret,runnerToken,agentProviderAp
       const person=world.people[job.run.owner];
       const apiKey=person.settings.deepseekKey?await unseal(person.settings.deepseekKey,secret,person.id):typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12?agentProviderApiKey:'';
       if(!apiKey)fail('Agent 连接暂不可用，请稍后重试',428);
+      if(!person.settings.deepseekKey)spendManagedCall(world,person.id,modelBudget,now);
       await store.save(world);
       return json({job:{...job,apiKey,model:person.settings.model,system:ASSESSMENT_SYSTEM}});
     }

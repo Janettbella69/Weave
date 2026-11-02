@@ -7,6 +7,8 @@ declare namespace Cloudflare {
     AGENT_PROVIDER_API_KEY?: string;
     HERMES_RUNNER_TOKEN?: string;
     WECHAT_BRIDGE_TOKEN?: string;
+    AGENT_DAILY_CALLS_PER_ACCOUNT?: string;
+    AGENT_DAILY_CALLS_TOTAL?: string;
     NOTION_OAUTH_CLIENT_ID?: string;
     NOTION_OAUTH_CLIENT_SECRET?: string;
     NOTION_OAUTH_REDIRECT_URI?: string;

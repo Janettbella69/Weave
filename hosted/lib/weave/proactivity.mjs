@@ -1,5 +1,6 @@
 import {hash} from './crypto.mjs';
 import {calendar,friends,record,notify,fail} from './domain.mjs';
+import {SAFETY_RULES} from './model.mjs';
 
 const stamp=now=>new Date(now).toISOString();
 export const HERMES_REVISION='f30105a0b4b3d0c1baa6c464189755ccdbc1ac7f';
@@ -17,7 +18,7 @@ export function activeNow(person,now){const p=proactiveState(person),current=loc
 function nextActive(person,now){for(let offset=0;offset<1500;offset+=15)if(activeNow(person,now+offset*60000))return now+offset*60000;return now+86400000;}
 export function configureProactivity(person,input,connected,now=Date.now()){
   const previous=proactiveState(person),enabled=input.enabled===true;
-  if(enabled&&(input.consent!==true||!connected))fail(!connected?'Hermes 执行器尚未在线，请先启动执行器':'请明确授权 Hermes 使用个人上下文进行后台判断',428);
+  if(enabled&&(input.consent!==true||!connected))fail(!connected?'后台判断服务暂时不在线，请稍后再试':'请明确授权 Weave 使用你的个人资料做后台判断',428);
   if(!['discover','goal'].includes(input.mode))fail('请选择主动发现或持续目标');
   const goal=typeof input.goal==='string'?input.goal.trim():'';
   if(goal.length>1000||(input.mode==='goal'&&!goal))fail('请填写1–1000字的持续目标');
@@ -77,7 +78,7 @@ discover 模式可以从明确的近期证据推断一个低风险下一步，�
 goal 模式持续推进明确目标。若已有 followUp，只能决定是否询问该事项的实际进展，不能再提出另一件事。用户未回复不等于未完成。
 只返回 JSON：{"decision":"quiet|suggest|follow_up","confidence":0.0,"whyNow":"为什么现在介入或保持安静","evidenceIds":["facts中的ID"],"message":"给用户的简短建议或问题","proposal":{"kind":"small_action|invite|clarify","activity":"支持的活动或空字符串","peerId":"已有朋友ID或空字符串"},"followUpMinutes":1440}。
 没有新证据、建议重复、用户已拒绝或证据不确定时选择 quiet。suggest 必须有近期事实支撑，confidence 至少0.8。follow_up 必须引用已有事项，不得断言它失败了。
-不能发邀请、创建预约、确认方案、发送外部消息、改动目标或执行系统命令。所有实际行动均需用户后续明确操作。禁止输出虚构的执行结果。`;
+不能发邀请、创建预约、确认方案、发送外部消息、改动目标或执行系统命令。所有实际行动均需用户后续明确操作。禁止输出虚构的执行结果。${SAFETY_RULES}`;
 function audit(p,item){p.assessments.push(item);p.assessments=p.assessments.slice(-30);}
 export async function receiveAssessment(world,input,now=Date.now()){
   const person=world.people[input.owner];if(!person)fail('任务不存在',404);
@@ -86,7 +87,7 @@ export async function receiveAssessment(world,input,now=Date.now()){
   const run=p.currentRun;
   if(!run||run.leaseId!==input.leaseId||run.owner!==input.owner||!p.enabled||run.revision!==p.revision||run.expiresAt<now)fail('任务已过期、暂停或授权发生变化',409);
   const finish=(outcome,detail)=>{p.currentRun=null;p.lastCheckedAt=now;p.nextCheckAt=now+p.intervalMinutes*60000;p.receipts.push({leaseId:run.leaseId,at:now});p.receipts=p.receipts.slice(-20);audit(p,{at:now,outcome,detail});};
-  if(input.error){p.lastError='Hermes 判断失败，将按退避间隔重试；没有发送新消息';finish('error',p.lastError);p.nextCheckAt=now+Math.max(p.intervalMinutes,30)*60000;return {ok:true,delivered:false};}
+  if(input.error){p.lastError='后台判断失败，稍后会重试，没有发送新消息';finish('error',p.lastError);p.nextCheckAt=now+Math.max(p.intervalMinutes,30)*60000;return {ok:true,delivered:false};}
   const d=input.decision;
   if(!d||!['quiet','suggest','follow_up'].includes(d.decision)||typeof d.confidence!=='number'||!Number.isFinite(d.confidence)||d.confidence<0||d.confidence>1||typeof d.whyNow!=='string'||!d.whyNow.trim()||d.whyNow.length>1000)fail('Hermes 判断格式不完整',422);
   const fresh=await observation(world,person,now);

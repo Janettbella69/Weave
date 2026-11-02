@@ -102,6 +102,21 @@ export function decline(world,n,id){
 }
 export function invalidate(world,id){for(const n of Object.values(world.negotiations)){if(n.participants.includes(id)&&['awaiting_consent','awaiting_confirmation'].includes(n.status)){n.revision++;n.status='awaiting_consent';n.consents={};n.confirmations={};n.candidate=null;event(n,'coordinator','invalidate','个人安排发生变化，请双方重新授权。');for(const p of n.participants)notify(world,p,'可用安排已更新，旧方案失效，请重新授权。');}}}
 export function publicNegotiation(n,id){return {id:n.id,participants:n.participants,activity:n.activity,status:n.status,revision:n.revision,candidate:n.candidate,confirmations:n.confirmations,authorized:!!n.consents[id],events:n.events,createdAt:n.createdAt};}
+// Removes everything belonging to one account. Shared plans are cancelled for the other
+// person, since the document that holds them names both participants.
+export function deleteAccount(world,id){
+  for(const n of Object.values(world.negotiations)){
+    if(!n.participants.includes(id))continue;
+    if(['awaiting_consent','awaiting_confirmation','confirmed'].includes(n.status))for(const peer of n.participants)if(peer!==id&&world.people[peer])notify(world,peer,'对方已删除账号，你们一起'+n.activity+'的安排已取消。');
+    delete world.negotiations[n.id];
+  }
+  for(const [key,link] of Object.entries(world.links))if(link.members.includes(id))delete world.links[key];
+  for(const [key,invite] of Object.entries(world.invites))if(invite.from===id||invite.usedBy===id)delete world.invites[key];
+  const groups=new Set();
+  for(const [key,value] of Object.entries(world.runtime||{}))if(value?.ownerId===id){if(key.startsWith('wechat-group:'))groups.add(key);delete world.runtime[key];}
+  for(const [key,entry] of Object.entries(world.wechat||{}))if(entry.ownerId===id||groups.has(entry.groupAad))delete world.wechat[key];
+  delete world.people[id];
+}
 export function addReminder(person,input){
   if(typeof input.text!=='string'||!input.text.trim()||input.text.length>500||!validTime(input.dueAt))fail('请输入1–500字提醒内容和有效的未来时间');
   const item={id:crypto.randomUUID(),text:input.text.trim(),dueAt:new Date(input.dueAt).toISOString(),status:'scheduled',createdAt:timestamp()};person.reminders.push(item);return item;

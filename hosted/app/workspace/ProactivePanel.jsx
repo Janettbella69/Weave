@@ -12,10 +12,10 @@ export default function ProactivePanel({request,act,profile,onInvite,hasModel}){
   const save=e=>{e.preventDefault();run(async()=>{await request('proactivity/configure',{...draft,consent});setConsent(false);},'主动判断设置已保存');};
   const feedback=(s,action,minutes)=>run(()=>request('proactivity/action',{id:s.id,action,minutes}),({accept:'已接受，之后会按时跟进',snooze:'已延后跟进',complete:'已记录完成，结束本次跟进',dismiss:'已停止跟进这条建议'})[action]);
   return <>
-    <p className="eyebrow">HERMES · NOTICE, ASK, FOLLOW THROUGH</p>
+    <p className="eyebrow">NOTICE, ASK, FOLLOW THROUGH</p>
     <h1>该出现时出现，该安静时安静。</h1>
     <p className="muted">根据近期的生活线索判断下一步，先给出建议，由你决定是否行动。接受后才继续跟进。</p>
-    <div className="banner"><span>{data.runtime.connected?'● Hermes 执行器在线':'○ Hermes 执行器未连接'} · {data.policy.enabled?'后台判断已开启':'后台判断已暂停'}</span>{data.runtime.lastSeenAt&&<small>最近连接：{format(data.runtime.lastSeenAt)}</small>}</div>
+    <div className="banner"><span>{data.runtime.connected?'● 后台服务在线':'○ 后台服务未连接'} · {data.policy.enabled?'后台判断已开启':'后台判断已暂停'}</span>{data.runtime.lastSeenAt&&<small>最近连接：{format(data.runtime.lastSeenAt)}</small>}</div>
     {!hasModel&&<p className="banner">请先在个人设置中连接 Personal Agent，后台判断才会开始。</p>}
     {data.policy.lastError&&<p className="banner error" role="alert">{data.policy.lastError}</p>}
     <form className="card" onSubmit={save}>
@@ -26,12 +26,12 @@ export default function ProactivePanel({request,act,profile,onInvite,hasModel}){
       <div className="form-grid"><label>允许打扰的开始时间<input type="time" required value={draft.activeStart} onChange={e=>setDraft({...draft,activeStart:e.target.value})}/></label><label>允许打扰的结束时间<input type="time" required value={draft.activeEnd} onChange={e=>setDraft({...draft,activeEnd:e.target.value})}/></label></div>
       <p className="muted">时间按 {profile.timezone} 计算。安静时段不发主动消息；没有新线索时保持安静。每天最多6次后台判断。</p>
       <label className="checkbox"><input type="checkbox" checked={draft.enabled} disabled={!data.runtime.connected||!hasModel} onChange={e=>setDraft({...draft,enabled:e.target.checked})}/>开启后台主动判断与持续跟进</label>
-      {draft.enabled&&<label className="checkbox"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>我授权 Hermes 执行器读取本人的目标、偏好、近期聊天与反馈、可用时间和已确认日程，在后台判断是否需要提醒。涉及朋友的邀请仍需我另行授权并由双方确认。</label>}
+      {draft.enabled&&<label className="checkbox"><input type="checkbox" required checked={consent} onChange={e=>setConsent(e.target.checked)}/>我授权 Weave 在后台读取本人的目标、偏好、近期聊天与反馈、可用时间和已确认日程，并发给 DeepSeek 判断是否需要提醒。涉及朋友的邀请仍需我另行授权并由双方确认。</label>}
       <div className="actions"><button type="submit" className="primary">保存主动判断设置</button>{data.policy.enabled&&<button type="button" onClick={()=>run(async()=>{await request('proactivity/configure',{...data.policy,enabled:false,consent:false});setDraft({...data.policy,enabled:false});},'已暂停，新判断与消息不会继续执行')}>暂停后台判断</button>}<button type="button" onClick={()=>run(async()=>{await request('proactivity/stop',{});setDraft({...data.policy,enabled:false});},'已停止，并结束当前跟进')}>停止并结束全部跟进</button></div>
       <p className="muted">判断和跟进由独立执行器运行，网页关闭后可继续。执行器离线时暂停，恢复后从数据库续接。它不会自动给朋友发消息或代你确认安排。</p>
     </form>
     <h2>等待决定与正在跟进</h2>
-    {!data.suggestions.length&&<p className="empty">目前没有建议。开启后，只有出现足够明确、值得介入的线索，Hermes 才会主动出现。</p>}
+    {!data.suggestions.length&&<p className="empty">目前没有建议。开启后，只有出现足够明确、值得介入的线索，我才会主动出现。</p>}
     {data.suggestions.slice().reverse().map(s=>{
       const open=['awaiting_response','accepted','snoozed'].includes(s.status);
       const evidence=[...new Set(s.evidenceIds.map(id=>id.startsWith('feedback:')?'近期反馈':id.startsWith('message:')?'最近聊天':id.startsWith('slot:')?'未来空闲':id.startsWith('event:')?'已确认日程':id.startsWith('suggestion:')?'之前的决定':'个人目标与偏好'))];

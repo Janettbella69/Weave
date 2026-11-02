@@ -26,7 +26,7 @@ export default function LandingMarketing({ returnTo }: Props) {
 
       <div className="landing-hero-band">
         <div className="landing-container landing-hero">
-          <p className="eyebrow">产品宣传 · 个人 Agent 工作台</p>
+          <p className="eyebrow">个人习惯 Agent</p>
           <h1>
             找到自己的节奏，
             <br />
@@ -42,8 +42,11 @@ export default function LandingMarketing({ returnTo }: Props) {
               直接开始，进入我的空间
             </a>
             <p className="muted landing-hero-note">
-              无需注册 · 数据保存在当前浏览器 · 支持好友邀请链接（join）自动回跳 ·
-              也可{" "}
+              无需注册 · 数据保存在 Weave 的服务器上，消息会发给 DeepSeek 生成回复 ·{" "}
+              <Link className="inline-link" href="/privacy">
+                隐私说明
+              </Link>{" "}
+              · 也可{" "}
               <a className="inline-link" href={chatgptHref} target="_top">
                 使用 ChatGPT 登录
               </a>
@@ -105,7 +108,7 @@ export default function LandingMarketing({ returnTo }: Props) {
             <li>
               <span className="landing-feature-title">多通道可选</span>
               <span className="landing-feature-desc">
-                网页、微信提醒、Notion——按需连接，随时断开。
+                网页和 Notion 按需连接，随时断开。微信还在测试。
               </span>
             </li>
           </ul>
@@ -122,7 +125,7 @@ export default function LandingMarketing({ returnTo }: Props) {
               </span>
               <div>
                 <strong>直接开始</strong>
-                <p>进入个人空间，在 Channels 连接 Personal Agent（可选 ChatGPT 登录）。</p>
+                <p>进入个人空间，连接 Agent 后就能开始聊。</p>
               </div>
             </li>
             <li>
@@ -150,7 +153,7 @@ export default function LandingMarketing({ returnTo }: Props) {
       <div className="landing-cta-band">
         <div className="landing-container landing-cta-strip">
           <h2>今天就开始你的 Agent 工作台</h2>
-          <p>免费使用核心聊天与协作；高级通道连接由你决定。</p>
+          <p>目前免费使用，每天的模型调用有上限。</p>
           <a className="button primary" href={startHref}>
             直接开始
           </a>
@@ -158,7 +161,12 @@ export default function LandingMarketing({ returnTo }: Props) {
       </div>
 
       <footer className="landing-container landing-foot">
-        <p>Weave · 由你授权，由你决定。</p>
+        <p>
+          Weave · 由你授权，由你决定。 ·{" "}
+          <Link className="inline-link" href="/privacy">
+            隐私说明
+          </Link>
+        </p>
         <p className="muted">个人 Agent · Agent 协作 · 记忆与日程</p>
       </footer>
     </main>
