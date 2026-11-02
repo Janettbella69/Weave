@@ -41,7 +41,7 @@ test('今天还没记不打断连续天数，昨天也没记才断', () => {
 test('直接读 weave.db：今天取 meta 里的，结果带习惯名', async () => {
   const root = mkdtempSync(join(tmpdir(), 'weave-stats-db-'));
   mkdirSync(join(root, 'workspace'));
-  const {dbPath} = await writeSnapshot({workspace: join(root, 'workspace')}, validateSnapshot({
+  const {dbPath} = await writeSnapshot(join(root, 'workspace', 'weave'), validateSnapshot({
     version: 1, today: '2026-11-02', timezone: 'Asia/Shanghai',
     tables: {
       habits: [{habit_id: 'h:walk', name: '走路'}, {habit_id: 'h:read', name: '读书'}],

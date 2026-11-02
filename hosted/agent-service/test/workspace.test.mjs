@@ -29,6 +29,8 @@ test('不同的人目录不重叠；id 里有 ../ 也跑不出数据目录', () 
   assert.notEqual(a.root, b.root);
   for (const dirs of [a, b, evil]) for (const dir of Object.values(dirs)) assert.ok(inside(data, dir), dir);
   assert.notEqual(scopeDirs(data, 'group', 'u:alice').root, a.root);
+  // 快照目录在这个人的根目录里、工作目录外：容器挂不到它的可写副本。
+  assert.ok(inside(a.root, a.snapshot) && !inside(a.workspace, a.snapshot), a.snapshot);
   assert.throws(() => scopeDirs(data, 'research', 'u:alice'));
   assert.throws(() => scopeDirs(data, 'owner', ''));
 });

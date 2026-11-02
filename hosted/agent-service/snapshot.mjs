@@ -1,12 +1,17 @@
 // 叫醒前的数据快照（docs/ARCHITECTURE.md 第 10 节）。教材 p.16「查数留SQL,不要封成MCP」；
 // p.20 代码合法的位置之一「Agent启动之前 预处理。不在循环中间,不影响灵活性」。
-// Weave 服务按这一轮的通行证给一份 JSON，这里写成 <工作目录>/weave/：
+// Weave 服务按这一轮的通行证给一份 JSON，这里写成一个快照目录：
 //   weave.db  SQLite：meta，加上快照里给了的表（habits、completions、group_messages）
 //   其他文件  比如 notion/*.md
-// 每次叫醒前删掉重建，Agent 在里面改的东西带不到下一轮；要改数据走 weave 工具。
+// docker：快照目录在工作目录外（scopeDirs 的 snapshot），只读挂到容器的 /workspace/weave。
+//   Agent 改不到它，写入后的同步也只碰宿主自己的文件（审查发现：同步若打开 Agent 改得到的
+//   weave.db，Agent 埋个触发器就能卡住整个服务）。
+// local（只用于本机开发）：快照目录就在工作目录里的 weave/。
+// 每次叫醒前整个换掉，Agent 在里面改的东西带不到下一轮；要改数据走 weave 工具。
+import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
-import {lstat, mkdir, rm, writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
+import {lstat, mkdir, readdir, rename, rm, writeFile} from 'node:fs/promises';
+import {dirname, join} from 'node:path';
 import {makeRemovable} from './workspace.mjs';
 
 export const SNAPSHOT_DIR = 'weave';
@@ -65,12 +70,26 @@ export async function fetchSnapshot({weaveUrl, capability, fetcher = fetch, time
 const segmentOk = segment => segment.length > 0 && segment !== '.' && segment !== '..' && !/[\\\0]/.test(segment)
   && Buffer.byteLength(segment) <= LIMITS.segmentBytes;
 
-// Agent 能把 weave/ 换成指向别处的链接：是链接就只删链接（rm 不跟随），不去改目标的权限。
-async function clear(dir) {
-  const info = await lstat(dir).catch(() => null);
+// 把旧的整个挪到 trashDir（在工作目录外），再在后台尽力删。rename 一步完成、不跟随链接，
+// 目录链再深也挪得走；后台删不掉只是留点垃圾，不会让这个人以后都叫不醒（审查发现）。
+// 调用时这一轮的容器已经删掉（removeContainer），没有进程能再动它。
+async function moveAside(path, trashDir) {
+  const info = await lstat(path).catch(() => null);
   if (!info) return;
-  if (info.isDirectory()) await makeRemovable(dir);
-  await rm(dir, {recursive: true, force: true});
+  const trash = join(trashDir, `.trash-${randomUUID()}`);
+  await rename(path, trash);
+  (async () => {
+    if (info.isDirectory()) await makeRemovable(trash);
+    await rm(trash, {recursive: true, force: true});
+  })().catch(error => console.error('Agent service: old snapshot left behind:', error instanceof Error ? error.message : 'unknown'));
+}
+
+// docker 的挂载点 <工作目录>/weave 必须是一个空的真目录：旧版留下的快照、文件、链接都挪走。
+export async function prepareMountpoint(path, trashDir) {
+  const info = await lstat(path).catch(() => null);
+  if (info?.isDirectory() && (await readdir(path).catch(() => ['?'])).length === 0) return;
+  await moveAside(path, trashDir);
+  await mkdir(path, {mode: 0o700});
 }
 
 function writeDatabase(dbPath, snapshot, now) {
@@ -94,9 +113,8 @@ function writeDatabase(dbPath, snapshot, now) {
   }
 }
 
-export async function writeSnapshot(dirs, snapshot, now = Date.now()) {
-  const dir = join(dirs.workspace, SNAPSHOT_DIR);
-  await clear(dir);
+export async function writeSnapshot(dir, snapshot, now = Date.now(), {trashDir = dirname(dir)} = {}) {
+  await moveAside(dir, trashDir);
   await mkdir(dir, {mode: 0o700});
   const dbPath = join(dir, DB_FILE);
   writeDatabase(dbPath, snapshot, now);

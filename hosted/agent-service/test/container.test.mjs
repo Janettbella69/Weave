@@ -38,7 +38,7 @@ before(async () => {
     {tool: 'Write', input: {file_path: '/workspace/MEMORY.md', content: '周末早上更容易走路\n'}},
     {tool: 'Bash', input: {command: 'echo x > /etc/weave-test; echo ETC=$?', description: 'ro'}},
     {tool: 'mcp__weave__log_completion', input: {habit_id: 'walk', date: '2026-11-02'}},
-    {tool: 'Bash', input: {command: 'sqlite3 weave/weave.db "select name from habits"; echo DB=$?', description: 'db'}},
+    {tool: 'Bash', input: {command: 'sqlite3 weave/weave.db "select name from habits"; echo DB=$?; touch weave/x 2>/dev/null; echo RO=$?; sqlite3 weave/weave.db "create trigger t after insert on habits begin select 1; end" 2>/dev/null; echo TRIGGER=$?', description: 'db'}},
     {text: '完成'},
   ]));
   const r = await fetch(service.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify({
@@ -70,10 +70,12 @@ test('一个容器删不掉、也换不了大家共用的代理 socket，这一�
   assert.equal(outcome.outcome, 'success');
 });
 
-test('容器里的 Agent 用 sqlite3 查得到叫醒前写好的 weave.db', {skip}, () => {
+test('容器里的 Agent 用 sqlite3 查得到 weave.db，但改不了它：只读挂载，写文件、埋触发器都失败', {skip}, () => {
   const db = results.find(x => x.includes('DB=')) || '';
   assert.match(db, /走路/, db);
   assert.match(db, /DB=0/, db);
+  assert.match(db, /RO=[1-9]/, db);
+  assert.match(db, /TRIGGER=[1-9]/, db);
 });
 
 test('同一天第二次唤醒在容器里接上同一段会话（socket 也还在）', {skip}, async () => {
