@@ -9,7 +9,7 @@ export class NotionClient{
     r=await this.fetcher('https://api.notion.com/v1/'+path,{method,headers:{Authorization:`Bearer ${this.token}`,'Notion-Version':'2022-06-28','Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
   }
  }catch{throw Error('Notion 请求未确认，请检查网络连接');}
-  if(!r.ok)throw Error(`Notion 请求失败 (${r.status})，请检查页面授权和配置`);return r.json();
+  if(!r.ok){const error=Error(`Notion 请求失败 (${r.status})，请检查页面授权和配置`);error.notionStatus=r.status;throw error;}return r.json();
  }
  async children(id){let cursor,blocks=[];do{const r=await this.request(`blocks/${encodeURIComponent(id)}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);blocks.push(...r.results);cursor=r.has_more?r.next_cursor:null;}while(cursor&&blocks.length<500);return blocks;}
  async memory(){
@@ -21,15 +21,25 @@ export class NotionClient{
   const pages=blocks.filter(b=>b.type==='child_page'&&(b.child_page?.title?.startsWith('习惯议会 · ')||b.child_page?.title?.startsWith('Weave · '))).slice(-7);
   for(const p of pages)collect(await this.children(p.id));return lines.join('\n').slice(-12000);
  }
- async searchPages(){
+ // The pages this token can see, most recently edited first (Notion's default order). Follows the cursor up to `limit`
+ // so a large share still includes its top-level page; archived pages are dropped.
+ async listPages(limit=300){
   if(!this.token) return [];
-  const result=await this.request('search','POST',{page_size:100,filter:{property:'object',value:'page'}});
-  return (Array.isArray(result?.results)?result.results:[]).map(page=>{
-   const properties=page?.properties&&typeof page.properties==='object'?Object.values(page.properties):[];
-   const title=properties.find(property=>property?.type==='title')?.title?.map(item=>item.plain_text||item.text?.content||'').join('')||page?.child_page?.title||'未命名页面';
-   return {id:page.id,title:String(title).slice(0,200),url:typeof page.url==='string'?page.url:''};
-  }).filter(page=>page.id);
+  const pages=[];let cursor;
+  do{
+   const result=await this.request('search','POST',{page_size:100,filter:{property:'object',value:'page'},...(cursor?{start_cursor:cursor}:{})});
+   for(const page of Array.isArray(result?.results)?result.results:[]){
+    if(!page?.id||page.archived||page.in_trash)continue;
+    const properties=page.properties&&typeof page.properties==='object'?Object.values(page.properties):[];
+    const title=properties.find(property=>property?.type==='title')?.title?.map(item=>item.plain_text||item.text?.content||'').join('')||page.child_page?.title||'未命名页面';
+    const parent=page.parent&&typeof page.parent==='object'?page.parent:{};
+    pages.push({id:page.id,title:String(title).slice(0,200),url:typeof page.url==='string'?page.url:'',parentType:typeof parent.type==='string'?parent.type:'',parentId:parent[parent.type]&&typeof parent[parent.type]==='string'?parent[parent.type]:'',editedAt:typeof page.last_edited_time==='string'?page.last_edited_time:''});
+   }
+   cursor=result?.has_more&&typeof result.next_cursor==='string'?result.next_cursor:null;
+  }while(cursor&&pages.length<limit);
+  return pages.slice(0,limit);
  }
+ async searchPages(){return (await this.listPages()).map(({id,title,url})=>({id,title,url}));}
  async syncPlan(plan,checkins=[]){
   if(!plan?.approved)throw Error('请先确认计划');if(!this.configured())throw Error('请先连接 Notion');
   if(plan.notionUrl)return {url:plan.notionUrl};
@@ -57,6 +67,13 @@ export function notionOAuthURL(config,state){
  return url.href;
 }
 
+// Error text from the exchange is logged, so the client secret and the one-time code never go into it.
+export function scrubNotionError(message,config,code){
+ let text=String(message??'');
+ for(const secret of [config?.clientSecret,code,config?.clientSecret&&config?.clientId?btoa(`${config.clientId}:${config.clientSecret}`):''])if(typeof secret==='string'&&secret.length>=4)text=text.split(secret).join('[已隐藏]');
+ return text;
+}
+
 export async function exchangeNotionOAuth(config,code,fetcher=fetch){
  if(!config?.clientId||!config?.clientSecret||!config?.redirectUri||typeof code!=='string'||!code)throw Error('Notion 连接暂不可用，请稍后重试');
  let response;
@@ -67,8 +84,8 @@ export async function exchangeNotionOAuth(config,code,fetcher=fetch){
   }else{
    response=await fetcher('https://api.notion.com/v1/oauth/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${config.clientId}:${config.clientSecret}`)}`,'Content-Type':'application/json'},body:JSON.stringify({grant_type:'authorization_code',code,redirect_uri:config.redirectUri})});
   }
- }catch(err){throw Error(`Notion 连接未完成，请稍后重试: ${err&&err.message||err}`);}
- if(!response.ok){let body='';try{body=await response.text()}catch{} throw Error(`Notion 连接未完成 (${response.status}) ${body.slice(0,200)}`);}
+ }catch(err){throw Error(scrubNotionError(`Notion 连接未完成，请稍后重试: ${err&&err.message||err}`,config,code));}
+ if(!response.ok){let body='';try{body=await response.text()}catch{} throw Error(scrubNotionError(`Notion 连接未完成 (${response.status}) ${body.slice(0,200)}`,config,code));}
  let result;try{result=await response.json();}catch{throw Error('Notion 连接返回格式错误');}
  if(typeof result?.access_token!=='string'||!result.access_token)throw Error('Notion 连接未完成，请稍后重试');
  return result;
