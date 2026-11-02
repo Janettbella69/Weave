@@ -9,6 +9,7 @@ import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wech
 import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
 import {runScheduled} from './scheduler.mjs';
+import {handleAgentTool} from './agent-tools.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
   if(!request.headers.get('content-type')?.startsWith('application/json'))domain.fail('需要 JSON 请求',415);
@@ -61,6 +62,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
     const requestURL=new URL(request.url),requestPath=requestURL.pathname;
+    // Calls from the Agent service's MCP tools. Authorized by the per-wake capability, not a login.
+    if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,now});
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
     const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});

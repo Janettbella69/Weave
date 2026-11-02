@@ -50,3 +50,18 @@ export class Store {
     this.revision++; this.original = next;
   }
 }
+
+// One read-modify-write against the world. If another request commits first (409), it reloads
+// and runs fn again on the fresh world, so fn must derive every change from the world it is given.
+export async function withWorld(db, fn, {attempts = 4} = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const store = new Store(db, {strict: true}), world = await store.load();
+    const result = await fn(world);
+    try {
+      await store.save(world);
+      return result;
+    } catch (error) {
+      if (error.status !== 409 || attempt >= attempts) throw error;
+    }
+  }
+}
