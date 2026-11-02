@@ -5,7 +5,7 @@ const server=http.createServer();await new Promise(r=>server.listen(0,'127.0.0.1
 try{
  for(const f of ['server.mjs','agent.mjs','chat.mjs','council.mjs','workspace.mjs','negotiation.mjs','reminders.mjs','weave-chat.mjs','calendar.mjs','public','integrations'])await cp(new URL('../'+f,import.meta.url),join(dir,f),{recursive:true});
  await mkdir(join(dir,'.data'));await writeFile(join(dir,'.data/state.json'),JSON.stringify({plans:[],checkins:[{text:'OWNER_PRIVATE_MEMORY'}],messages:[],pending:''}));
- child=spawn(process.execPath,[join(dir,'server.mjs')],{env:{...process.env,PORT:String(port),ANTHROPIC_API_KEY:'',NOTION_TOKEN:'',NOTION_FRIEND_TOKEN:'',GEWECHAT_BASE_URL:''},stdio:['ignore','pipe','pipe']});let stderr='';child.stderr.on('data',c=>stderr+=c);
+ child=spawn(process.execPath,[join(dir,'server.mjs')],{env:{...process.env,PORT:String(port),ANTHROPIC_API_KEY:'',NOTION_TOKEN:'',NOTION_FRIEND_TOKEN:''},stdio:['ignore','pipe','pipe']});let stderr='';child.stderr.on('data',c=>stderr+=c);
  async function api(path,person='lulu',data){const r=await fetch(`http://127.0.0.1:${port}/api/${path}?person=${person}`,data?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}:{});return {status:r.status,data:await r.json()};}
  let ready=false;for(let i=0;i<150;i++){try{if((await api('status')).status===200){ready=true;break;}}catch{}await delay(20);}assert.ok(ready,stderr);
  assert.equal((await api('status')).data.checkins[0].text,'OWNER_PRIVATE_MEMORY');assert.equal((await api('status','meng')).data.checkins.length,0);assert.ok(await readFile(join(dir,'.data/state-v1-backup.json'),'utf8'));

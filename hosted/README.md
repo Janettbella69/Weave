@@ -51,19 +51,15 @@ Hermes runner 是独立的后台主动判断组件，不替代 Claude Agent SDK�
 
 设置页的 Channels 只显示连接状态。用户点击“一键连接”后完成 Notion OAuth，再从已授权页面中选择一个作为长期记忆与计划归档页面；Token 只在服务端交换并加密保存，浏览器不会收到 Token、客户端密钥或内部地址。部署者将 OAuth 应用配置放在 Sites secret 中（`NOTION_OAUTH_CLIENT_ID`、`NOTION_OAUTH_CLIENT_SECRET`、`NOTION_OAUTH_REDIRECT_URI`），不放入前端或提交到 Git。读取页面用于本人习惯建议，不进入对外协商。已确认计划可手动同步；同步前先持久化发送状态，结果不明确时不自动重发，需先在 Notion 核对。
 
-## 微信通道（Gewechat）
+## 微信通道（agent-wechat）
 
-正式产品使用 Gewechat 作为可选微信桥接层。管理员在 Sites 环境变量中配置 `GEWECHAT_BASE_URL`、`GEWECHAT_TOKEN`、`GEWECHAT_APP_ID`、`GEWECHAT_CALLBACK_SECRET` 和 `GEWECHAT_PUBLIC_ORIGIN`。远程 Gewechat 地址必须是 HTTPS，回调地址为：
+Weave 的 Worker 不直接连微信。`hosted/wechat-bridge/` 和 [agent-wechat](https://github.com/thisnick/agent-wechat) 跑在同一台电脑上，只向外连接 Weave：把收到的文字消息发到 `/api/internal/wechat/events`，再从 `/api/internal/wechat/claim` 领取要发送的消息，用 `/api/internal/wechat/receipt` 回报结果。三个接口都用 `WECHAT_BRIDGE_TOKEN` 鉴权，这个密钥需要配置在 Sites 环境变量和桥接两边。
 
-```text
-https://<站点域名>/api/gewechat/callback/<GEWECHAT_CALLBACK_SECRET>
-```
+消息先写入 D1，由每分钟的 Cron 调用 Agent，再进入发送队列，所以回复通常有一到两分钟的延迟。用 `wrangler dev` 部署时 Cron 不会触发，要在桥接里设 `WEAVE_TICK=1`，见 [`docs/WECHAT.md`](../docs/WECHAT.md)。桥接所在的电脑关机时微信不在线；恢复后，6 小时内的消息会补回复，更早的私聊被忽略，更早的群消息只保存为上下文。
 
-回调地址为 `/api/gewechat/callback/<GEWECHAT_CALLBACK_SECRET>`。回调会校验密钥，只接受私聊文字并按消息 ID 去重；消息先写入 D1 队列，由正式 Worker 的每分钟 Cron 处理，不在回调请求中直接调用 Agent。
+登录 Weave 后进入“个人设置”里的 Channels，点击微信“连接”，再在自己的微信中发送页面显示的一次性 `绑定 <code>` 消息。之后微信消息进入该账号自己的 Personal Agent、反馈记录和 Notion 长期记忆；每个账号最多绑定一个微信身份，可随时断开。
 
-登录 Weave 后进入“个人设置”里的 Channels，点击微信“连接”，再在自己的微信中发送页面显示的一次性 `绑定 <code>` 消息。微信身份才会绑定到当前 ChatGPT 账号。之后微信消息进入该账号自己的 Personal Agent、反馈记录和 Notion 长期记忆；每个账号最多绑定一个微信身份，可随时断开。Gewechat 的服务地址、令牌、应用 ID、回调密钥和回调域名均由部署者配置在 Sites secret 中，普通用户不会看到这些配置。
-
-微信提醒与网页提醒共用同一个账户提醒。没有配置 Gewechat 时，网页通知和聊天提醒仍然正常工作。
+微信提醒与网页提醒共用同一个账户提醒。没有配置桥接时，网页通知和聊天提醒仍然正常工作。安装步骤和打卡群规则见 [`docs/WECHAT.md`](../docs/WECHAT.md)。
 
 ## 后台提醒
 
@@ -79,7 +75,7 @@ https://<站点域名>/api/gewechat/callback/<GEWECHAT_CALLBACK_SECRET>
 
 根目录的兼容服务 `server.mjs` 另有一个每秒轮询器，仅用于本地兼容模式；它不是正式 Worker 的调度频率。Hermes runner 独立每 30 秒轮询一次主动判断队列，模型是否介入仍由用户授权和服务端策略决定。
 
-当前提醒不是系统 Push 或短信送达；配置 Gewechat 并完成绑定后可以通过微信文字送达。导出 .ics 仍需用户导入自己的日历，不自动写入第三方账号。
+当前提醒不是系统 Push 或短信送达；运行微信桥接并完成绑定后可以通过微信文字送达。导出 .ics 仍需用户导入自己的日历，不自动写入第三方账号。
 
 ## 发布
 

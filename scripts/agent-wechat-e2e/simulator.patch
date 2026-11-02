@@ -1,0 +1,42 @@
+diff --git a/packages/native-client-rust/crates/wechat-simulator/src/contract.rs b/packages/native-client-rust/crates/wechat-simulator/src/contract.rs
+index 99d0d8f..9d87384 100644
+--- a/packages/native-client-rust/crates/wechat-simulator/src/contract.rs
++++ b/packages/native-client-rust/crates/wechat-simulator/src/contract.rs
+@@ -188,6 +188,8 @@ pub enum Control {
+         self_sent: bool,
+         #[serde(default = "yes")]
+         notify: bool,
++        #[serde(default)]
++        source: Option<String>,
+     },
+     GroupFault {
+         account: String,
+diff --git a/packages/native-client-rust/crates/wechat-simulator/src/engine.rs b/packages/native-client-rust/crates/wechat-simulator/src/engine.rs
+index 724cdd6..e36be40 100644
+--- a/packages/native-client-rust/crates/wechat-simulator/src/engine.rs
++++ b/packages/native-client-rust/crates/wechat-simulator/src/engine.rs
+@@ -530,8 +530,14 @@ impl Engine {
+                 body,
+                 self_sent,
+                 notify: notification,
++                source,
+             } => {
+-                validate_peer(&peer)?;
++                if !peer.ends_with("@chatroom") {
++                    validate_peer(&peer)?;
++                }
++                let source = source
++                    .unwrap_or_else(|| "<msgsource/>".to_string())
++                    .replace("{self}", &own(&account));
+                 ensure!(
+                     !body.is_empty() && body.len() <= 64 * 1024,
+                     "invalid_message"
+@@ -550,7 +556,7 @@ impl Engine {
+                     1,
+                     &from,
+                     &to,
+-                    (body.as_bytes(), "<msgsource/>"),
++                    (body.as_bytes(), source.as_str()),
+                     time,
+                 )?;
+                 append(&tx, &account, &command)?;

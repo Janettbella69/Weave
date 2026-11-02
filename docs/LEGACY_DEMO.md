@@ -8,7 +8,7 @@
 
 Weave 是以 **Agent to Agent 协作**为核心的个人生活助手。对内，运动、睡眠、饮食 Agent 协调当天的习惯计划；对外，两个 Personal Agent 根据各自用户授权的时间与偏好，经过提案、冲突处理、反提案，形成共同方案，再由双方用户确认。
 
-第一版是**可本地运行的双角色 Chatbot 原型**。采用 Node.js 22+ 标准库，无需安装依赖。默认规则演示；配置后可用真实模型完成内部团队协商，并接入 Gewechat 和 Notion。
+第一版是**可本地运行的双角色 Chatbot 原型**。采用 Node.js 22+ 标准库，无需安装依赖。默认规则演示；配置后可用真实模型完成内部团队协商，并接入 Notion。
 
 ## 立即体验
 
@@ -76,9 +76,9 @@ npm run demo
 
 时间统一使用服务所在机器的时区，界面有明确显示；不是跨时区日程产品。
 
-## 微信与 Notion
+## Notion
 
-完整步骤：[Gewechat + Notion 接入说明](docs/GEWECHAT.md)。
+微信只在正式版提供，见 [微信接入](WECHAT.md)。
 
 复制 `.env.example` 为 `.env`：
 
@@ -87,13 +87,8 @@ npm run demo
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | 内部习惯团队的真实模型调用 |
 | `NOTION_TOKEN` / `NOTION_PAGE_ID` | Lulu 的 Notion 父页面 |
 | `NOTION_FRIEND_PAGE_ID` / `NOTION_FRIEND_TOKEN` | 阿梦的独立 Notion 父页面，可用独立 Token |
-| `GEWECHAT_BASE_URL` / `GEWECHAT_TOKEN` / `GEWECHAT_APP_ID` | 外部 Gewechat 服务与机器人登录设备 |
-| `GEWECHAT_OWNER_WXID` / `GEWECHAT_FRIEND_WXID` | 两个不同微信用户与 Lulu / 阿梦的映射 |
-| `GEWECHAT_CALLBACK_SECRET` / `GEWECHAT_PUBLIC_ORIGIN` | 回调认证路径及 HTTPS 代理域名 |
 
 Notion 读取个人父页面文字和最近七份 Weave/旧版习惯议会计划。各自确认后才手动写入个人页面，最近反馈会随同步一并保存。A2A 协作必须双方确认后，才允许每人同步自己的副本。阿梦页面未配置时，不会使用 Lulu 的页面。
-
-**Gewechat 上游已经停止维护，仓库不包含完整服务端。** 本项目提供兼容其历史 REST 接口的适配层，需要用户提供可用服务、登录会话和回调代理；不能把模拟收发验证说成真实微信在线。
 
 密钥和个人数据只保存在被 Git 忽略的 `.env` / `.data/`。开启云端模型或 Notion 后，必要上下文会发送到相应服务，不能宣称所有数据永不上云。
 
@@ -102,12 +97,10 @@ Notion 读取个人父页面文字和最近七份 Weave/旧版习惯议会计划
 ```sh
 npm test
 npm run test:e2e
-npm run test:wechat
 ```
 
 - 单元测试覆盖用户隔离、授权、冲突与反提案、拒绝、版本失效、双方确认、重复预约、日历导出、提醒与连接器边界。
 - `test:e2e` 在临时目录启动独立服务，验证迁移备份、两个人的完整 HTTP 流程、私有记录隔离和提醒。
-- `test:wechat` 启动本机模拟 Gewechat，验证两个微信身份经真实 HTTP 回调和回复接口完成协商。不会联系实际微信账号或 Notion。
 
 ## 项目结构
 
@@ -118,8 +111,8 @@ npm run test:wechat
 | `weave-chat.mjs` | 主 Agent 聊天路由、习惯与 A2A 指令 |
 | `agent.mjs` / `council.mjs` | 内部团队协商及个人计划 |
 | `reminders.mjs` / `calendar.mjs` | 到期提醒、本地日程和 ICS 导出 |
-| `integrations/` | Gewechat、Notion 和持久化发送队列 |
-| `server.mjs` | 本机 UI API、独立微信回调入口、原子持久化 |
+| `integrations/` | Notion |
+| `server.mjs` | 本机 UI API、原子持久化 |
 | `public/` | 响应式 Chatbot、双角色视角、协商记录与个人设置 |
 
 公开上线仍需身份验证、用户注册与邀请关系、持久数据库和部署维护。当前不包含餐厅订位、真实第三方日历写入或通用自由对话模型。
