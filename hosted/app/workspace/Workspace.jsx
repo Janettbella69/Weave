@@ -9,7 +9,7 @@ import {shouldSendOnEnter} from './chat-input.mjs';
 import {beginPending,finishPending,dropSettled,visibleMessages,isReplying} from './chat-pending.mjs';
 import {agentStatus} from './agent-status.mjs';
 import {FEATURES,navViews} from './features.mjs';
-import {readNotionReturn,waitForNotionPages,normalizePages} from './notion-return.mjs';
+import {NOTION_TEXT,readNotionReturn,resolveNotionReturn,waitForNotionPages,normalizePages,normalizePickerPages,notionRow} from './notion-return.mjs';
 import {deviceTimezone,shouldAdoptDeviceTimezone,wallClockIn,instantFromWallClock} from './timezone.mjs';
 const labels={awaiting_consent:'等待授权',awaiting_confirmation:'等待双方确认',confirmed:'已加入日程',declined:'已拒绝',no_match:'没有共同安排',cancelled:'已取消'};
 const eventLabels={request:'邀请',consent:'授权',proposal:'提案',counterproposal:'反提案',reject:'时间冲突',accept:'接受',agreement:'Agent 达成一致',user_confirm:'本人确认',committed:'加入日程',no_match:'未达成一致',invalidate:'安排更新',decline:'拒绝'};
@@ -26,7 +26,7 @@ export default function Workspace({authKind='guest'}){
  const [state,setState]=useState(null),[view,setView]=useState('chat'),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busyCount,setBusyCount]=useState(0),[text,setText]=useState(''),[draft,setDraft]=useState(null),[inviteURL,setInviteURL]=useState(''),[join,setJoin]=useState(()=>typeof window==='undefined'||!FEATURES.collaboration?'':new URL(window.location.href).searchParams.get('join')||''),[peer,setPeer]=useState(''),[activity,setActivity]=useState('散步'),[consent,setConsent]=useState(false),[reminder,setReminder]=useState(''),[due,setDue]=useState(''),[pendings,setPendings]=useState([]);
  const bottom=useRef(null),inputRef=useRef(null),chain=useRef(Promise.resolve()),seq=useRef(0),inflight=useRef(null),again=useRef(false),composing=useRef(false),zoneTried=useRef(false),notionBack=useRef(undefined);
  const [originSuggestion,setOriginSuggestion]=useState(null);
- const [notionPages,setNotionPages]=useState([]),[wechatCode,setWechatCode]=useState(''),[quickMenu,setQuickMenu]=useState(false);
+ const [notionPages,setNotionPages]=useState([]),[notion,setNotion]=useState(null),[pickerMode,setPickerMode]=useState('complete'),[wechatCode,setWechatCode]=useState(''),[quickMenu,setQuickMenu]=useState(false);
  const replying=isReplying(pendings),busy=busyCount>0;
  // A status snapshot arrived. Local chat entries wait for one that was requested after their reply came back.
  function applyState(result,id){
@@ -55,22 +55,28 @@ export default function Workspace({authKind='guest'}){
  useEffect(()=>{
   let active=true;
   refresh().catch(e=>{if(active)setError(e.message);});
-  // Back from Notion: /?connection=notion&status=ready|error. Read it once, then clean the address.
+  // Back from Notion: /?connection=notion&status=connected|ready|error. Read it once, then clean the address.
   if(notionBack.current===undefined)notionBack.current=readNotionReturn(window.location.search);
   const back=notionBack.current;
   if(back){
    history.replaceState(null,'','/');
-   if(back.status!=='ready')setError('Notion 连接未完成，请重试');
-   else waitForNotionPages(()=>api('connections/notion/pending'),{active:()=>active,isConnected:async()=>(await refresh({queue:true})).settings.notion===true}).then(found=>{
+   resolveNotionReturn(back,{
+    getConnection:()=>api('connections/notion'),
+    legacyPages:()=>waitForNotionPages(()=>api('connections/notion/pending'),{active:()=>active,isConnected:async()=>(await refresh({queue:true})).settings.notion===true}),
+   }).then(outcome=>{
     if(!active)return;
-    if(!found){setError('Notion 连接未完成，请重试');return;}
-    if(found.pages)setNotionPages(found.pages);else setNotice('Notion 已连接');
     setView('settings');
-   }).catch(e=>{if(active)setError(e.message);});
+    if(outcome.kind==='pick'){setPickerMode('complete');setNotionPages(outcome.pages);}
+    else if(outcome.kind==='connected')setNotice(NOTION_TEXT.connected);
+    else if(outcome.kind==='needs_pages')setNotion({state:'needs_pages',reason:outcome.reason});
+    else setError(outcome.message);
+    refresh({queue:true}).catch(()=>{});
+   }).catch(e=>{if(active){setView('settings');setError(e.message);}});
   }
   return()=>{active=false;};
  },[]);
  useEffect(()=>{const timer=setInterval(()=>{if(!document.hidden)refresh().catch(()=>{});},5000);return()=>clearInterval(timer);},[]);
+ useEffect(()=>{if(view==='settings'&&state)loadNotion();},[view,!!state,state?.settings.notion]);
  useEffect(()=>{if(view==='chat')bottom.current?.scrollIntoView({behavior:'smooth'});},[state?.messages.length,pendings.length,replying,view]);
  async function deleteAccount(){if(!window.confirm('确定要永久删除账号吗？你的聊天、计划和日程都会被删除，无法恢复。'))return;setError('');try{await api('account/delete',{confirm:true});location.href=authKind==='guest'?'/api/auth/guest/signout?return_to=%2F':'/';}catch(e){setError(e.message);}}
  // Changes go one after another and are never dropped. They do not wait for the (possibly slow) status refresh:
@@ -88,8 +94,29 @@ export default function Workspace({authKind='guest'}){
  }
  function go(next){setError('');setNotice('');setView(next);}
  function settings(){if(!state)return;setDraft(makeDraft(state.profile));setWechatCode('');go('settings');}
- async function connectNotion(){await act(async()=>{const pending=await api('connections/notion/pending');const pages=normalizePages(pending.pages);if(pending.ready&&pages.length){setNotionPages(pages);return;}const result=await api('connections/notion/start');window.location.assign(result.url);});}
- async function finishNotion(pageId){await act(async()=>{await api('connections/notion/complete',{pageId});setNotionPages([]);},'Notion 已连接');}
+ // Where Notion stands (GET connections/notion). A failure here is not worth a banner: the row still works from the status answer.
+ function loadNotion(){return api('connections/notion').then(result=>{setNotion(result);return result;}).catch(()=>null);}
+ async function connectNotion(){await act(async()=>{const pending=await api('connections/notion/pending');const pages=normalizePages(pending.pages);if(pending.ready&&pages.length){setPickerMode('complete');setNotionPages(pages);return;}const result=await api('connections/notion/start');window.location.assign(result.url);});}
+ // Choosing from the list: the older flow finishes the connection, "更换页面" switches the connected page.
+ function pickNotionPage(pageId){return act(async()=>{
+  if(pickerMode==='select')setNotion(await api('connections/notion/select',{pageId}));
+  else await api('connections/notion/complete',{pageId});
+  setNotionPages([]);
+ },pickerMode==='select'?'':NOTION_TEXT.connected);}
+ function changeNotionPage(){
+  if(notionPages.length&&pickerMode==='select'){setNotionPages([]);return;}
+  return act(async()=>{
+   const pages=normalizePickerPages(await api('connections/notion/pages'));
+   if(!pages.length)throw Error(NOTION_TEXT.failed);
+   setPickerMode('select');setNotionPages(pages);
+  });
+ }
+ // Authorized in Notion but no page yet: look again without going back to Notion.
+ function retryNotion(){return act(async()=>{
+  const result=await api('connections/notion/finish');
+  setNotion(result);
+  if(result.state!=='connected')throw Error(NOTION_TEXT.failed);
+ },NOTION_TEXT.connected);}
  function openGroupComposer(){setQuickMenu(false);setView('connections');}
  function addFriend(){setQuickMenu(false);setView('connections');act(async()=>{const r=await api('friends/invite',{});setInviteURL(location.origin+'/?join='+r.token);},'好友邀请链接已生成');}
  const format=value=>new Intl.DateTimeFormat('zh-CN',{timeZone:state?.profile.timezone||'Asia/Shanghai',dateStyle:'medium',timeStyle:'short'}).format(new Date(value));
@@ -120,7 +147,7 @@ export default function Workspace({authKind='guest'}){
    setError(err.message);
   }
  }
- function planCard(plan){return <article className="thread-card card plan" key={plan.id}><span className="eyebrow">习惯团队 · 计划卡片</span><h3>{plan.summary}</h3><p>{plan.conflict}</p><ol>{plan.actions.map((a,i)=><li key={i}>{a}</li>)}</ol><details><summary>运动、睡眠、饮食 Agent 如何商量</summary>{plan.agents.map(a=><p key={a.role}><b>{a.role} Agent</b> · {a.proposal}</p>)}</details><div className="actions thread-actions"><button className="primary" disabled={plan.approved} onClick={()=>act(()=>api('plans/approve',{id:plan.id}),'计划已确认')}>{plan.approved?'已确认 ✓':'确认计划 ✓'}</button>{plan.notionUrl?<a className="button btn-ghost" href={plan.notionUrl} target="_blank" rel="noopener noreferrer">打开 Notion ↗</a>:<button className="btn-ghost" disabled={!plan.approved} onClick={()=>state.settings.notion?act(()=>api('plans/sync',{id:plan.id}),'计划已保存到你的 Notion'):settings()}>同步到 Notion ↗</button>}</div>{['sending','uncertain'].includes(plan.syncStatus)&&<p className="muted">上次同步结果待核对，请先检查 Notion 页面，避免重复创建。</p>}</article>;}
+ function planCard(plan){return <article className="thread-card card plan" key={plan.id}><span className="eyebrow">习惯团队 · 计划卡片</span><h3>{plan.summary}</h3><p>{plan.conflict}</p><ol>{plan.actions.map((a,i)=><li key={i}>{a}</li>)}</ol><details><summary>运动、睡眠、饮食 Agent 如何商量</summary>{plan.agents.map(a=><p key={a.role}><b>{a.role} Agent</b> · {a.proposal}</p>)}</details><div className="actions thread-actions"><button className="primary" disabled={plan.approved} onClick={()=>act(()=>api('plans/approve',{id:plan.id}),'计划已确认')}>{plan.approved?'已确认 ✓':'确认计划 ✓'}</button>{plan.notionUrl?<a className="button btn-ghost" href={plan.notionUrl} target="_blank" rel="noopener noreferrer">打开 Notion ↗</a>:(state.settings.notion||state.settings.notionConfigured!==false)&&<button className="btn-ghost" disabled={!plan.approved} onClick={()=>state.settings.notion?act(()=>api('plans/sync',{id:plan.id}),'计划已保存到你的 Notion'):settings()}>同步到 Notion ↗</button>}</div>{['sending','uncertain'].includes(plan.syncStatus)&&<p className="muted">上次同步结果待核对，请先检查 Notion 页面，避免重复创建。</p>}</article>;}
  function negotiationCard(n){return <article className="thread-card card negotiation" key={n.id}><div className="row between"><h3>和{peerName(n.participants.find(p=>p!==state.personId))}一起{n.activity}</h3><span className="chip">{labels[n.status]}</span></div>{n.candidate&&<><p className="candidate">{format(n.candidate.slot)}</p><p className="muted">30 分钟 · {state.profile.timezone}</p>{n.candidate.constraints.length>0&&<p>本次共享偏好：{n.candidate.constraints.join('；')}</p>}</>}
  <details><summary>查看提案、冲突与反提案</summary><ol className="transcript">{n.events.map(e=><li key={e.id}><span className="eyebrow">{eventLabels[e.type]||e.type} · {e.actor==='coordinator'?'协调员':peerName(e.actor)+'的 Agent'}</span><p>{e.slot&&<b>{format(e.slot)} · </b>}{e.text}</p></li>)}</ol></details>
  <div className="actions thread-actions">{n.status==='awaiting_consent'&&(n.authorized?<p className="muted">你已授权，等待对方共享本次安排。</p>:<button className="primary" onClick={()=>act(()=>api('negotiations/action',{id:n.id,action:'authorize'}),'授权已记录')}>授权并协商</button>)}
@@ -129,7 +156,7 @@ export default function Workspace({authKind='guest'}){
  {n.status==='confirmed'&&<button onClick={()=>setView('calendar')}>查看日程 →</button>}</div><small>仅本次授权的时间与活动偏好进入协商。双方本人确认后才加入日程。</small></article>;}
  if(!state)return <main className="loading"><div className="symbol">w</div><h1>正在打开你的空间…</h1>{error&&<><p role="alert">{error}</p><button onClick={()=>refresh().catch(e=>setError(e.message))}>重试</button></>}</main>;
  const agentReady=!!state.settings.agent,status=agentStatus({replying,ready:agentReady}),shown=visibleMessages(state.messages,pendings);
- const wechatShown=!!(state.settings.wechat?.configured||state.settings.wechat?.bound);
+ const wechatShown=!!(state.settings.wechat?.configured||state.settings.wechat?.bound),row=notionRow({connection:notion,connected:!!state.settings.notion,configured:state.settings.notionConfigured});
  const form=draft||makeDraft(state.profile),zone=state.profile.timezone;
  const navIcons=navViews().map(([id,label])=>[{chat:MessageCircle,connections:UsersRound,calendar:CalendarDays,proactive:Sparkles,memory:Brain}[id],id,label]);
  return <fieldset className={'app-fieldset'+(view==='chat'?' chat-first':'')} aria-busy={busy||undefined}><nav className="workspace-rail" aria-label="主导航"><Link className="rail-logo" href="/" title="Weave" aria-label="Weave 首页">w</Link>{navIcons.map(([Icon,id,label])=><button key={id} type="button" className={view===id?'selected':''} title={label} aria-label={label} aria-current={view===id?'page':undefined} onClick={()=>go(id)}><Icon size={20} strokeWidth={1.75} aria-hidden="true"/>{id==='memory'&&unread>0&&<span className="rail-badge">{unread}</span>}</button>)}<div className="workspace-rail-bottom"><button type="button" title="个人设置" aria-label="个人设置" onClick={settings}><Settings size={18} strokeWidth={1.8}/></button><button type="button" className="rail-avatar" title={state.profile.name} aria-label={state.profile.name} onClick={settings}><b>{state.profile.name.slice(0,1)}</b></button></div></nav>
@@ -149,8 +176,8 @@ export default function Workspace({authKind='guest'}){
  {FEATURES.proactive&&view==='proactive'&&<ProactivePanel request={api} act={act} profile={state.profile} hasModel={state.settings.agent} onInvite={s=>{setPeer(s.proposal.peerId);setActivity(s.proposal.activity);setConsent(false);setOriginSuggestion(s.id);setView('connections');}}/>}
  {view==='memory'&&<><h1>属于你的长期记忆。</h1><div className="card"><h2>目标与偏好</h2><p>{state.profile.goal||'尚未设置目标'}</p><p>{state.profile.preferences||'尚未记录偏好'}</p><button onClick={settings}>更新目标与偏好</button></div><div className="card"><h2>日常反馈</h2>{state.checkins.length?state.checkins.slice().reverse().map(x=><p key={x.id}>{x.text}</p>):<p>聊天中输入“反馈：今天的小进展”，让下一次建议更贴近你的生活。</p>}</div><div className="card"><div className="row between"><h2>通知 {unread>0&&'· '+unread+'条未读'}</h2>{unread>0&&<button onClick={()=>act(()=>api('notifications/read',{}))}>全部已读</button>}</div>{state.notifications.slice().reverse().map(n=><p key={n.id}>{n.read?'':'● '}{n.text}<small>{format(n.createdAt)}</small></p>)}{!state.notifications.length&&<p>还没有通知。</p>}</div><a className="button" href="/api/export" download="weave-personal-data.json">导出我的个人数据 ↓</a></>}
  {view==='settings'&&<><h1>连接你的工作方式。</h1><p className="muted">所有连接都由你授权。Weave 只显示连接状态，不显示密钥或部署配置。</p><div className="channels-card"><div className="channel-list">
- <div className="channel-row"><span className="channel-icon notion-mark">N</span><span className="channel-copy"><b>Notion</b><small>长期记忆与计划归档</small></span>{state.settings.notion?<><span className="channel-status connected">已连接</span><button type="button" onClick={()=>act(async()=>{await api('connections/notion/disconnect');setNotionPages([]);},'Notion 已断开')}>断开</button></>:<button type="button" className="channel-connect" onClick={connectNotion}>连接</button>}</div>
- {notionPages.length>0&&<div className="channel-picker"><p>选择用于 Weave 长期记忆的页面</p>{notionPages.map(page=><button type="button" key={page.id} onClick={()=>finishNotion(page.id)}><b>{page.title}</b><span>选择此页面</span></button>)}</div>}
+ {row.shown&&<div className={'channel-row'+(state.settings.notion||row.needsPages?' wide':'')}><span className="channel-icon notion-mark">N</span><span className="channel-copy"><b>Notion</b><small>长期记忆与计划归档</small>{row.title&&<small>{'页面：'+row.title}</small>}{row.note&&<small className="channel-note">{row.note}</small>}</span>{state.settings.notion?<><span className="channel-status connected">已连接</span><button type="button" onClick={changeNotionPage}>更换页面</button><button type="button" onClick={()=>act(async()=>{await api('connections/notion/disconnect');setNotionPages([]);setNotion(null);},'Notion 已断开')}>断开</button></>:<>{row.needsPages&&<button type="button" onClick={retryNotion}>重试</button>}<button type="button" className="channel-connect" onClick={connectNotion}>连接</button></>}</div>}
+ {notionPages.length>0&&<div className="channel-picker"><p>选择用于 Weave 长期记忆的页面</p>{notionPages.map(page=><button type="button" key={page.id} disabled={page.selected} onClick={()=>pickNotionPage(page.id)}><b>{page.title}</b><span>{page.selected?'已连接':'选择此页面'}</span></button>)}</div>}
  {wechatShown&&<div className="channel-row"><span className="channel-icon wechat-mark">⌕</span><span className="channel-copy"><b>微信</b><small>聊天与到期提醒</small></span>{state.settings.wechat?.bound?<><span className="channel-status connected">已连接</span><button type="button" onClick={()=>act(()=>api('wechat/unbind',{}),'微信已断开')}>断开</button></>:<button type="button" className="channel-connect" disabled={!state.settings.wechat?.configured} onClick={()=>act(async()=>{const r=await api('wechat/bind',{});setWechatCode(r.code);},'绑定码已生成')}>连接</button>}</div>}
  {wechatCode&&<div className="channel-pairing"><b>在微信中发送：绑定 {wechatCode}</b><button type="button" onClick={()=>navigator.clipboard?.writeText('绑定 '+wechatCode)}>复制绑定消息</button><small>绑定码 15 分钟内有效，只能绑定当前账号。</small></div>}
  <div className="channel-row"><span className="channel-icon agent-mark">w</span><span className="channel-copy"><b>我的 Agent</b><small>习惯建议与主动提醒</small></span><span className={'channel-status'+(agentReady?' connected':'')}>{status.rowLabel}</span>{(!agentReady||state.agentRuntime==='user')&&<button type="button" className="channel-connect" onClick={()=>act(()=>api('connections/agent/start'),'Agent 已连接')}>{agentReady?'测试':'连接'}</button>}</div>

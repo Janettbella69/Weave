@@ -18,6 +18,20 @@ test('read-only paths are fetched with GET and the rest with a JSON POST',async(
   assert.equal(calls[2].options.method,'POST');assert.equal(calls[2].options.body,'{}');
 });
 
+test('the one-click Notion reads are GETs (a POST to them is a 404) and every change is a POST',async()=>{
+  const {fetchImpl,calls}=recorder(answer({ok:true}));
+  for(const path of ['connections/notion','connections/notion/pages','connections/notion/pending'])await apiRequest(path,undefined,{fetchImpl});
+  assert.deepEqual(calls.map(c=>[c.url,c.options.method||'GET']),[['/api/connections/notion','GET'],['/api/connections/notion/pages','GET'],['/api/connections/notion/pending','GET']]);
+  calls.length=0;
+  await apiRequest('connections/notion/start',undefined,{fetchImpl});
+  await apiRequest('connections/notion/finish',undefined,{fetchImpl});
+  await apiRequest('connections/notion/select',{pageId:'p'},{fetchImpl});
+  await apiRequest('connections/notion/complete',{pageId:'p'},{fetchImpl});
+  await apiRequest('connections/notion/disconnect',undefined,{fetchImpl});
+  assert.ok(calls.every(c=>c.options.method==='POST'&&c.options.headers['Content-Type']==='application/json'));
+  assert.equal(calls[2].options.body,'{"pageId":"p"}');
+});
+
 test("the server's own error message is shown; proxy pages and network errors are not",async()=>{
   await assert.rejects(apiRequest('chat',{},{fetchImpl:answer({error:'操作太频繁，请一分钟后重试'},{status:429})}),{message:'操作太频繁，请一分钟后重试',status:429});
   await assert.rejects(apiRequest('status',undefined,{fetchImpl:answer('<html><h1>504 Gateway Time-out</h1></html>',{status:504})}),{message:'请求失败',status:504});
@@ -47,9 +61,11 @@ test('the reload for a refused password cannot loop',()=>{
 });
 
 test('the Notion return is recognised from the URL',()=>{
-  assert.deepEqual(readNotionReturn('?connection=notion&status=ready'),{status:'ready'});
-  assert.deepEqual(readNotionReturn('?connection=notion&status=error&detail=exchange_failed'),{status:'error'});
-  assert.deepEqual(readNotionReturn('?connection=notion'),{status:'error'});
+  assert.deepEqual(readNotionReturn('?connection=notion&status=connected'),{status:'connected',detail:''});
+  assert.deepEqual(readNotionReturn('?connection=notion&status=ready'),{status:'ready',detail:''});
+  assert.deepEqual(readNotionReturn('?connection=notion&status=error&detail=exchange_failed'),{status:'error',detail:'exchange_failed'});
+  assert.deepEqual(readNotionReturn('?connection=notion'),{status:'error',detail:''});
+  assert.deepEqual(readNotionReturn('?connection=notion&status=whatever'),{status:'error',detail:''});
   assert.equal(readNotionReturn(''),null);assert.equal(readNotionReturn('?join=abc'),null);assert.equal(readNotionReturn(undefined),null);
 });
 
