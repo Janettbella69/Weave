@@ -21,7 +21,7 @@ export class ErrorBoundary extends Component {
         <main className="loading">
           <div className="symbol">!</div>
           <h1>页面加载遇到问题</h1>
-          <p role="alert">{this.state.error?.message || '请刷新页面重试'}</p>
+          <p role="alert">请刷新页面重试</p>
           <button onClick={() => window.location.reload()}>刷新页面</button>
         </main>
       );
