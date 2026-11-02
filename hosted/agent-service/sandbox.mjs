@@ -23,7 +23,8 @@ export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid,
     '-v', `${dirs.workspace}:${IN_CONTAINER.cwd}`,
     '-v', `${dirs.config}:${IN_CONTAINER.configDir}`,
     '-v', `${pluginDir}:${IN_CONTAINER.pluginPath}:ro`,
-    '-v', `${socketDir}:/run/weave`,
+    // 所有容器共用这一个 socket，所以只读：连接 socket 不受影响，删掉或换掉它都会被拒绝（EROFS）。
+    '-v', `${socketDir}:/run/weave:ro`,
     ...Object.entries(env).flatMap(([key, value]) => value === undefined ? [] : ['-e', `${key}=${value}`]),
     image, 'claude', ...cliArgs,
   ];

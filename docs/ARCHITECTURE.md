@@ -327,7 +327,7 @@ const dockerArgs = ({scope, dirs, pluginDir, socketDir, image, name, uid, gid, e
   '-v', `${dirs.workspace}:/workspace`,
   '-v', `${dirs.config}:/home/agent/.claude`,
   '-v', `${pluginDir}:/opt/weave/plugin:ro`,
-  '-v', `${socketDir}:/run/weave`,                 // 模型代理的 Unix socket
+  '-v', `${socketDir}:/run/weave:ro`,              // 模型代理的 Unix socket；只读，谁也删不掉、换不了
   ...Object.entries(env).flatMap(([k, v]) => v === undefined ? [] : ['-e', `${k}=${v}`]),
   image, 'claude', ...cliArgs,
 ];
@@ -335,7 +335,7 @@ const dockerArgs = ({scope, dirs, pluginDir, socketDir, image, name, uid, gid, e
 
 **模型请求怎么出去：** 容器是 `--network none`，没有任何网络。模型代理在 Agent 服务进程里监听一个 Unix socket，所在目录挂进容器；容器的入口脚本用 `socat` 把 `127.0.0.1:4321` 转到这个 socket，所以 CLI 的 `ANTHROPIC_BASE_URL` 是 `http://127.0.0.1:4321`。最初的设计是 Docker 内部网络加一个 `model-proxy` 容器，改成这样是为了让「Bash 连不了网」由结构保证，不依赖 Docker 内部网络和宿主网关的行为。Agent 服务本身跑在宿主机上（它要启动容器，所以不放进容器），用非 root、在 docker 组里的用户，容器用同一个 uid。
 
-镜像（`hosted/agent-service/Dockerfile.agent`）里放和 SDK 同版本的 CLI，以及 Python、Node、sqlite、jq、ripgrep、socat，没网也能写代码跑。**CI 实测（Ubuntu + Docker，`hosted/agent-service/test/container.test.mjs`）：** Bash 连不了外网，也连不到宿主机；容器里读不到真 Key，只有一轮一换的运行令牌；根目录只读，写进 `/workspace` 的文件落在宿主机；MCP 工具仍在宿主执行；跑完容器即删。
+镜像（`hosted/agent-service/Dockerfile.agent`）里放和 SDK 同版本的 CLI，以及 Python、Node、sqlite、jq、ripgrep、socat，没网也能写代码跑。**CI 实测（Ubuntu + Docker，`hosted/agent-service/test/container.test.mjs`）：** Bash 连不了外网，也连不到宿主机；容器里读不到真 Key，只有一轮一换的运行令牌；根目录只读，写进 `/workspace` 的文件落在宿主机；共用的 socket 目录删不掉也换不了；同一天第二次唤醒接上同一段会话；MCP 工具仍在宿主执行；跑完容器即删。
 
 ### 实测发现的三条坑，都已写进设计
 

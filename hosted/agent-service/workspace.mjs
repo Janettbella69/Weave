@@ -5,7 +5,7 @@
 //   sessions.json  当天用哪段会话，放在工作目录外，Agent 改不到
 // 目录名是 id 的哈希，id 里写什么都跑不出数据目录。
 import {createHash} from 'node:crypto';
-import {mkdir, readFile, writeFile, rename, rm} from 'node:fs/promises';
+import {mkdir, readFile, writeFile, rename, rm, chmod, readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 
 const KINDS = ['owner', 'group'];
@@ -49,6 +49,17 @@ export async function clearSession(dirs) {
   await rm(sessionsFile(dirs), {force: true});
 }
 
+// Agent 能用 Bash 把子目录改成 000，rm 就会因 EACCES 失败，注销也就删不掉。所以先把目录权限改回来。
+// 只改真实目录：readdir 的 isDirectory() 不跟随符号链接，指向外面的链接不会被碰。
+async function makeRemovable(dir) {
+  try { await chmod(dir, 0o700); } catch { return; }
+  let entries;
+  try { entries = await readdir(dir, {withFileTypes: true}); } catch { return; }
+  for (const entry of entries) if (entry.isDirectory()) await makeRemovable(join(dir, entry.name));
+}
+
 export async function forget(dataDir, kind, id) {
-  await rm(scopeDirs(dataDir, kind, id).root, {recursive: true, force: true});
+  const {root} = scopeDirs(dataDir, kind, id);
+  await makeRemovable(root);
+  await rm(root, {recursive: true, force: true});
 }

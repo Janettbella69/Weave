@@ -5,7 +5,7 @@ import {scopeFor} from '../scopes.mjs';
 
 const dirs = {workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home'};
 
-test('dockerArgs：断网、只读根目录、限资源，只挂工作目录、配置目录、只读插件和代理 socket', () => {
+test('dockerArgs：断网、只读根目录、限资源；代理 socket 目录只读挂载，一个容器删不掉也换不了所有人共用的 socket', () => {
   const args = dockerArgs({
     scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', socketDir: '/srv/weave/run', image: 'weave-agent:0.3.316',
     name: 'weave-run-abc', uid: 1001, gid: 1001,
@@ -17,7 +17,7 @@ test('dockerArgs：断网、只读根目录、限资源，只挂工作目录、�
     '--memory', '1g', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--read-only', '--tmpfs', '/tmp', '--tmpfs', '/home/agent:uid=1001,gid=1001',
     '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace', '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
-    '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave',
+    '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave:ro',
     '-e', 'ANTHROPIC_AUTH_TOKEN=run-token', '-e', 'HOME=/home/agent',
     'weave-agent:0.3.316', 'claude', '--output-format', 'stream-json',
   ]);

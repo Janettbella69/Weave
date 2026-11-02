@@ -29,6 +29,7 @@ before(async () => {
   fake.script(steps([
     {tool: 'Bash', input: {command: `python3 -c "import urllib.request;urllib.request.urlopen('https://example.com',timeout=4)"; echo NET=$?; python3 -c "import socket;socket.create_connection(('172.17.0.1',${hostPort}),3)"; echo HOST=$?`, description: 'net'}},
     {tool: 'Bash', input: {command: 'env', description: 'env'}},
+    {tool: 'Bash', input: {command: 'rm -f /run/weave/proxy.sock; echo RM=$?; touch /run/weave/evil; echo TOUCH=$?', description: 'attack'}},
     {tool: 'Write', input: {file_path: '/workspace/MEMORY.md', content: '周末早上更容易走路\n'}},
     {tool: 'Bash', input: {command: 'echo x > /etc/weave-test; echo ETC=$?', description: 'ro'}},
     {tool: 'mcp__weave__log_completion', input: {habit_id: 'walk', date: '2026-11-02'}},
@@ -41,14 +42,37 @@ before(async () => {
   outcome = await r.json();
   results = fake.captured.filter(c => isMain(c.body)).flatMap(c => lastToolResults(c.body));
 });
+
+const wake = text => fetch(service.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify({
+  scope: 'owner', id: 'u:container', capability: 'cap-1', localDate: '2026-11-02', provider: 'deepseek', model: 'deepseek-flash',
+  trigger: {kind: 'message', channel: 'web', direct: true, at: '2026-11-02T08:05:00+08:00', text},
+})}).then(r => r.json());
 after(async () => { if (!IMAGE) return; await service.close(); await weave.close(); await fake.close(); });
 
 test('一轮在容器里跑完，模型请求经 socket 到代理，上游看到真 Key', {skip}, () => {
   assert.equal(outcome.outcome, 'success', JSON.stringify(outcome));
   assert.equal(outcome.reply, '完成');
   const upstream = fake.captured.filter(c => c.path.startsWith('/v1/messages'));
-  assert.ok(upstream.length >= 6);
+  assert.ok(upstream.length >= 7);
   assert.ok(upstream.every(c => c.headers.authorization === 'Bearer ' + REAL_KEY));
+});
+
+test('一个容器删不掉、也换不了大家共用的代理 socket，这一轮照样跑完', {skip}, () => {
+  const attack = results.find(x => x.includes('RM=')) || '';
+  assert.match(attack, /RM=[1-9]/, attack);
+  assert.match(attack, /TOUCH=[1-9]/, attack);
+  assert.equal(outcome.outcome, 'success');
+});
+
+test('同一天第二次唤醒在容器里接上同一段会话（socket 也还在）', {skip}, async () => {
+  fake.captured.length = 0;
+  fake.script(b => isMain(b) ? {text: '第二轮'} : {text: 't'});
+  const second = await wake('我刚才让你做什么了？');
+  assert.equal(second.outcome, 'success', JSON.stringify(second));
+  assert.equal(second.reply, '第二轮');
+  assert.equal(second.sessionId, outcome.sessionId);
+  const first = fake.captured.find(c => isMain(c.body));
+  assert.ok(JSON.stringify(first.body.messages).includes('跑一遍'));
 });
 
 test('容器里 Bash 连不了网，也连不到宿主机', {skip}, () => {

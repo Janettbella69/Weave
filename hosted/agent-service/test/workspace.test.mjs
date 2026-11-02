@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {existsSync, mkdtempSync, writeFileSync, realpathSync} from 'node:fs';
+import {existsSync, mkdtempSync, writeFileSync, realpathSync, mkdirSync, chmodSync, symlinkSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, relative, isAbsolute} from 'node:path';
 import {scopeDirs, prepare, readMemory, sessionFor, saveSession, clearSession, forget} from '../workspace.mjs';
@@ -56,4 +56,21 @@ test('forget 删掉这个人的整个目录，别人的不动', async () => {
   assert.ok(!existsSync(a.root));
   assert.ok(existsSync(b.workspace));
   await forget(data, 'owner', 'u:nobody');
+});
+
+test('Agent 把子目录改成 000 权限也删得掉；不顺着符号链接去改外面的权限', async () => {
+  const data = dataDir(), dirs = scopeDirs(data, 'owner', 'u:locked');
+  await prepare(dirs);
+  mkdirSync(join(dirs.workspace, 'sub/deeper'), {recursive: true});
+  writeFileSync(join(dirs.workspace, 'sub/deeper/notes.md'), 'private');
+  const outside = join(data, 'outside');
+  mkdirSync(outside);
+  chmodSync(outside, 0o500);
+  symlinkSync(outside, join(dirs.workspace, 'link-out'));
+  chmodSync(join(dirs.workspace, 'sub/deeper'), 0o000);
+  chmodSync(join(dirs.workspace, 'sub'), 0o000);
+  await forget(data, 'owner', 'u:locked');
+  assert.ok(!existsSync(dirs.root));
+  assert.equal(statSync(outside).mode & 0o777, 0o500);
+  chmodSync(outside, 0o700);
 });
