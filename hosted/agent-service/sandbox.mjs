@@ -14,10 +14,10 @@ const IN_CONTAINER = {
   path: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
 };
 
-export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid, gid, env, cliArgs}) {
+export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid, gid, env, cliArgs, memory = '1g'}) {
   return [
     'run', '-i', '--rm', '--init', '--name', name, '--user', `${uid}:${gid}`, '--network', scope.network,
-    '--memory', '1g', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '--memory', memory, '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--read-only', '--tmpfs', '/tmp', '--tmpfs', `/home/agent:uid=${uid},gid=${gid}`,
     '-w', IN_CONTAINER.cwd,
     '-v', `${dirs.workspace}:${IN_CONTAINER.cwd}`,
@@ -30,14 +30,14 @@ export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid,
   ];
 }
 
-export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, uid, gid, sandbox = true}) {
+export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, uid, gid, sandbox = true, memory = '1g'}) {
   if (mode === 'docker') {
     return {
       ...IN_CONTAINER,
       allowedTools: [...scope.builtins, 'mcp__weave__*'],
       // SDK 传来的 command 是宿主机上的 CLI 路径，用不上；容器里有同版本的 claude。
       spawnClaudeCodeProcess: ({args, env, signal}) => spawn('docker',
-        dockerArgs({scope, dirs, pluginDir, socketDir: proxy.socketDir, image, name, uid, gid, env, cliArgs: args}),
+        dockerArgs({scope, dirs, pluginDir, socketDir: proxy.socketDir, image, name, uid, gid, env, cliArgs: args, memory}),
         {stdio: ['pipe', 'pipe', 'inherit'], signal}),
     };
   }

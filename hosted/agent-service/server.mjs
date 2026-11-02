@@ -68,11 +68,12 @@ function checkWake(input) {
 export async function createAgentService({
   token, dataDir, isolation = 'docker', image = 'weave-agent:0.3.316', weaveUrl, keys = {}, upstreams,
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
-  fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0,
+  fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g',
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
 }) {
   if (typeof token !== 'string' || token.length < 32) throw Error('请配置至少32字符的 AGENT_SERVICE_TOKEN');
   if (!['docker', 'local'].includes(isolation)) throw Error(`不支持的隔离方式：${isolation}`);
+  if (!/^\d+[kmg]$/i.test(containerMemory)) throw Error(`AGENT_CONTAINER_MEMORY 写成 768m、1g 这样：${containerMemory}`);
   await mkdir(dataDir, {recursive: true, mode: 0o700});
   const ledger = createLedger({file: join(dataDir, 'usage.json')});
   const proxy = createModelProxy({keys, upstreams, ledger, limits, fetcher});
@@ -108,7 +109,7 @@ export async function createAgentService({
       try {
         const result = await wake({
           scope, trigger: input.trigger, memory, provider, model: input.model, runToken: run.token, sessionId, queryFn,
-          isolation: isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox}),
+          isolation: isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory}),
           rpc: toolBackend({weaveUrl, capability: input.capability, fetcher}),
         });
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
@@ -177,6 +178,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     keys: {deepseek: env.DEEPSEEK_API_KEY || env.AGENT_PROVIDER_API_KEY || '', kimi: env.KIMI_API_KEY || '', glm: env.GLM_API_KEY || '', qwen: env.QWEN_API_KEY || ''},
     limits: {perAccount: count(env.AGENT_DAILY_TOKENS_PER_ACCOUNT, 400000), total: count(env.AGENT_DAILY_TOKENS_TOTAL, 6000000)},
     maxConcurrent: count(env.AGENT_MAX_CONCURRENCY, 3) || 3,
+    containerMemory: env.AGENT_CONTAINER_MEMORY || '1g',
+    // 服务本身跑在容器里时，插件要放在宿主机看得到的路径上（见 Dockerfile 的入口脚本）。
+    ...(env.AGENT_PLUGIN_DIR ? {pluginDir: env.AGENT_PLUGIN_DIR} : {}),
     host: env.HOST || '127.0.0.1',
     port: Number(env.PORT) || 4320,
   });

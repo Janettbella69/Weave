@@ -19,13 +19,14 @@ export const REPLIES = {
 // Agent 服务明确说没开始跑的状态码：这时可以说「没有处理」。其余失败都可能跑到一半。
 const NOT_STARTED = new Set([400, 401, 403, 404, 413, 503]);
 
-// 通行证和用户自己的 Key 都会发给 Agent 服务，所以只接受 https，或者同一台机器上的 http。
+// 通行证和用户自己的 Key 都会发给 Agent 服务，所以只接受 https、同一台机器上的 http，
+// 或者 docker 网络里不带点的服务名（如 http://agent:4320，只在那个网络里解析得到）。
 export function agentServiceConfig(url, token) {
   if (typeof url !== 'string' || typeof token !== 'string' || token.length < 32) return null;
   let parsed;
   try { parsed = new URL(url); } catch { return null; }
-  const loopback = parsed.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname);
-  if (parsed.protocol !== 'https:' && !loopback) return null;
+  const internal = ['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) || /^[a-z][a-z0-9-]*$/i.test(parsed.hostname);
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && internal)) return null;
   return {url: url.replace(/\/+$/, ''), token};
 }
 

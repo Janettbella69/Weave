@@ -121,6 +121,12 @@ test('新路配置不对（外网 http 地址）时 503，不把通行证和 Key
   assert.equal(h.calls.length, 0);
 });
 
+test('agentServiceConfig：docker 网络里的单段名字（http://agent:4320）可以，带点的外网 http 不行', () => {
+  assert.deepEqual(agentServiceConfig('http://agent:4320', TOKEN), {url: 'http://agent:4320', token: TOKEN});
+  assert.equal(agentServiceConfig('http://agent.example:4320', TOKEN), null);
+  assert.equal(agentServiceConfig('http://203.0.113.5:4320', TOKEN), null);
+});
+
 test('agentServiceConfig：https 和本机 http 可以；外网 http、令牌太短不行', () => {
   assert.deepEqual(agentServiceConfig('https://agent.example.com/', TOKEN), {url: 'https://agent.example.com', token: TOKEN});
   assert.deepEqual(agentServiceConfig('http://127.0.0.1:4320', TOKEN), {url: 'http://127.0.0.1:4320', token: TOKEN});

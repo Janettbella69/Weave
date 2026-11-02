@@ -50,3 +50,10 @@ test('local 模式：文件工具只许碰工作目录；sandbox 打开时没有
 test('不认识的隔离方式直接报错，不会静默退回不隔离', () => {
   assert.throws(() => isolationFor({mode: 'none', scope: scopeFor('owner'), dirs, pluginDir: '/p', proxy: {}}));
 });
+
+test('dockerArgs 用传入的内存上限，不传就是 1g', () => {
+  const base = {scope: scopeFor('owner'), dirs, pluginDir: '/p', socketDir: '/s', image: 'i', name: 'n', uid: 1000, gid: 1000, env: {}, cliArgs: []};
+  const memoryOf = args => args[args.indexOf('--memory') + 1];
+  assert.equal(memoryOf(dockerArgs({...base, memory: '768m'})), '768m');
+  assert.equal(memoryOf(dockerArgs(base)), '1g');
+});
