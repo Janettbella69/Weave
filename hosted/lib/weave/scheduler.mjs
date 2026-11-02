@@ -35,10 +35,9 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
   return {delivered,queued,processed};
 }
 
-export async function runScheduled({db,secret,env={},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
+export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
   if(!db)throw Error('Reminder database is unavailable');
-  // Cloudflare's Cron handler passes the whole Worker env; the tick endpoint passes the switch itself.
-  if((agentRuntime??env.WEAVE_AGENT_RUNTIME)==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now});
+  if(agentRuntime==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now});
   const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now,apiProxy:notionOAuthConfig(env).apiProxyUrl||''};
   for(let attempt=0;attempt<3;attempt++)try{
     const store=new Store(db),world=await store.load();
