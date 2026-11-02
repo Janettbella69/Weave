@@ -10,6 +10,7 @@ import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
 import {runScheduled} from './scheduler.mjs';
 import {handleAgentTool} from './agent-tools.mjs';
+import {handleAgentSnapshot} from './agent-snapshot.mjs';
 import {agentServiceConfig,wakeForMessage,forgetAgentWorkspace} from './dispatcher.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
@@ -65,6 +66,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     const requestURL=new URL(request.url),requestPath=requestURL.pathname;
     // Calls from the Agent service's MCP tools. Authorized by the per-wake capability, not a login.
     if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,now});
+    // The Agent service's pre-wake data snapshot, same capability (textbook p.16, p.20).
+    if(requestPath==='/api/internal/agent/snapshot')return handleAgentSnapshot(request,{db,secret,now});
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
     const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
