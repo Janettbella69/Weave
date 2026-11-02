@@ -2,6 +2,7 @@ import {Store} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
 import {processInbound,wechatConfig} from './wechat.mjs';
 import {chatFor,groupChatFor} from './api.mjs';
+import {modelBudgetConfig} from './budget.mjs';
 
 function queueReminderMessages(world,now,enabled){
   if(!enabled)return 0;
@@ -19,7 +20,7 @@ function queueReminderMessages(world,now,enabled){
 
 export async function runScheduled({db,secret,env={},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
   if(!db)throw Error('Reminder database is unavailable');
-  const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey};
+  const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now};
   for(let attempt=0;attempt<3;attempt++)try{
     const store=new Store(db),world=await store.load();
     const enabled=!!(wechatConfig(env).token&&secret),delivered=deliverReminders(world,now),queued=queueReminderMessages(world,now,enabled);
