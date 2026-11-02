@@ -81,7 +81,6 @@ export async function wake({scope, trigger, memory, provider, capability, runTok
     resume: sessionId,
 
     // 限额
-    maxTurns: scope.maxTurns,
     maxBudgetUsd: scope.circuitBreakerUsd,
     thinking: {type: 'disabled'},
     // 失败的工具调用不触发 PostToolUse，所以两个都挂（实测）
@@ -96,7 +95,7 @@ export async function wake({scope, trigger, memory, provider, capability, runTok
       if (message.type === 'result') last = message;
     }
   } catch (error) {
-    // maxTurns 和预算到了也会抛错，这时 last 里有 error_max_turns 等原因（实测）
+    // 预算到了会抛错，这时 last 里有 error_max_budget_usd 这个原因（实测）
     return finish(last, error);
   }
   return finish(last);
@@ -299,7 +298,9 @@ description: 复盘一周的习惯完成情况时使用。
 | Agent（子 Agent） | | | ✓ |
 | MCP 工具 | 上表「本人」列 | 上表「群」列 | 只有 `send_message` |
 | 网络 | 只通模型代理 | 只通模型代理 | 模型代理 + 公网 |
-| `maxTurns` | 20 | 8 | 60 |
+| 轮数上限 | 不设 | 不设 | 不设 |
+
+轮数上限不设（教材 p.22「不设轮数上限」；p.26 反模式表「轮数上限/状态机/分阶段」的改法是「删掉」），一轮的兜底只有 `maxBudgetUsd` 熔断和 10 分钟超时，这两样教材没写。
 
 依据是这一条：**私人资料、不可信内容、对外通道，这三样不同时出现在一轮里。**
 
