@@ -67,7 +67,7 @@ alive=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' "$url/" || true)
 [ "$bad" = 0 ] && [ "$alive" = 401 ] || { echo "FAIL 带请求体的 POST 有 $bad 次不是 401，网站现在回 HTTP $alive"; exit 1; }
 echo "PASS 带请求体的 POST 连发 60 次都是 401，网站还在"
 
-# 关掉后 wrangler 对这个地址不回答（会一直挂着），所以设短超时；只要不返回 200（不吐数据）就算关着。
+# 关掉后这个地址交给网站本身（没带密码就是 401）。只要不返回 200（不吐数据）就算关着；短超时是为了出问题时不卡住 CI。
 explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
 echo "PASS 本机数据浏览器不返回数据（HTTP $explorer，000 = 没有回答）"
