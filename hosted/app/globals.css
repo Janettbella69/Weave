@@ -827,3 +827,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   .channel-row.wide .channel-copy{flex:1 1 calc(100% - 52px)}
   .channel-row.wide>.channel-status,.channel-row.wide>.channel-copy+button{margin-left:48px}
 }
+
+/* 「即将开通」: a quiet badge, not a button. */
+.channel-status.soon{padding:3px 10px;border:1px solid var(--line);border-radius:999px;background:var(--soft);font-size:11px}
