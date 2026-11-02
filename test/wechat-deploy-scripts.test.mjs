@@ -88,6 +88,7 @@ const escapeCases = [
   ['x & y < z > w', 'x &amp; y &lt; z &gt; w'],
   ['<<>>&&', '&lt;&lt;&gt;&gt;&amp;&amp;'],
   ["it's \"quoted\"", "it's \"quoted\""],
+  ['/Users/张三/微信 & 日志 <1>', '/Users/张三/微信 &amp; 日志 &lt;1&gt;'],
   ['plain', 'plain'],
   ['', ''],
 ];
