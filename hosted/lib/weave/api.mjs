@@ -10,6 +10,7 @@ import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
 import {runScheduled} from './scheduler.mjs';
 import {handleAgentTool} from './agent-tools.mjs';
+import {agentServiceConfig,wakeForMessage,forgetAgentWorkspace} from './dispatcher.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
   if(!request.headers.get('content-type')?.startsWith('application/json'))domain.fail('需要 JSON 请求',415);
@@ -57,7 +58,7 @@ export async function chatFor(person,world,text,options){
   return planId?`${reply}\n\n计划已生成，请在 Weave 中查看并确认。`:reply;
 }
 
-export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,now=Date.now()}){
+export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,agentRuntime,now=Date.now()}){
   try{
     const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
@@ -108,7 +109,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       if(path==='memory')return json({text:await(await notionFor()).memory()});
       if(path==='calendar.ics')return new Response(domain.calendarICS(world,id),{headers:{'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'attachment; filename=weave-calendar.ics','Cache-Control':'no-store'}});
       if(path==='proactivity')return json({policy:publicProactivity(person),suggestions:person.suggestions.slice(-50),runtime:runtimeStatus(world,!!runnerToken,now)});
-      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,calendar:domain.calendar(world,id),proactivity:publicProactivity(person),suggestions:person.suggestions});
+      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,calendar:domain.calendar(world,id),proactivity:publicProactivity(person),suggestions:person.suggestions,habits:person.habits||[],completions:person.completions||[]});
       return json({error:'接口不存在'},404);
     }
     const input=await body(request);
@@ -195,6 +196,13 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     else if(path==='chat'){
       const text=typeof input.text==='string'?input.text.trim():'';if(!text||text.length>4000)domain.fail('请输入1–4000字消息');
+      if(agentRuntime==='sdk'){
+        const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
+        if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
+        // The wake writes through the tool backend, so this request's world is stale from here:
+        // return without the final save below.
+        return json({reply:(await wakeForMessage({db,secret,ownerId:id,text,service,fetcher,now})).reply});
+      }
       const reply=await chatFor(person,world,text,agentOptions);
       output={reply};
     }
@@ -205,6 +213,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     else if(path==='notifications/read')person.notifications.forEach(n=>n.read=true);
     else if(path==='account/delete'){
       if(input.confirm!==true)domain.fail('请确认要永久删除账号');
+      const service=agentRuntime==='sdk'?agentServiceConfig(agentServiceUrl,agentServiceToken):null;
+      if(service)await forgetAgentWorkspace({service,ownerId:id,fetcher});
       domain.deleteAccount(world,id);
       // The guest row only stores the session token, but nothing of theirs should remain.
       if(identity.userId.startsWith('guest:')){try{await db.prepare('DELETE FROM weave_guest_sessions WHERE id=?').bind(identity.userId.slice('guest:'.length)).run();}catch{/* the row is optional metadata */}}
