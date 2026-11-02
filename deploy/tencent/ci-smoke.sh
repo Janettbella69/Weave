@@ -35,33 +35,34 @@ docker compose up -d --build
 url="http://$WEAVE_BIND_IP:4317"
 code=000
 for _ in $(seq 1 90); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$url/" || true)
+  code=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' "$url/" || true)
   [ "$code" = 401 ] && break
   sleep 2
 done
 [ "$code" = 401 ] || { echo "FAIL 网站没有要访问密码：HTTP $code"; exit 1; }
 echo "PASS 没带密码是 401"
 
-status=$(curl -s -u weave:ci-password "$url/api/status")
+status=$(curl -s --max-time 20 -u weave:ci-password "$url/api/status")
 echo "$status" | grep -q '"personId":"u:' || { echo "FAIL 带上密码后单用户模式没进去：$status"; exit 1; }
 echo "PASS 带上密码进得去，单用户模式认出了本人"
 
-internal=$(curl -s -X POST -H 'Content-Type: application/json' -d '{"args":{},"toolUseId":"t"}' "$url/api/internal/agent/tools/list_habits")
+internal=$(curl -s --max-time 20 -X POST -H 'Content-Type: application/json' -d '{"args":{},"toolUseId":"t"}' "$url/api/internal/agent/tools/list_habits")
 echo "$internal" | grep -q '通行证' || { echo "FAIL 内部接口应该由通行证把关：$internal"; exit 1; }
 echo "PASS 内部接口不被访问密码挡住，由通行证把关"
 
-unknown=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$url/api/internal/x")
+unknown=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$url/api/internal/x")
 [ "$unknown" = 401 ] || { echo "FAIL 别的 /api/internal/ 地址没带密码应该是 401：HTTP $unknown"; exit 1; }
 echo "PASS 别的内部地址照样要密码"
 
-explorer=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database")
+# 关掉后 wrangler 对这个地址不回答（会一直挂着），所以设短超时；只要不返回 200（不吐数据）就算关着。
+explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
-echo "PASS 本机数据浏览器关着（HTTP $explorer）"
+echo "PASS 本机数据浏览器不返回数据（HTTP $explorer，000 = 没有回答）"
 
 docker compose exec -T agent node -e "fetch('http://127.0.0.1:4320/health').then(r=>r.json()).then(j=>{if(!j.ok)process.exit(1)})"
 echo "PASS Agent 服务健康"
 
-reply=$(curl -s -u weave:ci-password -X POST -H 'Content-Type: application/json' -H "Origin: $url" -d '{"text":"你好"}' "$url/api/chat")
+reply=$(curl -s --max-time 200 -u weave:ci-password -X POST -H 'Content-Type: application/json' -H "Origin: $url" -d '{"text":"你好"}' "$url/api/chat")
 echo "chat: $reply"
 echo "$reply" | grep -q '"reply"' || { echo "FAIL 聊天没有回复"; exit 1; }
 if echo "$reply" | grep -q '还没有配置好\|暂时不可用'; then echo "FAIL 网站没连上 Agent 服务"; exit 1; fi

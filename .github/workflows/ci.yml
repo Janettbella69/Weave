@@ -35,6 +35,7 @@ jobs:
           WEAVE_TEST_DOCKER_IMAGE: weave-agent:ci
         run: node --test test/container.test.mjs
       - name: Tencent deployment smoke (compose up with test config, fake key)
+        timeout-minutes: 15
         run: bash deploy/tencent/ci-smoke.sh
       - name: Hermes adapter isolation and protocol configuration
         run: python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
