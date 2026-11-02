@@ -74,3 +74,11 @@ test('Agent 把子目录改成 000 权限也删得掉；不顺着符号链接去
   assert.equal(statSync(outside).mode & 0o777, 0o500);
   chmodSync(outside, 0o700);
 });
+
+test('MEMORY.md 是指向别处的链接时一律不读，免得把服务进程里的东西读进提示词', async () => {
+  const data = dataDir(), dirs = scopeDirs(data, 'owner', 'u:link');
+  await prepare(dirs);
+  writeFileSync(join(data, 'secret.txt'), 'DEEPSEEK_API_KEY=sk-should-not-leak');
+  symlinkSync(join(data, 'secret.txt'), join(dirs.workspace, 'MEMORY.md'));
+  assert.equal(await readMemory(dirs), '');
+});

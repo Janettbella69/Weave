@@ -162,3 +162,11 @@ test('withWorld 遇到并发提交，会重读再做一遍，别人的改动也�
   const final = (await new Store(db).load()).people['u:x'];
   assert.deepEqual(final, {id: 'u:x', note: 'someone else', mine: 2});
 });
+
+test('不认识的内部接口直接 404，不算进本人的操作次数', async () => {
+  const s = await setup();
+  const before = (await s.world()).people[s.alice].rate;
+  const r = await handleAPI(new Request('https://weave.test/api/internal/x', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://weave.test'}, body: '{}'}), {db: s.db, identity: {userId: 'Alice', displayName: 'Alice', email: 'alice@example.test'}, secret});
+  assert.equal(r.status, 404);
+  assert.deepEqual((await s.world()).people[s.alice].rate, before);
+});

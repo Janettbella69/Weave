@@ -5,7 +5,8 @@
 //   sessions.json  当天用哪段会话，放在工作目录外，Agent 改不到
 // 目录名是 id 的哈希，id 里写什么都跑不出数据目录。
 import {createHash} from 'node:crypto';
-import {mkdir, readFile, writeFile, rename, rm, chmod, readdir} from 'node:fs/promises';
+import {constants} from 'node:fs';
+import {mkdir, readFile, writeFile, rename, rm, chmod, readdir, open} from 'node:fs/promises';
 import {join} from 'node:path';
 
 const KINDS = ['owner', 'group'];
@@ -22,9 +23,20 @@ export async function prepare(dirs) {
   for (const dir of [dirs.workspace, dirs.config, dirs.home]) await mkdir(dir, {recursive: true, mode: 0o700});
 }
 
+// 只读普通文件：Agent 能把 MEMORY.md 换成指向别处的链接（比如 /proc/self/environ），那样会把服务进程里的东西读进提示词。
 export async function readMemory(dirs) {
-  try { return (await readFile(join(dirs.workspace, 'MEMORY.md'), 'utf8')).slice(0, MEMORY_LIMIT); }
-  catch { return ''; }
+  const path = join(dirs.workspace, 'MEMORY.md');
+  let handle;
+  try {
+    // O_NOFOLLOW：是链接就直接打不开，检查和读取之间没有空隙。
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!(await handle.stat()).isFile()) return '';
+    return (await handle.readFile('utf8')).slice(0, MEMORY_LIMIT);
+  } catch {
+    return '';
+  } finally {
+    await handle?.close();
+  }
 }
 
 const sessionsFile = dirs => join(dirs.root, 'sessions.json');

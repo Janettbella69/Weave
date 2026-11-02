@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # CI 用：拿测试配置把整套 compose 起一遍，检查完拆掉。用假的 DeepSeek Key，不花钱。
 set -euo pipefail
+# 它会覆盖本目录的配置文件，结束时删掉数据卷和配置：只许在 CI 里跑，绝不能在服务器上跑。
+[ "${CI:-}" = "true" ] || { echo "ci-smoke.sh 只给 CI 用，会删掉本目录的配置和数据。服务器上请用 deploy.sh。"; exit 1; }
 cd "$(dirname "$0")"
+for f in .env web.env agent.env; do
+  [ ! -e "$f" ] || { echo "已经有 $f 了，ci-smoke.sh 不会覆盖它。"; exit 1; }
+done
 data=$(mktemp -d)
 token=$(openssl rand -hex 24)
 cat > .env <<EOF
@@ -44,6 +49,14 @@ echo "PASS 带上密码进得去，单用户模式认出了本人"
 internal=$(curl -s -X POST -H 'Content-Type: application/json' -d '{"args":{},"toolUseId":"t"}' "$url/api/internal/agent/tools/list_habits")
 echo "$internal" | grep -q '通行证' || { echo "FAIL 内部接口应该由通行证把关：$internal"; exit 1; }
 echo "PASS 内部接口不被访问密码挡住，由通行证把关"
+
+unknown=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$url/api/internal/x")
+[ "$unknown" = 401 ] || { echo "FAIL 别的 /api/internal/ 地址没带密码应该是 401：HTTP $unknown"; exit 1; }
+echo "PASS 别的内部地址照样要密码"
+
+explorer=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database")
+[ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
+echo "PASS 本机数据浏览器关着（HTTP $explorer）"
 
 docker compose exec -T agent node -e "fetch('http://127.0.0.1:4320/health').then(r=>r.json()).then(j=>{if(!j.ok)process.exit(1)})"
 echo "PASS Agent 服务健康"

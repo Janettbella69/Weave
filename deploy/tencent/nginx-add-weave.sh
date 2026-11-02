@@ -12,6 +12,15 @@ if grep -q "server_name weave.azorashopping.site" "$conf"; then
   exit 0
 fi
 
+# nginx 容器挂的是这个文件本身（单文件挂载）。文件要是被整个替换过（sed -i、编辑器、git checkout），
+# 容器还在读旧的那份，这时改磁盘上的文件不会生效，下次重启才会加载一份没检查过的配置。所以先对一下。
+live() { "${compose[@]}" exec -T nginx sha256sum /etc/nginx/nginx.conf 2>/dev/null | cut -d' ' -f1; }
+if [ "$(sha256sum "$conf" | cut -d' ' -f1)" != "$(live)" ]; then
+  echo "正在跑的 nginx 读的不是磁盘上这份 nginx.conf（文件被整个替换过）。没有做任何改动。"
+  echo "先停在这里，把这段输出发给 Claude。"
+  exit 1
+fi
+
 mkdir -p "$HOME/weave-data/nginx-backups"
 backup="$HOME/weave-data/nginx-backups/nginx.conf.$(date +%Y%m%d-%H%M%S)"
 cp "$conf" "$backup"
@@ -32,6 +41,12 @@ with open(conf_path, 'r+', encoding='utf-8') as f:
     f.write(updated)
     f.truncate()
 PY
+
+if ! "${compose[@]}" exec -T nginx grep -q "server_name weave.azorashopping.site" /etc/nginx/nginx.conf; then
+  cat "$backup" > "$conf"
+  echo "nginx 容器没看到新配置，已恢复原来的配置，没有重载。先停在这里，把这段输出发给 Claude。"
+  exit 1
+fi
 
 if "${compose[@]}" exec -T nginx nginx -t; then
   "${compose[@]}" exec -T nginx nginx -s reload

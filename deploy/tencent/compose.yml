@@ -14,12 +14,16 @@ services:
     env_file: web.env
     environment:
       AGENT_SERVICE_URL: http://agent:4320
+      X_LOCAL_EXPLORER: "false"
     # 只绑在 docker0 上：Azora 的 nginx 经 host.docker.internal 转发过来，外网直接连不到。
     ports:
       - "${WEAVE_BIND_IP:?先跑 setup-env.sh}:4317:4317"
     volumes:
       - web-state:/app/.wrangler/state
+    # swap 也限住，内存不够时内核先杀 Weave，不杀同机的 Azora。
     mem_limit: 768m
+    memswap_limit: 768m
+    oom_score_adj: 500
     restart: unless-stopped
 
   agent:
@@ -46,6 +50,8 @@ services:
       # 宿主和容器用同一个路径：一次性容器的挂载是宿主上的 docker 解析的。
       - ${WEAVE_AGENT_DATA:?先跑 setup-env.sh}:${WEAVE_AGENT_DATA:?先跑 setup-env.sh}
     mem_limit: 384m
+    memswap_limit: 384m
+    oom_score_adj: 500
     restart: unless-stopped
 
 volumes:

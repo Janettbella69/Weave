@@ -37,3 +37,10 @@ test('看起来像内部接口但不是的路径照样要密码', async () => {
     assert.equal(r?.status, 401, path);
   }
 });
+
+test('只有自带验证的三个内部接口不拦；别的 /api/internal/ 地址照样要密码', async () => {
+  for (const path of ['/api/internal/x', '/api/internal/unknown/route', '/api/internal/', '/api/internal/agent/other']) {
+    const r = await basicAuthGate(at(path, {method: 'POST'}), SETTING);
+    assert.equal(r?.status, 401, path);
+  }
+});

@@ -5,7 +5,7 @@ import {scopeFor} from '../scopes.mjs';
 
 const dirs = {workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home'};
 
-test('dockerArgs：断网、只读根目录、限资源；代理 socket 目录只读挂载，一个容器删不掉也换不了所有人共用的 socket', () => {
+test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内存不够先杀它）；代理 socket 目录只读挂载', () => {
   const args = dockerArgs({
     scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', socketDir: '/srv/weave/run', image: 'weave-agent:0.3.316',
     name: 'weave-run-abc', uid: 1001, gid: 1001,
@@ -14,8 +14,8 @@ test('dockerArgs：断网、只读根目录、限资源；代理 socket 目录�
   });
   assert.deepEqual(args, [
     'run', '-i', '--rm', '--init', '--name', 'weave-run-abc', '--user', '1001:1001', '--network', 'none',
-    '--memory', '1g', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '--read-only', '--tmpfs', '/tmp', '--tmpfs', '/home/agent:uid=1001,gid=1001',
+    '--memory', '1g', '--memory-swap', '1g', '--oom-score-adj', '500', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', '/home/agent:uid=1001,gid=1001,size=64m',
     '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace', '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
     '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave:ro',
     '-e', 'ANTHROPIC_AUTH_TOKEN=run-token', '-e', 'HOME=/home/agent',
@@ -56,4 +56,10 @@ test('dockerArgs 用传入的内存上限，不传就是 1g', () => {
   const memoryOf = args => args[args.indexOf('--memory') + 1];
   assert.equal(memoryOf(dockerArgs({...base, memory: '768m'})), '768m');
   assert.equal(memoryOf(dockerArgs(base)), '1g');
+});
+
+test('swap 上限跟着内存上限走，不会多占一倍', () => {
+  const base = {scope: scopeFor('owner'), dirs, pluginDir: '/p', socketDir: '/s', image: 'i', name: 'n', uid: 1000, gid: 1000, env: {}, cliArgs: []};
+  const args = dockerArgs({...base, memory: '768m'});
+  assert.equal(args[args.indexOf('--memory-swap') + 1], '768m');
 });

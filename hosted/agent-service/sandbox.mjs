@@ -17,8 +17,9 @@ const IN_CONTAINER = {
 export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid, gid, env, cliArgs, memory = '1g'}) {
   return [
     'run', '-i', '--rm', '--init', '--name', name, '--user', `${uid}:${gid}`, '--network', scope.network,
-    '--memory', memory, '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '--read-only', '--tmpfs', '/tmp', '--tmpfs', `/home/agent:uid=${uid},gid=${gid}`,
+    // swap 上限等于内存上限（不额外占 swap）；内存不够时内核先杀它，不杀同机的其他服务。
+    '--memory', memory, '--memory-swap', memory, '--oom-score-adj', '500', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', `/home/agent:uid=${uid},gid=${gid},size=64m`,
     '-w', IN_CONTAINER.cwd,
     '-v', `${dirs.workspace}:${IN_CONTAINER.cwd}`,
     '-v', `${dirs.config}:${IN_CONTAINER.configDir}`,

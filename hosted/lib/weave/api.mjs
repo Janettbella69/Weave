@@ -69,6 +69,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
     const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
     if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
+    // Any other internal path is not a route: answer before reading identity or touching the world.
+    if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
     if(requestPath==='/api/connections/notion/callback'){
       const redirect=(status,detail='')=>Response.redirect(new URL(`/?connection=notion&status=${status}${detail?`&detail=${encodeURIComponent(detail)}`:''}`,request.headers.get('x-forwarded-proto')==='https'||requestURL.protocol==='https:'?`https://${request.headers.get('host')||requestURL.host}`:`http://${request.headers.get('host')||requestURL.host}`),303);
       if(request.method!=='GET'||!db||!notionOAuth?.clientId||!notionOAuth?.clientSecret||!notionOAuth?.redirectUri)return redirect('error','missing_config');
