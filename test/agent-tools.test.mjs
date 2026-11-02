@@ -47,7 +47,7 @@ test('未知工具 404；group 通行证调 log_completion 是 403', async () =>
   const s = await setup();
   assert.equal((await s.tool('delete_everything', {}, {token: await s.cap(s.alice)})).status, 404);
   assert.equal((await s.tool('__proto__', {}, {token: await s.cap(s.alice)})).status, 404);
-  assert.equal((await s.tool('log_completion', {habit_id: 'h', date: '2026-11-01'}, {token: await s.cap(s.alice, {scope: 'group'})})).status, 403);
+  assert.equal((await s.tool('log_completion', {habit_id: 'h', date: '2026-11-01'}, {token: await s.cap(s.alice, {scope: 'group', group: 'g1'})})).status, 403);
 });
 
 test('参数不对是 400：args 不是对象、缺 toolUseId', async () => {

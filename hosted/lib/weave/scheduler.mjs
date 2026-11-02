@@ -1,6 +1,7 @@
-import {Store} from './store.mjs';
+import {Store,withWorld} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
-import {processInbound,wechatConfig} from './wechat.mjs';
+import {processInbound,processInboundSdk,wechatConfig} from './wechat.mjs';
+import {agentServiceConfig} from './dispatcher.mjs';
 import {chatFor,groupChatFor} from './api.mjs';
 import {modelBudgetConfig} from './budget.mjs';
 import {notionOAuthConfig} from './notion.mjs';
@@ -19,8 +20,25 @@ function queueReminderMessages(world,now,enabled){
   return queued;
 }
 
-export async function runScheduled({db,secret,env={},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
+// On the Agent SDK path (WEAVE_AGENT_RUNTIME=sdk) a WeChat message wakes the Agent, which takes seconds to minutes and
+// writes the world through the tool backend meanwhile, so nothing here holds a world across it: the reminders are
+// their own transaction and processInboundSdk does its own claiming and saving.
+async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now}){
+  const enabled=!!(wechatConfig(env).token&&secret);
+  const {delivered,queued}=await withWorld(db,world=>({delivered:deliverReminders(world,now),queued:queueReminderMessages(world,now,enabled)}));
+  let processed=0;
+  if(enabled){
+    const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
+    if(service)processed=await processInboundSdk({db,secret,service,fetcher,now});
+    else console.error('WEAVE_AGENT_RUNTIME=sdk，但 Agent 服务没有配置好，微信消息先留在队列里。');
+  }
+  return {delivered,queued,processed};
+}
+
+export async function runScheduled({db,secret,env={},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
   if(!db)throw Error('Reminder database is unavailable');
+  // Cloudflare's Cron handler passes the whole Worker env; the tick endpoint passes the switch itself.
+  if((agentRuntime??env.WEAVE_AGENT_RUNTIME)==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now});
   const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now,apiProxy:notionOAuthConfig(env).apiProxyUrl||''};
   for(let attempt=0;attempt<3;attempt++)try{
     const store=new Store(db),world=await store.load();
