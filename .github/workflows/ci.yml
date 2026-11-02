@@ -14,9 +14,26 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: hosted/package-lock.json
+          cache-dependency-path: |
+            hosted/package-lock.json
+            hosted/agent-service/package-lock.json
       - name: Business rules, auth and SQLite concurrency
         run: npm test
+      - name: Agent service install
+        working-directory: hosted/agent-service
+        run: npm ci --no-audit --no-fund
+      - name: Agent service contract tests (fake model, no key)
+        working-directory: hosted/agent-service
+        run: npm test
+      - name: SDK probe (fake model, no key)
+        run: node scripts/agent-sdk-probe/probe.mjs
+      - name: Build agent image
+        run: docker build -f hosted/agent-service/Dockerfile.agent -t weave-agent:ci hosted/agent-service
+      - name: Container contract tests (no network, no real key in the container)
+        working-directory: hosted/agent-service
+        env:
+          WEAVE_TEST_DOCKER_IMAGE: weave-agent:ci
+        run: node --test test/container.test.mjs
       - name: Hermes adapter isolation and protocol configuration
         run: python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
       - name: HTTP and legacy connector regression
