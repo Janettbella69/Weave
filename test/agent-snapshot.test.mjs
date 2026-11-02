@@ -63,7 +63,8 @@ test('没有通行证、过期、篡改都是 401；POST 是 405；group 通行�
     assert.match(r.data.error, /通行证/);
   }
   assert.equal((await s.snapshot(good, {method: 'POST'})).status, 405);
-  const group = await s.snapshot(await s.cap(s.alice, {scope: 'group'}));
+  // 微信分支的通行证要求群范围带 group；这里先带上，两边合并后测试照样能过。
+  const group = await s.snapshot(await s.cap(s.alice, {scope: 'group', group: 'g1'}));
   assert.equal(group.status, 200);
   assert.deepEqual(group.data.tables, {});
   assert.deepEqual(group.data.files, {});
