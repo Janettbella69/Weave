@@ -11,6 +11,7 @@ import {spendManagedCall} from './budget.mjs';
 import {runScheduled} from './scheduler.mjs';
 import {handleAgentTool} from './agent-tools.mjs';
 import {handleAgentSnapshot} from './agent-snapshot.mjs';
+import {readAgentMemory} from './agent-memory.mjs';
 import {agentServiceConfig,wakeForMessage,forgetAgentWorkspace} from './dispatcher.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
@@ -115,6 +116,12 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       if(path==='memory')return json({text:await(await notionFor()).memory()});
       if(path==='calendar.ics')return new Response(domain.calendarICS(world,id),{headers:{'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'attachment; filename=weave-calendar.ics','Cache-Control':'no-store'}});
       if(path==='proactivity')return json({policy:publicProactivity(person),suggestions:person.suggestions.slice(-50),runtime:runtimeStatus(world,!!runnerToken,now)});
+      // What the Agent itself wrote in MEMORY.md (ARCHITECTURE §10: the owner can see it). Read through the Agent service.
+      if(path==='agent-memory'){
+        const service=agentRuntime==='sdk'?agentServiceConfig(agentServiceUrl,agentServiceToken):null;
+        if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
+        return json({text:await readAgentMemory({service,ownerId:id,fetcher})});
+      }
       if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,calendar:domain.calendar(world,id),proactivity:publicProactivity(person),suggestions:person.suggestions,habits:person.habits||[],completions:person.completions||[]});
       return json({error:'接口不存在'},404);
     }

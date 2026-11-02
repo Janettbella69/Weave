@@ -1,6 +1,7 @@
 // Agent 服务（docs/ARCHITECTURE.md 第 1、11 节）：全仓库唯一调用 query() 的地方。
 //   POST /wake    叫醒一轮。Weave 服务决定该不该叫醒，醒了做什么由 Agent 自己决定。
 //   POST /forget  注销时删掉这个人的工作目录和会话记录。
+//   POST /memory  读本人的 MEMORY.md，给网页看。
 //   GET  /health
 //   POST /query   旧路，第 2 步删（runtime.mjs）。
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
@@ -132,6 +133,14 @@ export async function createAgentService({
     });
   }
 
+  // 本人在网页上看 Agent 记了什么（docs/ARCHITECTURE.md 第 10 节：MEMORY.md 本人可看）。只读，只给 owner。
+  async function handleMemory(input) {
+    const scope = checkScope(input);
+    if (scope.kind !== 'owner') fail(400, '范围无效');
+    checkId(input.id);
+    return {text: await workspace.readMemory(workspace.scopeDirs(dataDir, 'owner', input.id))};
+  }
+
   async function handleForget(input) {
     const scope = checkScope(input);
     checkId(input.id);
@@ -143,7 +152,7 @@ export async function createAgentService({
     const reply = (status, data) => { res.writeHead(status, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}); res.end(JSON.stringify(data)); };
     const path = new URL(req.url, 'http://agent').pathname;
     if (path === '/health' && req.method === 'GET') return reply(200, {ok: true});
-    if (req.method !== 'POST' || !['/wake', '/forget', '/query'].includes(path)) return reply(404, {error: '未找到'});
+    if (req.method !== 'POST' || !['/wake', '/forget', '/memory', '/query'].includes(path)) return reply(404, {error: '未找到'});
     if (!timingSafeEqual(digest(req.headers.authorization || ''), digest('Bearer ' + token))) return reply(401, {error: '未授权'});
     if (path === '/query') {
       if (legacyActive >= 4) return reply(429, {error: 'Agent 服务繁忙'});
@@ -154,7 +163,8 @@ export async function createAgentService({
     }
     try {
       const input = await readJson(req, 64 * 1024);
-      return reply(200, path === '/wake' ? await handleWake(input) : await handleForget(input));
+      const handlers = {'/wake': handleWake, '/forget': handleForget, '/memory': handleMemory};
+      return reply(200, await handlers[path](input));
     } catch (error) {
       if (error.status) return reply(error.status, {error: error.message});
       console.error('Agent service error:', error instanceof Error ? error.message : 'unknown');

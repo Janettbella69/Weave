@@ -132,6 +132,17 @@ test('快照接口 500 时 /wake 回 503，CLI 没启动', async () => {
   assert.equal(fake.captured.length, 0);
 });
 
+test('POST /memory 返回 MEMORY.md 原文；没有令牌 401；group 范围、缺 id 是 400；没醒过的人是空字符串', async () => {
+  const dirs = scopeDirs(dataDir, 'owner', 'u:ivy');
+  mkdirSync(dirs.workspace, {recursive: true});
+  writeFileSync(join(dirs.workspace, 'MEMORY.md'), '# 目标\n每天走 20 分钟\n');
+  assert.deepEqual(await (await post('/memory', {scope: 'owner', id: 'u:ivy'})).json(), {text: '# 目标\n每天走 20 分钟\n'});
+  assert.equal((await post('/memory', {scope: 'owner', id: 'u:ivy'}, null)).status, 401);
+  assert.equal((await post('/memory', {scope: 'group', id: 'g:1'})).status, 400);
+  assert.equal((await post('/memory', {scope: 'owner'})).status, 400);
+  assert.deepEqual(await (await post('/memory', {scope: 'owner', id: 'u:nobody'})).json(), {text: ''});
+});
+
 test('MEMORY.md 里的内容进了这一轮的系统提示', async () => {
   const dirs = scopeDirs(dataDir, 'owner', 'u:frank');
   mkdirSync(dirs.workspace, {recursive: true});
