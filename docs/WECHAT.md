@@ -44,6 +44,16 @@
    npm start
    ```
 
+## 每分钟要有东西触发 Cron
+
+回复和到期提醒都由 Worker 的每分钟 Cron 生成。Cloudflare 上会自动触发，但 **`wrangler dev` 不会**（[官方文档](https://developers.cloudflare.com/workers/configuration/cron-triggers/)：「Local development does not run Cron Triggers automatically」）。用 `wrangler dev` 部署时，要自己每分钟请求一次：
+
+```sh
+while true; do curl -fsS "http://127.0.0.1:$PORT/cdn-cgi/local/scheduled" >/dev/null || true; sleep 60; done
+```
+
+不触发的话，消息能收到，但永远不会有回复。
+
 ## 私聊
 
 在 Weave 的 Channels 点击微信「连接」，用自己的微信给小号发送页面显示的 `绑定 <code>`。没有绑定的人发来的消息只留一个去重标记，不保存内容。
@@ -66,6 +76,10 @@
 - 群聊记录最多保存 50 条、14 天。模型只看到「成员1」这样的代号，看不到微信号或昵称。
 - 回复只依据这个群的记录，不使用任何人的目标、反馈或 Notion，也不写入个人记忆。
 - 模型费用由开启这个群的人承担，每个群每天最多回复 30 次。
+
+## 验证
+
+`npm test` 用假服务覆盖规则，[`scripts/agent-wechat-e2e`](../scripts/agent-wechat-e2e/README.md) 用真实 hub 和模拟微信跑通整条链路。**都没有连过真实微信。**
 
 ## 目前的限制
 
