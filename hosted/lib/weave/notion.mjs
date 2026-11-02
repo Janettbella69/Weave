@@ -1,5 +1,3 @@
-import {unseal} from './crypto.mjs';
-
 // Notion hands out page ids with dashes; people paste them without. Same page if the hex digits match.
 export const sameNotionId=(a,b)=>String(a).replaceAll('-','').toLowerCase()===String(b).replaceAll('-','').toLowerCase();
 
