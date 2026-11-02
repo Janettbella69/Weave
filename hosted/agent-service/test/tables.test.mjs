@@ -4,7 +4,7 @@ import {scopeFor} from '../scopes.mjs';
 import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
 import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['list_habits', 'save_habit', 'log_completion', 'query_completions'];
+const PRIVATE_TOOLS = ['save_habit', 'log_completion'];
 
 test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
   const s = scopeFor('owner');
@@ -116,4 +116,8 @@ test('renderTrigger：kind、channel、direct、at 不合法直接报错', () =>
   assert.throws(() => renderTrigger({...ok, at: '2026-11-01 20:13'}));
   assert.throws(() => renderTrigger({...ok, direct: 'yes'}));
   assert.throws(() => renderTrigger({...ok, text: 42}));
+});
+
+test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL）', () => {
+  assert.deepEqual([...scopeFor('owner').tools].sort(), ['log_completion', 'save_habit', 'send_message']);
 });

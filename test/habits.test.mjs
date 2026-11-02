@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {listHabits, saveHabit, logCompletion, queryCompletions} from '../hosted/lib/weave/habits.mjs';
+import {saveHabit, logCompletion} from '../hosted/lib/weave/habits.mjs';
 
 const person = (timezone = 'Asia/Shanghai') => ({id: 'u:a', profile: {timezone}, habits: [], completions: []});
 const NOW = Date.parse('2026-11-02T07:30:00Z');
@@ -59,23 +59,3 @@ test('日期格式不对、不存在的日期、没有这个习惯、备注太�
   assert.equal(p.completions.length, 0);
 });
 
-test('queryCompletions 按日期升序、带本人当地的 today，可以按习惯过滤，跨度超过 366 天或倒着查都拒绝', () => {
-  const p = person(), walk = saveHabit(p, {name: '走路'}, NOW).habit.habit_id, read = saveHabit(p, {name: '读书'}, NOW).habit.habit_id;
-  for (const [habit_id, date] of [[walk, '2026-11-02'], [read, '2026-10-20'], [walk, '2026-10-28'], [walk, '2026-09-01']]) logCompletion(p, {habit_id, date}, NOW);
-  assert.deepEqual(queryCompletions(p, {from: '2026-10-20', to: '2026-11-02'}, NOW), {today: '2026-11-02', completions: [
-    {habit_id: read, date: '2026-10-20', note: ''},
-    {habit_id: walk, date: '2026-10-28', note: ''},
-    {habit_id: walk, date: '2026-11-02', note: ''},
-  ]});
-  assert.deepEqual(queryCompletions(p, {from: '2026-10-01', to: '2026-11-02', habit_id: walk}, NOW).completions.map(c => c.date), ['2026-10-28', '2026-11-02']);
-  rejects400(() => queryCompletions(p, {from: '2025-01-01', to: '2026-11-02'}, NOW));
-  rejects400(() => queryCompletions(p, {from: '2026-11-02', to: '2026-11-01'}, NOW));
-  rejects400(() => queryCompletions(p, {from: '2026-11-01', to: '2026-11-02', habit_id: 'h:nope'}, NOW));
-});
-
-test('listHabits 用工具的字段名返回；没有习惯时是空列表', () => {
-  assert.deepEqual(listHabits({profile: {timezone: 'Asia/Shanghai'}}), {habits: []});
-  const p = person();
-  const id = saveHabit(p, {name: '走路', minimum_action: '穿上鞋'}, NOW).habit.habit_id;
-  assert.deepEqual(listHabits(p), {habits: [{habit_id: id, name: '走路', identity: '', trigger: '', minimum_action: '穿上鞋'}]});
-});
