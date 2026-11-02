@@ -168,7 +168,10 @@ export async function main(env=process.env){
   const daemon=createDaemon({baseUrl:env.WX_BASE_URL||'http://127.0.0.1:6174/v1',token:env.WX_TOKEN,account:env.WX_ACCOUNT});
   const weave=createWeave({origin,token:env.WECHAT_BRIDGE_TOKEN});
   const cursors=cursorStore(resolve(env.WECHAT_BRIDGE_STATE||fileURLToPath(new URL('./.data/cursor.json',import.meta.url))));
-  let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;});
+  // On a stop signal the loops finish what they are doing, but some are asleep for up to a minute, and launchd gives a
+  // process 20 s before it kills it. So leave after 3 s at most. Nothing is lost: an unfinished send keeps its
+  // idempotency key and is claimed again, and the cursor is saved atomically.
+  let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;setTimeout(()=>process.exit(0),3000).unref();});
   const throttle=throttleFromEnv(env);
   console.log('微信桥接已启动。');
   void follow({daemon,weave,cursors,isStopping:()=>stopping});
