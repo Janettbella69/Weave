@@ -819,3 +819,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .bubble.md pre code{background:none;padding:0}
 /* The reply the Agent has not written yet. */
 .chat-column .assistant .bubble.thinking{color:#888;animation:agent-pulse 1.2s ease-in-out infinite}
+
+/* Notion row: the connected page's name, and a line that asks the person to do something. */
+.channel-copy small.channel-note{color:#8a5200;font-size:12px;line-height:1.5}
+@media(max-width:650px){
+  .channel-row.wide{flex-wrap:wrap}
+  .channel-row.wide .channel-copy{flex:1 1 calc(100% - 52px)}
+  .channel-row.wide>.channel-status,.channel-row.wide>.channel-copy+button{margin-left:48px}
+}
