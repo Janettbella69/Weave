@@ -48,6 +48,8 @@ Notion ⇄ OAuth ────┘
 
 目前所有模型调用都不带工具，所以 Agent SDK 和 Hermes 这两层实际上都只调用一次模型。没有配置 Agent SDK 服务时，Worker 会直接请求 DeepSeek 的接口。
 
+下一步的目标架构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)：以 Claude Agent SDK 为核心，一个 Agent 按需调用工具。这份还是设计稿，上面这些是现状。
+
 ## 数据去哪了
 
 - **Weave 的服务器：** 目标、偏好、聊天、计划和日程都存在数据库里，**没有加密**。不注册的访客也一样，Cookie 只用来认出你。
