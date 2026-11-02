@@ -47,25 +47,33 @@ Agent 服务：{"ok":true}
 
 ## 4. 证书（只做一次，等第 0 步的 DNS 生效以后）
 
-把 Azora 现有的证书扩成也包含 `weave.azorashopping.site`：
+给 Weave 单独签一张证书。Azora 和 codememory 已有的证书都不碰：
 
 ```
-ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/AIAzora-v3 && docker compose -f docker-compose.prod.yml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot --cert-name azorashopping.site -d azorashopping.site -d www.azorashopping.site -d weave.azorashopping.site --expand --non-interactive'
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/AIAzora-v3 && docker compose -f docker-compose.prod.yml run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot -d weave.azorashopping.site --cert-name weave.azorashopping.site --non-interactive --agree-tos --register-unsafely-without-email'
 ```
 
-看到 `Successfully received certificate` 就好了。万一失败，原来的证书原样不动，Azora 不受影响。
+看到 `Successfully received certificate` 就好了。之后 Azora 的 certbot 容器会自动给它续期。
 
-## 5. Azora 的 nginx（只做一次）
+## 5. 接入 Azora 的 nginx（只做一次）
 
-1. **先测新配置。** Azora 的部署在 nginx 重载失败时会重启 nginx，配置有错 Azora 就会挂，所以一定先测。下面这条用一个一次性的 nginx 容器检查，不碰正在跑的 nginx：
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/weave && git pull --ff-only && bash deploy/tencent/nginx-add-weave.sh'
+```
 
-   ```
-   ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/AIAzora-v3 && git fetch -q origin feat/weave-subdomain && git show origin/feat/weave-subdomain:nginx.conf > /tmp/nginx-weave-test.conf && docker run --rm --network aiazora-v3_web --add-host host.docker.internal:host-gateway -v ~/AIAzora-v3/certbot/conf:/etc/letsencrypt:ro -v ~/AIAzora-v3/certbot/www:/var/www/certbot:ro -v /tmp/nginx-weave-test.conf:/etc/nginx/nginx.conf:ro nginx:alpine nginx -t'
-   ```
+看到「已加上 weave，nginx 已重载」就好了。这个脚本做的事：
 
-   最后看到 `syntax is ok` 和 `test is successful` 才往下走。
-2. 合并 Azora 仓库里加 Weave 转发的那个 PR（AIAzora-v3 #5）。它只加了 `weave.azorashopping.site` 的两个 server 块，Azora 原有的配置一行不动。
-3. 部署 Azora：GitHub 上打开 AIAzora-v3 → Actions → deploy → Run workflow，`deploy_ref` 选 `feat/ai-styling`。部署时会重建 Azora 的后端，**Azora 会断一两分钟**，挑人少的时候。部署最后会自动重载 nginx。
+- 只在 `~/AIAzora-v3/nginx.conf` 末尾追加 `weave.nginx.conf` 里的两个 server 块，Azora 和 codememory 原有的配置一行不动；
+- 改之前先备份到 `~/weave-data/nginx-backups/`；
+- 用正在跑的 nginx 检查新配置，通过才重载（不中断访问）；不通过就恢复原文件、不重载，Azora 不受影响。
+
+**为什么不走 Azora 的部署流程：** 服务器上的 `nginx.conf` 有一处没进 git 的改动（当初 AML 编程版加的 codememory 配置），Azora 部署时的 `git checkout` 会因此失败。Azora 仓库的 PR #5 里有同样的两个 server 块，等以后把服务器上的那处改动理顺，再合并它。
+
+**要撤掉 nginx 里的 weave：** 用最近一次备份恢复，再检查、重载：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-data/nginx-backups/* | head -1) && cat "$b" > ~/AIAzora-v3/nginx.conf && cd ~/AIAzora-v3 && docker compose -f docker-compose.prod.yml exec -T nginx nginx -t && docker compose -f docker-compose.prod.yml exec -T nginx nginx -s reload'
+```
 
 ## 6. 打开网站
 
