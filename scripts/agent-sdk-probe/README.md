@@ -30,3 +30,5 @@ node scripts/agent-sdk-probe/real-smoke.mjs
 - **`--websearch`** 多试一次 WebSearch。国产接口不一定支持，结果只打印、不算通过与否。
 - **怎么看结果：** 四项都 PASS，说明这份配置在真接口上能用。有 FAIL 时会打印接口返回的原话，拿去和文档第 9 节对照。
 - **「你是谁」那行只给人看。** 模型的判断力要靠评测，这个脚本测不出来。
+
+第 0 步最近一次结果：2026-11-02，DeepSeek `deepseek-flash`，4/4 通过，输入 41,590 token、输出 2,128 token，约 $0.0075–0.015。

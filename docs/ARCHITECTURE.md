@@ -486,11 +486,13 @@ hosted/lib/weave/
 
 **实测发现：** 设了 `maxBudgetUsd` 后，CLI 每次在工具结果后面追加一条 `role: system` 消息（预算余额）；CLI 对非 Claude 的模型名会打印 `[claude-code:unrecognized_model]`，不影响运行。
 
+**真实接口实测（第 0 步，2026-11-02，DeepSeek `deepseek-flash`）：** 四项都过：接口接受这份收窄配置（包括 `role: system` 消息和 beta 头），模型调到了 weave 工具，Skill 加载后跑出了参考代码，Bash 能用。一次冒烟约 9 次模型调用，输入 41,590 token、输出 2,128 token，按官方价约 $0.0075–0.015，每次调用约 4,600 token，和第 12 节的估算一致。问「你是谁」，它答「我是 Weave……底层模型是 deepseek-flash」。冒烟脚本里的假工具返回固定数据，它如实指出了「今天的记录没查出来、日期筛选不生效」，没有编造。Kimi、GLM、千问要用时各跑一次。
+
 **还没验证：**
 
 | 项目 | 为什么要紧 | 什么时候验 |
 | --- | --- | --- |
-| 这份收窄配置在真实接口上跑 | 请求里还有 `output_config`、`role: system` 消息（设了预算后每轮都有）和几个 beta 头，假模型不会拒绝 | 第 0 步（`scripts/agent-sdk-probe/real-smoke.mjs`，也设了预算） |
+| 其他三家接口和 WebSearch | 第 0 步只跑了 DeepSeek，没加 `--websearch`；国产接口不一定支持服务端搜索 | 要用时跑 `real-smoke.mjs`（`SMOKE_PROVIDER=…`、`--websearch`） |
 | 真实模型工具调得好不好 | 假模型是脚本，测不了判断力 | 第 0 步起，靠评测 |
 | 生产服务器上的 `docker run` | CI 用的是 GitHub 的 Ubuntu，服务器的 Docker 版本和内核可能不同 | 上线前在服务器跑一次 `container.test.mjs` |
 | Linux 上的 `sandbox` | 只在 Mac 上跑过 | 用到才验 |
@@ -513,7 +515,7 @@ hosted/lib/weave/
 
 每一步一个 PR。先合 #10 和 #11。
 
-**进度（2026-11-02）：** 第 0 步的脚本写好了，等真 Key 跑一次。第 1 步的代码在草稿 PR #13，网页聊天在 `WEAVE_AGENT_RUNTIME=sdk` 后面，不设就走旧路。
+**进度（2026-11-02）：** 第 0 步在 DeepSeek 上跑通了，四项全过（见第 13 节）。第 1 步的代码在草稿 PR #13，网页聊天在 `WEAVE_AGENT_RUNTIME=sdk` 后面，不设就走旧路。
 
 | 步骤 | 做什么 | 怎样算完成 |
 | --- | --- | --- |
