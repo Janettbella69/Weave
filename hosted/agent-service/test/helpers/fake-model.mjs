@@ -5,8 +5,10 @@ import http from 'node:http';
 export const isMain = body => Array.isArray(body?.tools) && body.tools.some(t => t.name === 'Bash' || t.name === 'Read');
 const assistants = body => (body.messages || []).filter(m => m.role === 'assistant').length;
 
+// The CLI may append a role:"system" message (e.g. the maxBudgetUsd status) after the tool
+// results, so look at the last user message rather than the last message.
 export function lastToolResults(body) {
-  const last = (body.messages || []).at(-1);
+  const last = (body.messages || []).filter(m => m.role === 'user').at(-1);
   if (!Array.isArray(last?.content)) return [];
   return last.content.filter(x => x.type === 'tool_result')
     .map(x => typeof x.content === 'string' ? x.content : (x.content || []).map(y => y.text || '').join(''));
@@ -60,7 +62,8 @@ export async function startFakeModel() {
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}`,
     captured,
-    script(next, nextUsage) { route = next; if (nextUsage) usage = nextUsage; },
+    // Each script call sets the usage too, so one test's huge usage can't leak into the next.
+    script(next, nextUsage = {input: 50, output: 10}) { route = next; usage = nextUsage; },
     close() { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); },
   };
 }
