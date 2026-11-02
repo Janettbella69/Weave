@@ -1,6 +1,6 @@
 # agent-wechat 端到端测试
 
-用 agent-wechat 真实的 hub 和发件流程，加上模拟的微信上游，跑通「微信 ⇄ hub ⇄ 桥接 ⇄ Weave」。不连接真实微信，模型是假的。升级 agent-wechat 前先跑一遍。
+用 agent-wechat 真实的 hub 和发件流程，加上模拟的微信上游，跑通「微信 ⇄ hub ⇄ 桥接 ⇄ Weave」。Weave 走 Agent SDK 那条路（`WEAVE_AGENT_RUNTIME=sdk`）：私聊叫醒本人范围、群里 @ 叫醒群范围，Agent 服务是假的（只记录 `/wake` 和 `/forget` 请求、回一句固定的话），不连接真实微信，也不调用任何模型。升级 agent-wechat 前先跑一遍。
 
 官方模拟器只能注入私聊。`simulator.patch` 给它的 `inbound` 加了 `source` 参数并允许群号，这样群消息和 @ 能走 hub 真实的解析。补丁只改模拟器，不改解析代码。
 

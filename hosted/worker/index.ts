@@ -7,7 +7,7 @@ import {withBufferedBody} from '../lib/weave/request-body.mjs';
 
 const worker = {
   async scheduled(_event: ScheduledController, env: Cloudflare.Env) {
-    try { await runScheduled({db:env.DB,secret:env.WEAVE_ENCRYPTION_KEY,env,agentServiceUrl:env.AGENT_SERVICE_URL,agentServiceToken:env.AGENT_SERVICE_TOKEN,agentProviderApiKey:env.AGENT_PROVIDER_API_KEY,now:Date.now()}); }
+    try { await runScheduled({db:env.DB,secret:env.WEAVE_ENCRYPTION_KEY,env,agentRuntime:env.WEAVE_AGENT_RUNTIME,agentServiceUrl:env.AGENT_SERVICE_URL,agentServiceToken:env.AGENT_SERVICE_TOKEN,agentProviderApiKey:env.AGENT_PROVIDER_API_KEY,now:Date.now()}); }
     catch(error){ console.error('Reminder scheduler failed:',error instanceof Error?error.message:'unknown'); throw error; }
   },
   async fetch(incoming: Request, env: Cloudflare.Env, ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>) {

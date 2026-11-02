@@ -67,7 +67,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,now});
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
-    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
+    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
     if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
     // Any other internal path is not a route: answer before reading identity or touching the world.
     if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
@@ -217,7 +217,11 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     else if(path==='account/delete'){
       if(input.confirm!==true)domain.fail('请确认要永久删除账号');
       const service=agentRuntime==='sdk'?agentServiceConfig(agentServiceUrl,agentServiceToken):null;
-      if(service)await forgetAgentWorkspace({service,ownerId:id,fetcher});
+      if(service){
+        // Each group this account enabled has a workspace of its own. Delete those first, so a failure leaves the whole account in place.
+        for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith('wechat-group:')&&value?.ownerId===id)await forgetAgentWorkspace({service,scope:'group',id:key.slice('wechat-group:'.length),fetcher});
+        await forgetAgentWorkspace({service,ownerId:id,fetcher});
+      }
       domain.deleteAccount(world,id);
       // The guest row only stores the session token, but nothing of theirs should remain.
       if(identity.userId.startsWith('guest:')){try{await db.prepare('DELETE FROM weave_guest_sessions WHERE id=?').bind(identity.userId.slice('guest:'.length)).run();}catch{/* the row is optional metadata */}}
