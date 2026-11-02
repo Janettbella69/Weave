@@ -4,6 +4,8 @@ declare namespace Cloudflare {
     WEAVE_ENCRYPTION_KEY?: string;
     AGENT_SERVICE_URL?: string;
     AGENT_SERVICE_TOKEN?: string;
+    WEAVE_AGENT_RUNTIME?: string;
+    WEAVE_BASIC_AUTH?: string;
     AGENT_PROVIDER_API_KEY?: string;
     HERMES_RUNNER_TOKEN?: string;
     WECHAT_BRIDGE_TOKEN?: string;

@@ -1,0 +1,19 @@
+# One throwaway container per wake (docs/ARCHITECTURE.md §6). Started by the Agent service with
+# --network none, --read-only, --cap-drop ALL and the host user's uid; see sandbox.mjs.
+# The CLI must be the same version the SDK expects, so it comes from the same npm package.
+FROM node:24-bookworm-slim
+ARG SDK_VERSION=0.3.316
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 sqlite3 jq socat ripgrep ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g "@anthropic-ai/claude-agent-sdk@${SDK_VERSION}" \
+ && cli="$(find /usr/local/lib/node_modules -path '*claude-agent-sdk-linux-*/claude' -type f ! -path '*musl*' | head -n 1)" \
+ && test -n "$cli" \
+ && ln -s "$cli" /usr/local/bin/claude \
+ && claude --version
+RUN mkdir -p /workspace /opt/weave/plugin /run/weave /home/agent
+COPY container/entrypoint.sh /usr/local/bin/weave-entrypoint
+RUN chmod 755 /usr/local/bin/weave-entrypoint
+USER node
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/weave-entrypoint"]

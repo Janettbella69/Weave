@@ -1,6 +1,6 @@
 # Weave 架构：以 Claude Agent SDK 为核心
 
-状态：设计稿，确认后才动代码。基于 `@anthropic-ai/claude-agent-sdk` 0.3.316（[官方文档](https://code.claude.com/docs/en/agent-sdk/overview)）。
+状态：已确认（2026-11-02）。第 0、1 步的实施计划见 [`docs/superpowers/plans/2026-11-02-agent-sdk-step0-1.md`](superpowers/plans/2026-11-02-agent-sdk-step0-1.md)，代码在 `hosted/agent-service/` 和 `hosted/lib/weave/`。基于 `@anthropic-ai/claude-agent-sdk` 0.3.316（[官方文档](https://code.claude.com/docs/en/agent-sdk/overview)）。
 
 标了「实测」的结论，都能用 [`scripts/agent-sdk-probe`](../scripts/agent-sdk-probe/README.md) 重跑：43 项，本地假模型，不花钱。
 
@@ -84,7 +84,8 @@ export async function wake({scope, trigger, memory, provider, capability, runTok
     maxTurns: scope.maxTurns,
     maxBudgetUsd: scope.circuitBreakerUsd,
     thinking: {type: 'disabled'},
-    hooks: {PostToolUse: [{hooks: [audit]}]},
+    // 失败的工具调用不触发 PostToolUse，所以两个都挂（实测）
+    hooks: {PostToolUse: [{hooks: [audit]}], PostToolUseFailure: [{hooks: [audit]}]},
   };
 
   let last;
@@ -312,24 +313,29 @@ Bash 是这个架构最大的能力，也是最大的风险，官方部署文档
 
 - **A. 每次唤醒一个容器（选这个）。** 用 `spawnClaudeCodeProcess` 把 CLI 放进 `docker run`。习惯 Agent 唤醒稀疏、每轮很短，用完即删最省。
 - **B. 只用 SDK 的 `sandbox` 选项。** 只管 Bash：Bash 连不了网、写不出工作目录，但内置 Write 工具照样能写到外面（实测）。只用于没有 Docker 的本机开发，并配路径规则 `Read(./**)`、`Edit(./**)`（实测能挡住）。
-- **C. 每人一个常驻容器。** 占内存，用户多了才值得。将来要切，只换 `inContainer` 这一个函数。
+- **C. 每人一个常驻容器。** 占内存，用户多了才值得。将来要切，只换 `sandbox.mjs` 里的 `isolationFor` 这一个函数。
 
 ```js
-const inContainer = scope => ({args, env, signal}) => spawn('docker', [
-  'run', '-i', '--rm', '--init',
-  '--network', scope.network,
+// hosted/agent-service/sandbox.mjs
+const dockerArgs = ({scope, dirs, pluginDir, socketDir, image, name, uid, gid, env, cliArgs}) => [
+  'run', '-i', '--rm', '--init', '--name', name, '--user', `${uid}:${gid}`,
+  '--network', scope.network,                      // owner、group 都是 none，连宿主机也不通
   '--memory', '1g', '--cpus', '1', '--pids-limit', '256',
   '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-  '--read-only', '--tmpfs', '/tmp',
-  '-v', `${scope.dir}/workspace:/workspace`,
-  '-v', `${scope.dir}/claude:/home/agent/.claude`,
-  '-v', `${PLUGIN_DIR}:/opt/weave/plugin:ro`,
+  '--read-only', '--tmpfs', '/tmp', '--tmpfs', `/home/agent:uid=${uid},gid=${gid}`,
+  '-w', '/workspace',
+  '-v', `${dirs.workspace}:/workspace`,
+  '-v', `${dirs.config}:/home/agent/.claude`,
+  '-v', `${pluginDir}:/opt/weave/plugin:ro`,
+  '-v', `${socketDir}:/run/weave:ro`,              // 模型代理的 Unix socket；只读，谁也删不掉、换不了
   ...Object.entries(env).flatMap(([k, v]) => v === undefined ? [] : ['-e', `${k}=${v}`]),
-  `weave-agent:${SDK_VERSION}`, 'claude', ...args,
-], {stdio: ['pipe', 'pipe', 'inherit'], signal});
+  image, 'claude', ...cliArgs,
+];
 ```
 
-镜像里放 CLI、Python、Node、sqlite、jq 和常用数据库，没网也能写代码跑。实测过：SDK 不检查宿主机上的 `cwd` 和插件路径，CLI 跑在别处时 MCP 工具仍在宿主执行。**这段 `docker run` 本身没实测**，这台开发机没有 Docker，第 1 步要验。
+**模型请求怎么出去：** 容器是 `--network none`，没有任何网络。模型代理在 Agent 服务进程里监听一个 Unix socket，所在目录挂进容器；容器的入口脚本用 `socat` 把 `127.0.0.1:4321` 转到这个 socket，所以 CLI 的 `ANTHROPIC_BASE_URL` 是 `http://127.0.0.1:4321`。最初的设计是 Docker 内部网络加一个 `model-proxy` 容器，改成这样是为了让「Bash 连不了网」由结构保证，不依赖 Docker 内部网络和宿主网关的行为。Agent 服务本身跑在宿主机上（它要启动容器，所以不放进容器），用非 root、在 docker 组里的用户，容器用同一个 uid。
+
+镜像（`hosted/agent-service/Dockerfile.agent`）里放和 SDK 同版本的 CLI，以及 Python、Node、sqlite、jq、ripgrep、socat，没网也能写代码跑。**CI 实测（Ubuntu + Docker，`hosted/agent-service/test/container.test.mjs`）：** Bash 连不了外网，也连不到宿主机；容器里读不到真 Key，只有一轮一换的运行令牌；根目录只读，写进 `/workspace` 的文件落在宿主机；共用的 socket 目录删不掉也换不了；同一天第二次唤醒接上同一段会话；MCP 工具仍在宿主执行；跑完容器即删。
 
 ### 实测发现的三条坑，都已写进设计
 
@@ -389,7 +395,7 @@ agents: {
 env: {
   PATH, HOME: '/home/agent',
   CLAUDE_CONFIG_DIR: '/home/agent/.claude',     // 根目录只读，配置和会话都落在这个挂载里
-  ANTHROPIC_BASE_URL: 'http://model-proxy:4321',  // 代理再转到上表
+  ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321',   // 容器里的 socat → 模型代理 → 上表
   ANTHROPIC_AUTH_TOKEN: runToken,                 // 这一轮的临时令牌
   ANTHROPIC_API_KEY: '',
   ANTHROPIC_MODEL: provider.main,
@@ -440,18 +446,23 @@ env: {
 
 ```text
 hosted/agent-service/
-  server.mjs        # /wake、/health、每人串行、并发上限
+  server.mjs        # /wake、/forget、/health；每人串行、并发上限
   runner.mjs        # 第 2 节那段
   scopes.mjs        # 第 6 节那张表
   providers.mjs     # 第 9 节那张表
-  sandbox.mjs       # inContainer
+  prompts.mjs       # 系统提示和 <trigger>
+  sandbox.mjs       # 隔离：docker（每次一个容器）或本机 sandbox
   model-proxy.mjs   # 换 Key、记 token、到额度返回 429
+  ledger.mjs        # 每账号每天的 token 账
+  workspace.mjs     # 每人的目录、MEMORY.md、当天的会话
+  queue.mjs         # 每人串行、全局并发
   mcp/              # 第 4 节的工具，每个都是薄壳
-  prompts/          # 系统提示
   plugin/           # 第 5 节的 Skill 和参考代码
   Dockerfile.agent  # 容器镜像
+  container/        # 容器入口（socat 转发到模型代理）
 hosted/lib/weave/
   agent-tools.mjs   # 工具后端：规则和数据
+  capability.mjs    # 每次唤醒的通行证
   dispatcher.mjs    # 谁该醒
   habits.mjs        # 习惯和完成记录
 ```
@@ -464,20 +475,26 @@ hosted/lib/weave/
 
 - `maxBudgetUsd` 只当熔断器，本人范围设 $2，群 $1，研究 $15。这些都是「SDK 算的钱」，不是实付。
 - 真实账单由模型代理按 token 和价目表算，每账号每日额度也在代理执行，取代现在按次数算的 `budget.mjs`。
+- 第 1 步先按 token 数计额度：默认每账号每天 400,000、全站每天 6,000,000（草稿数字，待确认，环境变量 `AGENT_DAILY_TOKENS_*`）。按价目表折成钱还没做。用户自己的 Key 不计。
+- 额度用完时，代理返回 429 加 `x-should-retry: false`，CLI 不会反复重试，这一轮马上结束（实测）。
 
 **容量：** 官方建议每个 Agent 起步 1 GiB 内存、1 CPU、5 GiB 硬盘。实测短任务 CLI 峰值约 200 MB（Mac），从 `query()` 到就绪约 0.2 秒，都没算容器开销。按官方建议，4 GB 内存的机器同时跑 3 轮左右，其余排队。
 
 ## 13. 实测和未验证
 
-**实测通过（本地假模型）：** 内置工具收窄、MCP 进程内执行和幂等 ID、Skill 经插件加载并运行参考代码、Write/Edit/Bash、Hook 拒绝、`isError`、范围隔离、自定义系统提示、配置注入防护、`sandbox` 和路径规则、`maxTurns` 和 `maxBudgetUsd`、`resume`、前后台子 Agent、自定义 spawn、并行。
+**实测通过（本地假模型）：** 内置工具收窄、MCP 进程内执行和幂等 ID、Skill 经插件加载并运行参考代码、Write/Edit/Bash、Hook 拒绝、`isError`、范围隔离、自定义系统提示、配置注入防护、`sandbox` 和路径规则、`maxTurns` 和 `maxBudgetUsd`、`resume`、前后台子 Agent、自定义 spawn、并行。第 1 步起，产品配置的这些检查由 `hosted/agent-service/test/` 的契约测试在 CI 里每次跑；`docker run` 那段也在 CI 里实测过（第 6 节）。
+
+**实测发现：** 设了 `maxBudgetUsd` 后，CLI 每次在工具结果后面追加一条 `role: system` 消息（预算余额）；CLI 对非 Claude 的模型名会打印 `[claude-code:unrecognized_model]`，不影响运行。
+
+**真实接口实测（第 0 步，2026-11-02，DeepSeek `deepseek-flash`）：** 四项都过：接口接受这份收窄配置（包括 `role: system` 消息和 beta 头），模型调到了 weave 工具，Skill 加载后跑出了参考代码，Bash 能用。一次冒烟约 9 次模型调用，输入 41,590 token、输出 2,128 token，按官方价约 $0.0075–0.015，每次调用约 4,600 token，和第 12 节的估算一致。问「你是谁」，它答「我是 Weave……底层模型是 deepseek-flash」。冒烟脚本里的假工具返回固定数据，它如实指出了「今天的记录没查出来、日期筛选不生效」，没有编造。Kimi、GLM、千问要用时各跑一次。
 
 **还没验证：**
 
 | 项目 | 为什么要紧 | 什么时候验 |
 | --- | --- | --- |
-| 这份收窄配置在真实接口上跑 | 请求里还有 `output_config`、`role: system` 消息和几个 beta 头，假模型不会拒绝 | 第 0 步 |
+| 其他三家接口和 WebSearch | 第 0 步只跑了 DeepSeek，没加 `--websearch`；国产接口不一定支持服务端搜索 | 要用时跑 `real-smoke.mjs`（`SMOKE_PROVIDER=…`、`--websearch`） |
 | 真实模型工具调得好不好 | 假模型是脚本，测不了判断力 | 第 0 步起，靠评测 |
-| `docker run` 那段 | 这台开发机没有 Docker | 第 1 步 |
+| 生产服务器上的 `docker run` | CI 用的是 GitHub 的 Ubuntu，服务器的 Docker 版本和内核可能不同 | 上线前在服务器跑一次 `container.test.mjs` |
 | Linux 上的 `sandbox` | 只在 Mac 上跑过 | 用到才验 |
 | 微信真实账号 | 只在模拟微信上跑过 | 第 3 步，用小号 |
 
@@ -497,6 +514,8 @@ hosted/lib/weave/
 ## 15. 实施顺序
 
 每一步一个 PR。先合 #10 和 #11。
+
+**进度（2026-11-02）：** 第 0 步在 DeepSeek 上跑通了，四项全过（见第 13 节）。第 1 步的代码在草稿 PR #13，网页聊天在 `WEAVE_AGENT_RUNTIME=sdk` 后面，不设就走旧路。
 
 | 步骤 | 做什么 | 怎样算完成 |
 | --- | --- | --- |

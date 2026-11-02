@@ -1,0 +1,58 @@
+# Weave 在 43.162.107.53（和 Azora 共用一台）。项目名固定为 weave，不会和机器上别的 compose 项目重名；
+# 在这个目录里跑的 `docker compose ...` 只会碰到 weave-web-1、weave-agent-1。
+# 第一次先跑 setup-env.sh 生成 .env、web.env、agent.env，再跑 deploy.sh。
+name: weave
+
+services:
+  web:
+    build:
+      context: ../../hosted
+      dockerfile: Dockerfile.vps
+    image: weave-web:local
+    # 让容器里的进程能正常收到停止信号（不然要等 10 秒被强制杀掉）。
+    init: true
+    env_file: web.env
+    environment:
+      AGENT_SERVICE_URL: http://agent:4320
+      X_LOCAL_EXPLORER: "false"
+    # 只绑在 docker0 上：Azora 的 nginx 经 host.docker.internal 转发过来，外网直接连不到。
+    ports:
+      - "${WEAVE_BIND_IP:?先跑 setup-env.sh}:4317:4317"
+    volumes:
+      - web-state:/app/.wrangler/state
+    # swap 也限住，内存不够时内核先杀 Weave，不杀同机的 Azora。
+    mem_limit: 768m
+    memswap_limit: 768m
+    oom_score_adj: 500
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: ../../hosted/agent-service
+      dockerfile: Dockerfile
+    image: weave-agent-service:local
+    # 让容器里的进程能正常收到停止信号（不然要等 10 秒被强制杀掉）。
+    init: true
+    env_file: agent.env
+    user: "${HOST_UID:?先跑 setup-env.sh}:${HOST_GID:?先跑 setup-env.sh}"
+    group_add:
+      - "${DOCKER_GID:?先跑 setup-env.sh}"
+    environment:
+      WEAVE_API_URL: http://web:4317
+      AGENT_ISOLATION: docker
+      AGENT_IMAGE: weave-agent:0.3.316
+      AGENT_DATA_DIR: ${WEAVE_AGENT_DATA:?先跑 setup-env.sh}
+      # 这台机器内存紧：同时只跑 1 轮，每轮容器最多 768 MB。
+      AGENT_MAX_CONCURRENCY: "1"
+      AGENT_CONTAINER_MEMORY: 768m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 宿主和容器用同一个路径：一次性容器的挂载是宿主上的 docker 解析的。
+      - ${WEAVE_AGENT_DATA:?先跑 setup-env.sh}:${WEAVE_AGENT_DATA:?先跑 setup-env.sh}
+    mem_limit: 384m
+    memswap_limit: 384m
+    oom_score_adj: 500
+    restart: unless-stopped
+
+volumes:
+  web-state:
