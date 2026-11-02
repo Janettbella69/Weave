@@ -3,7 +3,19 @@
 //   模型请求经挂进来的 Unix socket 到 Agent 服务里的模型代理，容器里由 socat 转成 127.0.0.1:4321。
 // local：只给没有 Docker 的本机开发用。SDK 的 sandbox 管 Bash（断网、写不出工作目录），
 //   路径规则 Read(./**)、Edit(./**) 管文件工具（sandbox 管不到 Write，实测）。
-import {spawn} from 'node:child_process';
+import {spawn, execFile} from 'node:child_process';
+
+// 删掉这一轮的容器，等 docker rm 真正结束再返回。SDK 中止一轮时只等 CLI 两秒、杀的是 docker run 客户端，
+// 容器可能还活着；不等它删完就放下一轮进来，下一轮整理目录时会和它抢（审查发现）。
+// 「没有这个容器」是正常情况（--rm 已经删了）；别的错误只记日志，不让这一轮的结果变成失败。
+export function removeContainer(name, exec = execFile) {
+  return new Promise(resolve => exec('docker', ['rm', '-f', name], (error, stdout, stderr) => {
+    if (error && !/No such container/i.test(`${stderr || ''} ${error.message || ''}`)) {
+      console.error('Agent service: docker rm failed:', name, error.message || 'unknown');
+    }
+    resolve();
+  }));
+}
 
 const IN_CONTAINER = {
   cwd: '/workspace',

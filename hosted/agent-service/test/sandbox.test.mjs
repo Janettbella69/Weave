@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dockerArgs, isolationFor} from '../sandbox.mjs';
+import {dockerArgs, isolationFor, removeContainer} from '../sandbox.mjs';
 import {scopeFor} from '../scopes.mjs';
 
 const dirs = {workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home'};
@@ -45,6 +45,16 @@ test('local 模式：文件工具只许碰工作目录；sandbox 打开时没有
   assert.deepEqual(iso.allowedTools, ['Bash', 'Read(./**)', 'Edit(./**)', 'Glob', 'Grep', 'Skill', 'WebSearch', 'mcp__weave__*']);
   assert.deepEqual(iso.sandbox, {enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: {allowedDomains: []}});
   assert.equal(isolationFor({mode: 'local', scope: scopeFor('owner'), dirs, pluginDir: '/p', proxy: {url: 'http://x'}, sandbox: false}).sandbox, undefined);
+});
+
+test('removeContainer 等 docker rm 真正结束才返回；没有这个容器、或别的错误都不抛', async () => {
+  let finished = false;
+  await removeContainer('weave-run-x', (cmd, args, callback) => setTimeout(() => { finished = true; callback(null, '', ''); }, 50));
+  assert.equal(finished, true, '返回时 docker rm 应该已经结束');
+  const calls = [];
+  await removeContainer('weave-run-y', (cmd, args, callback) => { calls.push([cmd, args]); callback(Error('exit 1'), '', 'Error: No such container: weave-run-y'); });
+  assert.deepEqual(calls, [['docker', ['rm', '-f', 'weave-run-y']]]);
+  await removeContainer('weave-run-z', (cmd, args, callback) => callback(Error('Cannot connect to the Docker daemon'), '', ''));
 });
 
 test('不认识的隔离方式直接报错，不会静默退回不隔离', () => {

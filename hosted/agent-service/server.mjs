@@ -8,7 +8,6 @@
 import http from 'node:http';
 import {timingSafeEqual, createHash, randomUUID} from 'node:crypto';
 import {mkdir, chmod, rm} from 'node:fs/promises';
-import {execFile} from 'node:child_process';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {query} from '@anthropic-ai/claude-agent-sdk';
@@ -19,7 +18,7 @@ import {renderTrigger} from './prompts.mjs';
 import {createLedger} from './ledger.mjs';
 import {createModelProxy} from './model-proxy.mjs';
 import {toolBackend} from './mcp/rpc.mjs';
-import {isolationFor} from './sandbox.mjs';
+import {isolationFor, removeContainer} from './sandbox.mjs';
 import {wake} from './runner.mjs';
 import {createRunQueue} from './queue.mjs';
 import * as workspace from './workspace.mjs';
@@ -128,7 +127,8 @@ export async function createAgentService({
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
       } finally {
         run.close();
-        if (isolation === 'docker') execFile('docker', ['rm', '-f', name], () => {});
+        // 等容器真的没了再放下一轮进来（队列在这个函数返回后才放行）。
+        if (isolation === 'docker') await removeContainer(name);
       }
     });
   }
