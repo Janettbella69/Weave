@@ -15,16 +15,22 @@ export function normalizePages(pages) {
 }
 
 // The pages are saved just before the redirect, but the first read can still come back empty-handed. Ask a few
-// times. Resolves to the list of pages, or null when none became ready (or the caller stopped waiting).
-export async function waitForNotionPages(fetchPending, {attempts = 10, delayMs = 800, sleep = ms => new Promise(r => setTimeout(r, ms)), active = () => true} = {}) {
+// times. Resolves to {pages} to pick from, {connected:true} when Notion turns out to be connected already (the
+// server finished the connection itself and there is nothing to pick), or null when neither happened (or the
+// caller stopped waiting). `isConnected` is asked at most once, after the first read that has nothing to pick.
+export async function waitForNotionPages(fetchPending, {attempts = 10, delayMs = 800, sleep = ms => new Promise(r => setTimeout(r, ms)), active = () => true, isConnected} = {}) {
+  let asked = false;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (!active()) return null;
     const pending = await fetchPending();
     if (!active()) return null;
-    if (pending && pending.ready) {
-      const pages = normalizePages(pending.pages);
-      return pages.length ? pages : null;
+    const pages = pending && pending.ready ? normalizePages(pending.pages) : [];
+    if (pages.length) return {pages};
+    if (isConnected && !asked) {
+      asked = true;
+      if (await isConnected()) return active() ? {connected: true} : null;
     }
+    if (pending && pending.ready) return null;
     if (attempt < attempts - 1) await sleep(delayMs);
   }
   return null;

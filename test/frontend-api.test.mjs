@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {apiRequest,ApiError,unauthorizedAction,reloadAllowed,looksLikeStatus} from '../hosted/app/workspace/api-client.mjs';
+import {apiRequest,ApiError,unauthorizedAction,reloadAllowed,normalizeStatus} from '../hosted/app/workspace/api-client.mjs';
 import {readNotionReturn,normalizePages,waitForNotionPages} from '../hosted/app/workspace/notion-return.mjs';
 import {FEATURES,navViews} from '../hosted/app/workspace/features.mjs';
 
@@ -62,12 +62,27 @@ test('after the Notion return the pages are asked for a few times, then given up
   const sleeps=[];const sleep=async ms=>{sleeps.push(ms);};
   let calls=0;
   const pages=await waitForNotionPages(async()=>++calls<3?{ready:false,pages:[]}:{ready:true,pages:[{id:'p1',title:'T'}]},{sleep});
-  assert.deepEqual(pages,[{id:'p1',title:'T'}]);assert.equal(calls,3);assert.deepEqual(sleeps,[800,800]);
+  assert.deepEqual(pages,{pages:[{id:'p1',title:'T'}]});assert.equal(calls,3);assert.deepEqual(sleeps,[800,800]);
   calls=0;
   assert.equal(await waitForNotionPages(async()=>{calls++;return {ready:false,pages:[]};},{sleep:async()=>{},attempts:4}),null);assert.equal(calls,4);
   assert.equal(await waitForNotionPages(async()=>({ready:true,pages:[]}),{sleep}),null,'ready with nothing to pick is not a success');
   assert.equal(await waitForNotionPages(async()=>({ready:true,pages:[{id:'x',title:'y'}]}),{sleep,active:()=>false}),null,'stopped');
   await assert.rejects(waitForNotionPages(async()=>{throw new ApiError('请求失败');},{sleep}),{message:'请求失败'});
+});
+
+test('a connection the server finished by itself is recognised, and asked about only once',async()=>{
+  const sleep=async()=>{};let asked=0,reads=0;
+  const isConnected=async()=>{asked++;return true;};
+  assert.deepEqual(await waitForNotionPages(async()=>{reads++;return {ready:false,pages:[]};},{sleep,isConnected}),{connected:true});
+  assert.equal(asked,1);assert.equal(reads,1,'no need to keep reading');
+  // ready with nothing to pick, and already connected
+  assert.deepEqual(await waitForNotionPages(async()=>({ready:true,pages:[]}),{sleep,isConnected}),{connected:true});
+  // not connected: keeps reading, asks once
+  asked=0;reads=0;
+  assert.equal(await waitForNotionPages(async()=>{reads++;return {ready:false,pages:[]};},{sleep,attempts:3,isConnected:async()=>{asked++;return false;}}),null);
+  assert.equal(asked,1);assert.equal(reads,3);
+  // pages win over the connected check
+  assert.deepEqual(await waitForNotionPages(async()=>({ready:true,pages:[{id:'a',title:'b'}]}),{sleep,isConnected}),{pages:[{id:'a',title:'b'}]});
 });
 
 test('friends and the background page are not offered for now',()=>{
@@ -76,8 +91,11 @@ test('friends and the background page are not offered for now',()=>{
   assert.deepEqual(navViews({collaboration:true,proactive:true}).map(([id])=>id),['chat','connections','calendar','proactive','memory']);
 });
 
-test('a status answer is only used when it has what the workspace reads',()=>{
+test('a status answer is only used when it has what the workspace shows; friend lists may be missing',()=>{
   const real={profile:{name:'Me',timezone:'Asia/Shanghai',slots:[],activities:['散步']},settings:{agent:true},messages:[],plans:[],checkins:[],calendar:[],reminders:[],notifications:[],people:[],invites:[],negotiations:[]};
-  assert.equal(looksLikeStatus(real),true);
-  for(const bad of [null,undefined,{},[],'x',{...real,settings:undefined},{...real,messages:null},{...real,profile:{...real.profile,slots:'no'}},{...real,negotiations:{}}])assert.equal(looksLikeStatus(bad),false);
+  assert.deepEqual(normalizeStatus(real),real);
+  const slim={profile:{name:'Me',timezone:'UTC'},settings:{},messages:[],plans:[],checkins:[],reminders:[],notifications:[]};
+  const filled=normalizeStatus(slim);
+  assert.deepEqual([filled.people,filled.invites,filled.negotiations,filled.calendar,filled.profile.slots,filled.profile.activities],[[],[],[],[],[],[]]);
+  for(const bad of [null,undefined,{},[],'x',{...real,settings:undefined},{...real,messages:null},{...real,reminders:'no'},{...real,profile:{timezone:'UTC'}},{...real,profile:{name:'x'}}])assert.equal(normalizeStatus(bad),null);
 });

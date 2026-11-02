@@ -47,13 +47,17 @@ export async function apiRequest(path, data, {fetchImpl = fetch, onUnauthorized}
   return result;
 }
 
-// A real status snapshot has everything the workspace reads. Anything else (an empty object from a proxy, a
-// half-written answer) is treated as a failed request instead of being rendered into a broken page.
-export function looksLikeStatus(value) {
-  const lists = ['messages', 'plans', 'checkins', 'calendar', 'reminders', 'notifications', 'people', 'invites', 'negotiations'];
-  return !!value && typeof value === 'object'
-    && !!value.profile && typeof value.profile.name === 'string' && typeof value.profile.timezone === 'string'
-    && Array.isArray(value.profile.slots) && Array.isArray(value.profile.activities)
-    && !!value.settings && typeof value.settings === 'object'
-    && lists.every(key => Array.isArray(value[key]));
+// The status answer, checked and filled in. The workspace needs the profile, the settings and the lists it shows
+// (messages, plans, feedback, reminders, notifications). The lists that only belong to friends and shared
+// plans (people, invites, negotiations, calendar) may be missing; they become empty. Anything else (an empty
+// object from a proxy, a half-written answer) gives null: it is a failed request, not a page to render.
+export function normalizeStatus(value) {
+  if (!value || typeof value !== 'object') return null;
+  const profile = value.profile;
+  if (!profile || typeof profile.name !== 'string' || typeof profile.timezone !== 'string') return null;
+  if (!value.settings || typeof value.settings !== 'object') return null;
+  if (!['messages', 'plans', 'checkins', 'reminders', 'notifications'].every(key => Array.isArray(value[key]))) return null;
+  const out = {...value, profile: {...profile, slots: Array.isArray(profile.slots) ? profile.slots : [], activities: Array.isArray(profile.activities) ? profile.activities : []}};
+  for (const key of ['people', 'invites', 'negotiations', 'calendar']) if (!Array.isArray(out[key])) out[key] = [];
+  return out;
 }

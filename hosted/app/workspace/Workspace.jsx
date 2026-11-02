@@ -4,7 +4,7 @@ import ProactivePanel from './ProactivePanel';
 import {CalendarDays,ChevronDown,MessageCircle,Plus,Settings,Sparkles,UserPlus,UsersRound,Brain} from 'lucide-react';
 import Link from 'next/link';
 import Markdown from './Markdown';
-import {apiRequest,looksLikeStatus,unauthorizedAction,reloadAllowed} from './api-client.mjs';
+import {apiRequest,normalizeStatus,unauthorizedAction,reloadAllowed} from './api-client.mjs';
 import {shouldSendOnEnter} from './chat-input.mjs';
 import {beginPending,finishPending,dropSettled,visibleMessages,isReplying} from './chat-pending.mjs';
 import {agentStatus} from './agent-status.mjs';
@@ -46,7 +46,7 @@ export default function Workspace({authKind='guest'}){
   if(inflight.current){if(queue)again.current=true;return inflight.current;}
   const id=++seq.current;
   const request=(async()=>{
-   try{const result=await api('status');if(!looksLikeStatus(result))throw Error('请求失败');applyState(result,id);return result;}
+   try{const result=normalizeStatus(await api('status'));if(!result)throw Error('请求失败');applyState(result,id);return result;}
    finally{inflight.current=null;if(again.current){again.current=false;refresh().catch(()=>{});}}
   })();
   inflight.current=request;
@@ -61,10 +61,11 @@ export default function Workspace({authKind='guest'}){
   if(back){
    history.replaceState(null,'','/');
    if(back.status!=='ready')setError('Notion 连接未完成，请重试');
-   else waitForNotionPages(()=>api('connections/notion/pending'),{active:()=>active}).then(pages=>{
+   else waitForNotionPages(()=>api('connections/notion/pending'),{active:()=>active,isConnected:async()=>(await refresh({queue:true})).settings.notion===true}).then(found=>{
     if(!active)return;
-    if(!pages){setError('Notion 连接未完成，请重试');return;}
-    setNotionPages(pages);setView('settings');
+    if(!found){setError('Notion 连接未完成，请重试');return;}
+    if(found.pages)setNotionPages(found.pages);else setNotice('Notion 已连接');
+    setView('settings');
    }).catch(e=>{if(active)setError(e.message);});
   }
   return()=>{active=false;};
