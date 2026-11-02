@@ -2,6 +2,7 @@
 //   workspace/  Agent 的工作目录，MEMORY.md、笔记、脚本都在这里，挂进容器
 //   claude/     SDK 的配置和会话记录，挂进容器
 //   home/       本机模式下 CLI 的 HOME
+//   snapshot/   叫醒前的数据快照（docker 下只读挂到 /workspace/weave）
 //   sessions.json  当天用哪段会话，放在工作目录外，Agent 改不到
 // 目录名是 id 的哈希，id 里写什么都跑不出数据目录。
 import {createHash} from 'node:crypto';
@@ -16,7 +17,8 @@ export function scopeDirs(dataDir, kind, id) {
   if (!KINDS.includes(kind)) throw Error(`不支持的范围：${kind}`);
   if (typeof id !== 'string' || !id) throw Error('缺少 id');
   const root = join(dataDir, kind, createHash('sha256').update(id).digest('hex').slice(0, 32));
-  return {root, workspace: join(root, 'workspace'), config: join(root, 'claude'), home: join(root, 'home')};
+  // snapshot：叫醒前的数据快照，docker 下只读挂进容器（snapshot.mjs），所以放在工作目录外。
+  return {root, workspace: join(root, 'workspace'), config: join(root, 'claude'), home: join(root, 'home'), snapshot: join(root, 'snapshot')};
 }
 
 export async function prepare(dirs) {
@@ -29,7 +31,8 @@ export async function readMemory(dirs) {
   let handle;
   try {
     // O_NOFOLLOW：是链接就直接打不开，检查和读取之间没有空隙。
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK：Agent 能把它换成命名管道（FIFO），阻塞的 open 会一直等写入方、占住线程池；普通文件不受影响。
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (!(await handle.stat()).isFile()) return '';
     return (await handle.readFile('utf8')).slice(0, MEMORY_LIMIT);
   } catch {
@@ -63,7 +66,7 @@ export async function clearSession(dirs) {
 
 // Agent 能用 Bash 把子目录改成 000，rm 就会因 EACCES 失败，注销也就删不掉。所以先把目录权限改回来。
 // 只改真实目录：readdir 的 isDirectory() 不跟随符号链接，指向外面的链接不会被碰。
-async function makeRemovable(dir) {
+export async function makeRemovable(dir) {
   try { await chmod(dir, 0o700); } catch { return; }
   let entries;
   try { entries = await readdir(dir, {withFileTypes: true}); } catch { return; }

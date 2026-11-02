@@ -8,11 +8,10 @@ const TEXT = {
   name: '习惯名字要 1–30 个字。',
   field: '身份句、触发和最小动作每项最多 200 字。',
   tooMany: '最多 20 个习惯。先合并或删掉不用的，再加新的。',
-  notFound: '没有这个习惯。先用 list_habits 看现有的习惯和编号。',
+  notFound: '没有这个习惯。先查 weave/weave.db 的 habits 表，看现有的习惯和编号。',
   date: '日期要写成 YYYY-MM-DD，并且是真实存在的日期。',
   future: today => `不记未来的日期。按对方的当地时间，今天是 ${today}。`,
   note: '备注最多 500 字。',
-  range: '开始日期不能晚于结束日期，一次最多查 366 天。',
 };
 const MAX_HABITS = 20;
 
@@ -29,10 +28,6 @@ function optionalText(value, max, message) {
 const publicHabit = h => ({habit_id: h.id, name: h.name, identity: h.identity, trigger: h.trigger, minimum_action: h.minimumAction});
 const publicCompletion = c => ({habit_id: c.habitId, date: c.date, note: c.note});
 const findHabit = (person, id) => (person.habits || []).find(h => h.id === id);
-
-export function listHabits(person) {
-  return {habits: (person.habits || []).map(publicHabit)};
-}
 
 export function saveHabit(person, args, now = Date.now()) {
   const name = typeof args?.name === 'string' ? args.name.trim() : '';
@@ -72,16 +67,4 @@ export function logCompletion(person, args, now = Date.now(), source = 'agent') 
   const completion = {id: crypto.randomUUID(), habitId: habit.id, date: args.date, note, createdAt: new Date(now).toISOString(), source};
   person.completions.push(completion);
   return {completion: publicCompletion(completion), duplicate: false};
-}
-
-export function queryCompletions(person, args, now = Date.now()) {
-  if (!validDate(args?.from) || !validDate(args?.to)) fail(TEXT.date);
-  const span = (Date.parse(args.to) - Date.parse(args.from)) / 86400000;
-  if (span < 0 || span > 366) fail(TEXT.range);
-  if (args.habit_id !== undefined && !findHabit(person, args.habit_id)) fail(TEXT.notFound);
-  const completions = (person.completions || [])
-    .filter(c => c.date >= args.from && c.date <= args.to && (args.habit_id === undefined || c.habitId === args.habit_id))
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    .map(publicCompletion);
-  return {today: localClock(person, now).day, completions};
 }

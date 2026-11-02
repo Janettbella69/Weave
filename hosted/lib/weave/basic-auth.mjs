@@ -1,8 +1,10 @@
 // 访问密码。单用户部署（WEAVE_VPS_MODE）里，谁打开网站都会被当成本人，所以在最前面加一道 Basic 认证。
 // WEAVE_BASIC_AUTH 写成「用户名:密码」，不设就不拦。
-// 只有自带验证的三个内部接口不拦（Agent 服务的通行证、微信桥接和后台判断的令牌），其余地址一律要密码。
+// 只有自带验证的内部接口不拦（Agent 服务的通行证、微信桥接和后台判断的令牌），其余地址一律要密码。
 const encoder = new TextEncoder();
 const SELF_AUTHENTICATED = ['/api/internal/agent/tools/', '/api/internal/hermes/', '/api/internal/wechat/'];
+// 叫醒前的数据快照也认通行证，只放行这一个地址。
+const SELF_AUTHENTICATED_EXACT = ['/api/internal/agent/snapshot'];
 const digest = async text => new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text)));
 
 // 比较摘要，耗时和内容无关。
@@ -26,7 +28,7 @@ function credentialsOf(request) {
 export async function basicAuthGate(request, setting) {
   if (!setting) return null;
   const path = new URL(request.url).pathname;
-  if (SELF_AUTHENTICATED.some(prefix => path.startsWith(prefix))) return null;
+  if (SELF_AUTHENTICATED.some(prefix => path.startsWith(prefix)) || SELF_AUTHENTICATED_EXACT.includes(path)) return null;
   const given = credentialsOf(request);
   if (given && sameBytes(await digest(given), await digest(setting))) return null;
   // 草稿文案，待确认。
