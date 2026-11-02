@@ -1,3 +1,4 @@
 .env
 web.env
 agent.env
+.web.env.*

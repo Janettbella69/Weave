@@ -65,12 +65,55 @@ export async function handleEvent(event,{daemon,weave,saveCursor}){
   // Advance only after Weave has the message, so a failure replays instead of losing it.
   if(event.cursor){await saveCursor(event.cursor);await daemon.ack(event.cursor).catch(()=>{});}
 }
-export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay}){
+// Limits on what this bridge sends to WeChat. agent-wechat has none of its own, and what WeChat's risk control
+// tolerates is unverified (there is no ban data), so these are conservative guesses, tunable from the environment.
+// A refusal here is not a failure: a held job keeps its lease in Weave and is claimed again (same idempotency key)
+// after the lease runs out. One held for longer than maxHoldMs is dropped instead, so a backlog is never sent late.
+export function createThrottle({perChatPerMinute=6,totalPerMinute=12,perDay=200,minGapMs=1500,maxHoldMs=600000,now=Date.now}={}){
+  const total=[],day=[],chats=new Map(),held=new Map();let last=-Infinity;
+  const prune=(list,t,windowMs)=>{while(list.length&&t-list[0]>=windowMs)list.shift();};
+  return {
+    // 'send', 'hold' (over a limit, try again later) or 'drop' (held too long, give up).
+    admit(job){
+      const t=now(),chat=chats.get(job.threadId)??[];
+      prune(total,t,60000);prune(day,t,86400000);prune(chat,t,60000);
+      if(!chat.length)chats.delete(job.threadId);
+      // Forget jobs that vanished from the queue (cancelled in Weave) so this map cannot grow.
+      for(const [id,at] of held)if(t-at>3600000)held.delete(id);
+      const since=held.get(job.id);
+      if(since!==undefined&&t-since>maxHoldMs){held.delete(job.id);return 'drop';}
+      if(chat.length>=perChatPerMinute||total.length>=totalPerMinute||day.length>=perDay){if(since===undefined)held.set(job.id,t);return 'hold';}
+      held.delete(job.id);return 'send';
+    },
+    // How long to wait so two sends are at least minGapMs apart.
+    gap(){return Math.max(0,last+minGapMs-now());},
+    // Called once a send has actually been handed to the daemon.
+    record(job){
+      const t=now(),chat=chats.get(job.threadId)??[];
+      total.push(t);day.push(t);chat.push(t);chats.set(job.threadId,chat);last=t;
+    },
+  };
+}
+const whole=(value,fallback,{zero=false}={})=>{const n=Number(value);return value!==undefined&&value!==''&&Number.isInteger(n)&&(zero?n>=0:n>0)?n:fallback;};
+export function throttleFromEnv(env=process.env,now=Date.now){
+  return createThrottle({
+    perChatPerMinute:whole(env.WECHAT_SEND_PER_CHAT_PER_MIN,6),totalPerMinute:whole(env.WECHAT_SEND_TOTAL_PER_MIN,12),
+    perDay:whole(env.WECHAT_SEND_PER_DAY,200),minGapMs:whole(env.WECHAT_SEND_MIN_GAP_MS,1500,{zero:true}),maxHoldMs:whole(env.WECHAT_SEND_MAX_HOLD_MS,600000),now,
+  });
+}
+export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay,throttle}){
   const {jobs}=await weave('claim',{});let delivered=0;
   for(const job of jobs){
+    if(throttle){
+      const verdict=throttle.admit(job);
+      if(verdict==='drop'){console.error('这条消息被发送上限压了太久，已放弃：'+job.id);await weave('receipt',{id:job.id,state:'failed'});continue;}
+      if(verdict==='hold')continue;
+      const gap=throttle.gap();if(gap>0)await sleep(gap);
+    }
     let state;
     try{
       let send=await daemon.send(job);
+      throttle?.record(job);
       for(let i=0;i<attempts&&!TERMINAL.has(send.state);i++){await sleep(waitMs);send=await daemon.sendStatus(send.id);}
       state=send.state;
     }catch(error){
@@ -96,22 +139,28 @@ async function tickLoop({weave,isStopping}){
     await delay(60000);
   }
 }
+// 3 s after the first failure, doubling up to 60 s. A logged-out daemon refuses every time; waiting longer keeps the log short.
+export const reconnectDelay=failures=>Math.min(3000*2**failures,60000);
 async function follow({daemon,weave,cursors,isStopping}){
-  let cursor=await cursors.load();
+  let cursor=await cursors.load(),failures=0;
   while(!isStopping()){
     const controller=new AbortController();
     try{
       const response=await daemon.stream(cursor,controller.signal);
+      // Connected: whatever was wrong before is over, even if nothing arrives for a long while.
+      failures=0;
       for await(const event of sseEvents(response.body)){
         await handleEvent(event,{daemon,weave,saveCursor:async next=>{cursor=next;await cursors.save(next);}});
         if(isStopping())break;
       }
     }catch(error){console.error('事件连接中断，将从保存的位置继续：'+error.message);}
     finally{controller.abort();}
-    if(!isStopping())await delay(3000);
+    if(!isStopping()){await delay(reconnectDelay(failures));failures++;}
   }
 }
 export async function main(env=process.env){
+  // launchd's log has no times of its own, and times are what you need when WeChat starts acting up.
+  for(const level of ['log','error'])console[level]=(write=>(...args)=>write(new Date().toISOString(),...args))(console[level].bind(console));
   const origin=(env.WEAVE_ORIGIN||'').replace(/\/$/,'');
   if(!origin.startsWith('https://')&&!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin))throw Error('WEAVE_ORIGIN 必须是 HTTPS（本机测试可用 127.0.0.1）');
   if(!env.WECHAT_BRIDGE_TOKEN||env.WECHAT_BRIDGE_TOKEN.length<32)throw Error('请配置 WECHAT_BRIDGE_TOKEN（至少 32 字符）');
@@ -119,12 +168,16 @@ export async function main(env=process.env){
   const daemon=createDaemon({baseUrl:env.WX_BASE_URL||'http://127.0.0.1:6174/v1',token:env.WX_TOKEN,account:env.WX_ACCOUNT});
   const weave=createWeave({origin,token:env.WECHAT_BRIDGE_TOKEN});
   const cursors=cursorStore(resolve(env.WECHAT_BRIDGE_STATE||fileURLToPath(new URL('./.data/cursor.json',import.meta.url))));
-  let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;});
+  // On a stop signal the loops finish what they are doing, but some are asleep for up to a minute, and launchd gives a
+  // process 20 s before it kills it. So leave after 3 s at most. Nothing is lost: an unfinished send keeps its
+  // idempotency key and is claimed again, and the cursor is saved atomically.
+  let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;setTimeout(()=>process.exit(0),3000).unref();});
+  const throttle=throttleFromEnv(env);
   console.log('微信桥接已启动。');
   void follow({daemon,weave,cursors,isStopping:()=>stopping});
   if(env.WEAVE_TICK==='1')void tickLoop({weave,isStopping:()=>stopping});
   while(!stopping){
-    try{await deliverOnce({daemon,weave});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
+    try{await deliverOnce({daemon,weave,throttle});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
     // Weave queues replies from a once-a-minute Cron, and each poll reads D1.
     await delay(20000);
   }

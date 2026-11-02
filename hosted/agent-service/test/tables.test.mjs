@@ -13,7 +13,7 @@ test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络�
   for (const t of ['WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
   assert.deepEqual([...s.skills], ['weave:weekly-review']);
-  assert.equal(s.maxTurns, 20);
+  assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
   assert.equal(s.circuitBreakerUsd, 2);
 });
 
@@ -22,7 +22,7 @@ test('group 范围：群消息谁都能写，所以只有 send_message，没有 
   assert.deepEqual([...s.tools], ['send_message']);
   for (const t of ['WebSearch', 'WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.equal(s.maxTurns, 8);
+  assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
   assert.equal(s.circuitBreakerUsd, 1);
 });
 

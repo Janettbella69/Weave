@@ -55,7 +55,14 @@ Hermes runner 是独立的后台主动判断组件，不替代 Claude Agent SDK�
 
 ## Notion
 
-设置页的 Channels 只显示连接状态。用户点击“一键连接”后完成 Notion OAuth，再从已授权页面中选择一个作为长期记忆与计划归档页面；Token 只在服务端交换并加密保存，浏览器不会收到 Token、客户端密钥或内部地址。部署者将 OAuth 应用配置放在 Sites secret 中（`NOTION_OAUTH_CLIENT_ID`、`NOTION_OAUTH_CLIENT_SECRET`、`NOTION_OAUTH_REDIRECT_URI`），不放入前端或提交到 Git。读取页面用于本人习惯建议，不进入对外协商。已确认计划可手动同步；同步前先持久化发送状态，结果不明确时不自动重发，需先在 Notion 核对。
+用户点一次“连接”，到 Notion 自己的页面选择器里勾选要分享给 Weave 的页面并同意，回到 Weave 就连好了，不再有第二步。Weave 只用勾选的页面；Token 只在服务端交换并加密保存，浏览器不会收到 Token、客户端密钥或内部地址。读取页面用于本人习惯建议，不进入对外协商。已确认计划可手动同步；同步前先持久化发送状态，结果不明确时不自动重发，需先在 Notion 核对。
+
+部署者把 OAuth 应用配置放在环境变量里（`NOTION_OAUTH_CLIENT_ID`、`NOTION_OAUTH_CLIENT_SECRET`，以及 `NOTION_PUBLIC_ORIGIN` 或 `NOTION_OAUTH_REDIRECT_URI`），不放入前端或提交到 Git。
+
+- **回调**（`/api/connections/notion/callback`）永远 303 回网站：成功是 `/?connection=notion&status=connected`；失败是 `status=error&detail=…`，`detail` 为 `access_denied`、`notion_error`、`bad_code_state`、`missing_state`、`missing_config`、`exchange_failed`、`no_pages`（一个页面都没勾选）、`search_failed`（搜索页面出错）、`server_error`（我们这边出错）。配了 `NOTION_PUBLIC_ORIGIN` 时一律回到它。
+- **选哪个页面：** 勾了一个就用它；勾了好几个，在“顶层页面”（不是另一个已勾页面的子页面）里，标题带 weave 的优先，否则选最近编辑的；重新授权时之前选的页面还在就保留。之后可以换。
+- **接口**（都要登录）：`GET connections/notion` 返回 `{state: connected | disconnected | needs_pages | unavailable, page?, workspace?, reason?}`；`POST connections/notion/finish` 在 `needs_pages` 时重试（不用再去 Notion）；`GET connections/notion/pages` 列出现在能选的页面；`POST connections/notion/select {pageId}` 换页面；`POST connections/notion/start` 开始连接；`POST connections/notion/disconnect` 断开。旧的 `GET connections/notion/pending` 和 `POST connections/notion/complete` 保持原样。
+- **本机验证：** `scripts/notion-oauth-e2e`（假 Notion + 真的网站和代理，见那里的 README）。
 
 ## 微信通道（agent-wechat）
 

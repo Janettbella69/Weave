@@ -3,6 +3,7 @@ import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import * as domain from './domain.mjs';
 import {modelClient,habitCouncil,DEFAULT_MODEL} from './model.mjs';
 import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from './notion.mjs';
+import {notionCallback,notionConfigured,connectionState,finishNotion,listNotionPages,selectNotionPage,sweepNotionRuntime,forgetNotionRuntime,clearNotionSettings} from './notion-connect.mjs';
 import {hermesQueue} from './hermes-queue.mjs';
 import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction} from './proactivity.mjs';
 import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wechat.mjs';
@@ -67,24 +68,12 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,now});
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
-    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
+    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
     if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
     // Any other internal path is not a route: answer before reading identity or touching the world.
     if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
-    if(requestPath==='/api/connections/notion/callback'){
-      const redirect=(status,detail='')=>Response.redirect(new URL(`/?connection=notion&status=${status}${detail?`&detail=${encodeURIComponent(detail)}`:''}`,request.headers.get('x-forwarded-proto')==='https'||requestURL.protocol==='https:'?`https://${request.headers.get('host')||requestURL.host}`:`http://${request.headers.get('host')||requestURL.host}`),303);
-      if(request.method!=='GET'||!db||!notionOAuth?.clientId||!notionOAuth?.clientSecret||!notionOAuth?.redirectUri)return redirect('error','missing_config');
-      const code=requestURL.searchParams.get('code'),state=requestURL.searchParams.get('state'),stateKey=state&&/^[a-f0-9]{48}$/i.test(state)?`notion-oauth:${await hash(state)}`:'';
-      if(!code||!stateKey)return redirect('error','bad_code_state');
-      const store=new Store(db),world=await store.load(),pending=world.runtime?.[stateKey];
-      if(!pending||pending.expiresAt<=now||!pending.ownerId)return redirect('error','missing_state');
-      try{
-        const tokenResult=await exchangeNotionOAuth(notionOAuth,code,fetcher),accessToken=typeof tokenResult==='string'?tokenResult:tokenResult.access_token,client=new NotionClient({token:accessToken,fetcher,apiProxy:notionOAuth?.apiProxyUrl||''}); let pages=[]; try{pages=await client.searchPages();}catch(err){console.error('notion_search_pages_failed',err&&err.message||err); pages=[];}
-        world.runtime[`notion-pending:${stateKey.slice('notion-oauth:'.length)}`]={ownerId:pending.ownerId,token:await seal(accessToken,secret,pending.ownerId),pages,expiresAt:now+15*60*1000};
-        delete world.runtime[stateKey];await store.save(world);return redirect('ready');
-      }catch(err){console.error('notion_oauth_exchange_failed',err&&err.message||err);return redirect('error','exchange_failed');
-      }
-    }
+    // The browser comes back from Notion here (no login; the one-time state binds it to the account that clicked connect).
+    if(requestPath==='/api/connections/notion/callback')return notionCallback(request,{db,secret,fetcher,notionOAuth,now});
     if(!identity) return json({error:'请先登录'},401);
     if(!db)return json({error:'数据库尚未就绪'},503);
     const url=requestURL,path=url.pathname.replace(/^\/api\//,'');
@@ -103,11 +92,13 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     if(request.method==='GET'){
       await save();
-      if(path==='status')return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user'});
+      if(path==='status')return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user'});
       if(path==='connections/notion/pending'){
-        const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now)return json({ready:true,pages:value.pages||[]});delete world.runtime[key];}
+        const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now){if(value.reason)continue;return json({ready:true,pages:value.pages||[]});}delete world.runtime[key];}
         await save();return json({ready:false,pages:[]});
       }
+      if(path==='connections/notion')return json(connectionState(world,person,id,notionOAuth,now));
+      if(path==='connections/notion/pages')return json(await listNotionPages(person,id,{secret,fetcher,notionOAuth}));
       if(path==='wechat')return json({binding:publicBinding(person,wechat,world,now),queue:Object.values(world.wechat||{}).filter(x=>x.ownerId===id).slice(-50).map(({id,status,direction,createdAt,error})=>({id,status,direction,createdAt,error}))});
       if(path==='memory')return json({text:await(await notionFor()).memory()});
       if(path==='calendar.ics')return new Response(domain.calendarICS(world,id),{headers:{'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'attachment; filename=weave-calendar.ics','Cache-Control':'no-store'}});
@@ -128,6 +119,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     else if(path==='connections/notion/start'){
       const config=notionOAuthConfig(notionOAuth);if(!config.clientId||!config.redirectUri)domain.fail('Notion 连接暂不可用，请稍后重试',503);
+      sweepNotionRuntime(world,now);
       const state=randomToken();world.runtime[`notion-oauth:${await hash(state)}`]={ownerId:id,expiresAt:now+10*60*1000};output={url:notionOAuthURL(config,state)};
     }
     else if(path==='connections/notion/complete'){
@@ -136,8 +128,11 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt<=now){delete world.runtime[key];continue;}if((value.pages||[]).some(page=>page.id===input.pageId))selected={key,value};}
       if(!selected)domain.fail('Notion 连接已过期，请重新连接',428);
       person.settings.notionToken=selected.value.token;person.settings.notionPageId=input.pageId;person.settings.notionConnectedAt=now;delete world.runtime[selected.key];output={ok:true};
+      const chosen=(selected.value.pages||[]).find(page=>page.id===input.pageId);if(chosen)person.settings.notionPage={id:chosen.id,title:chosen.title};
     }
-    else if(path==='connections/notion/disconnect'){delete person.settings.notionToken;delete person.settings.notionPageId;delete person.settings.notionConnectedAt;}
+    else if(path==='connections/notion/finish')output=await finishNotion(world,person,id,{secret,fetcher,notionOAuth,now});
+    else if(path==='connections/notion/select')output=await selectNotionPage(world,person,id,input,{secret,fetcher,notionOAuth,now});
+    else if(path==='connections/notion/disconnect'){clearNotionSettings(person.settings);forgetNotionRuntime(world,id);}
     else if(path==='wechat/bind')output=await startBinding(world,id,now);
     else if(path==='wechat/unbind')output=await unbind(world,person,id);
     else if(path==='proactivity/configure')configureProactivity(person,input,runtimeStatus(world,!!runnerToken,now).connected,now);
@@ -154,7 +149,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
         if(input.apiKey){if(typeof input.apiKey!=='string'||input.apiKey.length<12||input.apiKey.length>512||/\s/.test(input.apiKey))domain.fail('请输入有效的 API Key');person.settings.deepseekKey=await seal(input.apiKey,secret,id);delete person.settings.verifiedAt;}
         person.settings.model=input.model??person.settings.model??DEFAULT_MODEL;
       }
-      if(input.disconnectNotion===true){delete person.settings.notionToken;delete person.settings.notionPageId;delete person.settings.notionConnectedAt;}
+      if(input.disconnectNotion===true){clearNotionSettings(person.settings);forgetNotionRuntime(world,id);}
       else {
         if(input.notionToken){if(typeof input.notionToken!=='string'||input.notionToken.length<12||input.notionToken.length>512)domain.fail('Notion Token 格式无效');person.settings.notionToken=await seal(input.notionToken,secret,id);}
         if(input.notionPageId!==undefined){if(typeof input.notionPageId!=='string'||!/^[a-f0-9-]{32,36}$/i.test(input.notionPageId))domain.fail('请输入Notion父页面ID，非完整链接');person.settings.notionPageId=input.notionPageId;}
@@ -217,7 +212,11 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     else if(path==='account/delete'){
       if(input.confirm!==true)domain.fail('请确认要永久删除账号');
       const service=agentRuntime==='sdk'?agentServiceConfig(agentServiceUrl,agentServiceToken):null;
-      if(service)await forgetAgentWorkspace({service,ownerId:id,fetcher});
+      if(service){
+        // Each group this account enabled has a workspace of its own. Delete those first, so a failure leaves the whole account in place.
+        for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith('wechat-group:')&&value?.ownerId===id)await forgetAgentWorkspace({service,scope:'group',id:key.slice('wechat-group:'.length),fetcher});
+        await forgetAgentWorkspace({service,ownerId:id,fetcher});
+      }
       domain.deleteAccount(world,id);
       // The guest row only stores the session token, but nothing of theirs should remain.
       if(identity.userId.startsWith('guest:')){try{await db.prepare('DELETE FROM weave_guest_sessions WHERE id=?').bind(identity.userId.slice('guest:'.length)).run();}catch{/* the row is optional metadata */}}

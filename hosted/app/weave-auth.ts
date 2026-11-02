@@ -6,7 +6,7 @@ import {
   chatGPTSignOutPath,
 } from "./chatgpt-auth";
 
-export type WeaveAuthKind = "chatgpt" | "guest";
+export type WeaveAuthKind = "chatgpt" | "guest" | "single";
 
 export type WeaveUser = ChatGPTUser & { authKind: WeaveAuthKind };
 
@@ -48,7 +48,7 @@ export async function getWeaveUser(): Promise<WeaveUser | null> {
         displayName: vps.WEAVE_VPS_NAME || vps.WEAVE_VPS_EMAIL,
         email: vps.WEAVE_VPS_EMAIL,
         fullName: vps.WEAVE_VPS_NAME || null,
-        authKind: "chatgpt",
+        authKind: "single",
       };
     }
   } catch {

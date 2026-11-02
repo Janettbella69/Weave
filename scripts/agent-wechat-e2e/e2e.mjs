@@ -1,5 +1,6 @@
 // End to end: real agent-wechat hub + simulated WeChat upstream + the real bridge + real Weave code.
-// Only the model is stubbed. See README.md in this folder for the simulator setup.
+// Weave runs on the Agent SDK path (WEAVE_AGENT_RUNTIME=sdk). Only the Agent service is faked: it records
+// each /wake and /forget Weave sends and answers with a canned reply. See README.md in this folder for the simulator setup.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,rm,chmod} from 'node:fs/promises';
@@ -11,6 +12,8 @@ const W=new URL('../..',import.meta.url).pathname.replace(/\/$/,'');
 const {NativeWeChatClient}=await import(SRC+'/packages/shared/src/native-client.ts');
 const {createDaemon,handleEvent,deliverOnce,sseEvents}=await import(W+'/hosted/wechat-bridge/bridge.mjs');
 const {handleAPI}=await import(W+'/hosted/lib/weave/api.mjs');
+const {groupSnapshotMessages}=await import(W+'/hosted/lib/weave/wechat.mjs');
+const {verifyCapability}=await import(W+'/hosted/lib/weave/capability.mjs');
 const {Store}=await import(W+'/hosted/lib/weave/store.mjs');
 const {ensurePerson}=await import(W+'/hosted/lib/weave/domain.mjs');
 const {hash}=await import(W+'/hosted/lib/weave/crypto.mjs');
@@ -48,11 +51,18 @@ try{
   let now=Date.parse('2023-11-14T22:13:30Z');
   const callWeave=async(identity,path,data,headers={})=>{const r=await handleAPI(new Request('https://weave.example/api/'+path,{method:data===undefined?'GET':'POST',headers:data?{Origin:'https://weave.example','Content-Type':'application/json',...headers}:headers,body:data?JSON.stringify(data):undefined}),{db,secret,identity:identity?{userId:identity,displayName:identity,email:identity+'@example.test'}:null,wechat:{token:bridgeToken},now});return r.json();};
   // Exactly what the bridge sends: no Origin header.
-  const forwarded=[],prompts=[];let lastResult,stubReply='收到';
-  const stubModel=async(_u,o)=>{prompts.push(JSON.parse(o.body));return Response.json({content:[{type:'text',text:stubReply}],stop_reason:'end_turn'});};
+  const AGENT='https://agent.test',AGENT_TOKEN='a'.repeat(40);
+  const forwarded=[],wakes=[],forgets=[];let lastResult,stubReply='收到';
+  const fakeAgent=async(url,o)=>{
+    if(!String(url).startsWith(AGENT))throw Error('unexpected fetch '+url);
+    const path=new URL(url).pathname,body=JSON.parse(o.body);
+    if(path==='/forget'){forgets.push(body);return Response.json({ok:true});}
+    if(path!=='/wake')throw Error('unexpected path '+path);
+    wakes.push(body);return Response.json({outcome:'success',reply:stubReply,sessionId:'s',tools:[]});
+  };
   const weave=async(path,body)=>{
     if(path==='events'&&body.createdAt)now=Math.max(now,Date.parse(body.createdAt)+1000);
-    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},agentProviderApiKey:'managed-provider-key',fetcher:stubModel,now});
+    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},agentRuntime:'sdk',agentServiceUrl:AGENT,agentServiceToken:AGENT_TOKEN,fetcher:fakeAgent,now});
     if(!r.ok)throw Error('weave '+path+' '+r.status+' '+await r.text());
     const result=await r.json();if(path==='events'){forwarded.push({message:body,result});lastResult=result;}return result;
   };
@@ -84,6 +94,7 @@ try{
   stubReply='你好呀';assert.equal((await schedule()).processed,1);await deliver();
   const mei2=await a.messages(ACCOUNT,'sim_mei');
   check('私聊回复内容正确',()=>assert.ok(mei2.items.some(m=>m.direction==='outgoing'&&m.body==='你好呀')));
+  check('私聊叫醒的是本人范围，通道是微信，带的是对方说的话',()=>{const w=wakes.at(-1);assert.equal(w.scope,'owner');assert.equal(w.id,aliceId);assert.equal(w.trigger.channel,'wechat');assert.equal(w.trigger.direct,true);assert.equal(w.trigger.text,'你好');});
   const sendCountBefore=forwarded.length;await new Promise(r=>setTimeout(r,500));
   check('自己发出的消息不会被转回 Weave（不会自言自语）',()=>{assert.equal(forwarded.length,sendCountBefore);assert.ok(forwarded.every(f=>f.message.direction==='incoming'));});
 
@@ -113,16 +124,21 @@ try{
   check('开启声明真实发到群里',()=>assert.ok(roomAfter.items.some(m=>m.direction==='outgoing'&&m.body.includes('已开启打卡助理'))));
   const context=await nextResult('context',()=>groupSay('sim_daniel','今天走了八千步'));
   check('普通消息只存上下文，不调模型',()=>{assert.equal(context.result.stored,true);});
-  const promptsBefore=prompts.length;assert.equal((await schedule()).processed,0);
-  check('普通消息没有触发模型',()=>assert.equal(prompts.length,promptsBefore));
+  const wakesBefore=wakes.length;assert.equal((await schedule()).processed,0);
+  check('普通消息没有叫醒 Agent',()=>assert.equal(wakes.length,wakesBefore));
   const skip=await nextResult('skip',()=>groupSay('sim_daniel','别记 今天情绪很差'));
   check('「别记」不保存',()=>assert.equal(skip.result.skipped,true));
   const ask=await nextResult('ask',()=>groupSay('sim_daniel','@助理 我们这周怎么样',true));
   check('@ 助理的提问进入队列',()=>assert.equal(ask.result.queued,true));
   stubReply='你们这周都在坚持';assert.equal((await schedule()).processed,1);
-  const prompt=JSON.stringify(prompts.at(-1));
-  check('群回复的提示词包含群聊记录',()=>{assert.match(prompt,/八千步/);assert.match(prompt,/这周怎么样/);});
-  check('群回复的提示词没有微信号，也没有「别记」内容',()=>{for(const s of ['sim_daniel','sim_mei',room,'情绪很差'])assert.ok(!prompt.includes(s),s);});
+  const {capability:groupCapability,...groupWake}=wakes.at(-1),groupId=await hash(room);
+  const request=JSON.stringify(groupWake);
+  check('群里 @ 叫醒的是群范围：id 是群的哈希，通道是 group，带的是提问的话',()=>{assert.equal(groupWake.scope,'group');assert.equal(groupWake.id,groupId);assert.equal(groupWake.trigger.channel,'group');assert.match(groupWake.trigger.text,/^成员\d+：.*这周怎么样/);});
+  const claims=await verifyCapability(secret,groupCapability,now);
+  check('群叫醒的通行证写明了群，通道是微信，是直接找它的一轮',()=>{assert.equal(claims.scope,'group');assert.equal(claims.group,groupId);assert.equal(claims.owner,aliceId);assert.equal(claims.channel,'wechat');assert.equal(claims.direct,true);});
+  check('群叫醒的请求里没有微信号、群号，也没有「别记」内容',()=>{for(const s of ['sim_daniel','sim_mei',room,'情绪很差','Alice'])assert.ok(!request.includes(s),s);});
+  const snapshot=await groupSnapshotMessages(await new Store(db).load(),{groupId,ownerId:aliceId,secret});
+  check('群上下文以成员编号的行交给快照：有八千步，没有微信号，也没有「别记」内容',()=>{const text=JSON.stringify(snapshot);assert.match(text,/八千步/);assert.match(text,/成员1/);for(const s of ['sim_daniel','sim_mei',room,'情绪很差'])assert.ok(!text.includes(s),s);});
   await deliver();
   const replied=(await a.messages(ACCOUNT,room)).items.find(m=>m.direction==='outgoing'&&m.body.includes('你们这周都在坚持'));
   console.log('group reply in hub:',JSON.stringify({body:replied?.body,mentions:replied?.mentions}));
@@ -132,6 +148,8 @@ try{
   check('群聊原文和微信号不以明文进数据库',()=>{for(const s of ['八千步','这周怎么样','你们这周都在坚持',room])assert.ok(!dump2.includes(s),s);});
   const close=await nextResult('close',()=>groupSay('sim_daniel','@助理 关闭打卡群',true));
   check('任何成员都能关闭',()=>assert.equal(close.result.closed,true));
+  await schedule();
+  check('关闭群之后，Agent 服务被要求删掉这个群的工作目录',()=>assert.deepEqual(forgets,[{scope:'group',id:groupId}]));
   await deliver();
   const after=await nextResult('after close',()=>groupSay('sim_mei','关闭之后的消息'));
   check('关闭后不再读取',()=>assert.equal(after.result.ignored,true));
