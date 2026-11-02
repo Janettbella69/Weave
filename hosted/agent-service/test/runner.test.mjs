@@ -169,3 +169,14 @@ test('本机 sandbox：Bash 连不了网', {skip: platform() !== 'darwin' && pro
   assert.match(net, /EXIT=[1-9]/, net);
 });
 
+
+test('上游拒绝这把 Key（401）时一轮很快结束，不让 CLI 反复重试', {timeout: 240000}, async () => {
+  fresh(() => ({status: 401, type: 'authentication_error'}));
+  const started = Date.now();
+  const r = await h.wakeOnce();
+  const seconds = (Date.now() - started) / 1000;
+  const attempts = h.fake.captured.filter(c => c.path.startsWith('/v1/messages') && !c.path.includes('count_tokens')).length;
+  assert.equal(r.outcome, 'error');
+  assert.ok(seconds < 20, `took ${seconds}s, upstream was asked ${attempts} times`);
+  assert.ok(attempts <= 2, `upstream was asked ${attempts} times`);
+});

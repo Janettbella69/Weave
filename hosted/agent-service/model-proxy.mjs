@@ -10,6 +10,8 @@ const MAX_BODY = 8 * 1024 * 1024;
 const QUOTA_MESSAGE = '今天的模型额度用完了，明天再来。';
 const FORWARD_REQUEST = ['anthropic-version', 'anthropic-beta'];
 const FORWARD_RESPONSE = ['content-type', 'request-id', 'retry-after', 'x-should-retry'];
+// 上游这些错误重试也没用（Key 无效、请求不合规）。不告诉 CLI 的话，它会退避重试十次、拖上三分钟（实测）。
+const NO_RETRY = new Set([400, 401, 403, 404, 413, 422]);
 
 function sendError(res, status, type, message, headers = {}) {
   res.writeHead(status, {'Content-Type': 'application/json', ...headers});
@@ -99,6 +101,7 @@ export function createModelProxy({keys, upstreams = {}, ledger, limits, fetcher 
     }
     const outgoing = {};
     for (const name of FORWARD_RESPONSE) { const value = upstream.headers.get(name); if (value) outgoing[name] = value; }
+    if (NO_RETRY.has(upstream.status)) outgoing['x-should-retry'] = 'false';
     res.writeHead(upstream.status, outgoing);
     const meter = tokenMeter();
     try {

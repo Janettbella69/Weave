@@ -56,6 +56,11 @@ export async function startFakeModel() {
     }
     if (!req.url.startsWith('/v1/messages')) { res.writeHead(404); return res.end('{}'); }
     const blocks = route(body) ?? {text: 'ok'};
+    // A route may return {status, type} to answer like a provider that rejects the request.
+    if (blocks.status) {
+      res.writeHead(blocks.status, {'Content-Type': 'application/json'});
+      return res.end(JSON.stringify({type: 'error', error: {type: blocks.type || 'authentication_error', message: 'rejected by fake model'}}));
+    }
     stream(res, Array.isArray(blocks) ? blocks : [blocks], usage, body.model, 'msg_' + captured.length);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

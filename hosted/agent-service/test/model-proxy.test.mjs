@@ -156,3 +156,27 @@ test('不同的一轮拿到不同的令牌，关掉一个不影响另一个', as
   assert.equal(ok.status, 200);
   await ok.text();
 });
+
+test('上游说 Key 无效或请求不合规（401/403/400）时原样转回，并加 x-should-retry: false，让 CLI 别重试', async t => {
+  const s = await setup(); t.after(s.close);
+  for (const status of [401, 403, 400]) {
+    s.fake.script(() => ({status}));
+    const {token} = s.proxy.openRun({account: 'u:a', provider: 'deepseek', model: 'deepseek-flash'});
+    const r = await s.call('/v1/messages', {token});
+    assert.equal(r.status, status);
+    assert.equal(r.headers.get('x-should-retry'), 'false', String(status));
+    await r.text();
+  }
+});
+
+test('上游 429 或 500 这类可以重试的错误不加 x-should-retry', async t => {
+  const s = await setup(); t.after(s.close);
+  for (const status of [429, 500]) {
+    s.fake.script(() => ({status, type: 'overloaded_error'}));
+    const {token} = s.proxy.openRun({account: 'u:a', provider: 'deepseek', model: 'deepseek-flash'});
+    const r = await s.call('/v1/messages', {token});
+    assert.equal(r.status, status);
+    assert.equal(r.headers.get('x-should-retry'), null, String(status));
+    await r.text();
+  }
+});

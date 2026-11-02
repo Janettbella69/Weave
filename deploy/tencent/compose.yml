@@ -9,6 +9,8 @@ services:
       context: ../../hosted
       dockerfile: Dockerfile.vps
     image: weave-web:local
+    # 让容器里的进程能正常收到停止信号（不然要等 10 秒被强制杀掉）。
+    init: true
     env_file: web.env
     environment:
       AGENT_SERVICE_URL: http://agent:4320
@@ -25,6 +27,8 @@ services:
       context: ../../hosted/agent-service
       dockerfile: Dockerfile
     image: weave-agent-service:local
+    # 让容器里的进程能正常收到停止信号（不然要等 10 秒被强制杀掉）。
+    init: true
     env_file: agent.env
     user: "${HOST_UID:?先跑 setup-env.sh}:${HOST_GID:?先跑 setup-env.sh}"
     group_add:
