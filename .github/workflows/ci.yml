@@ -20,9 +20,7 @@ jobs:
       - name: Hermes adapter isolation and protocol configuration
         run: python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
       - name: HTTP and legacy connector regression
-        run: |
-          npm run test:e2e
-          npm run test:wechat
+        run: npm run test:e2e
       - name: Install product dependencies
         working-directory: hosted
         run: npm ci --no-audit --no-fund

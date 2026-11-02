@@ -8,19 +8,17 @@ Verified 2026-10-30 against primary documentation:
 
 Muse / cue / dots: ambiguous references, awaiting exact links. No claims about those products are made.
 
-## Gewechat integration (verified 2026-10-30)
+## agent-wechat integration (verified 2026-11-02)
 
-- Repository is a technical archive, not a complete deployable service: https://github.com/Devo919/Gewechat
-- Historical request routes and parameters checked against the repository Java client via GitHub API: `api/base/MessageApi.java`, `api/base/LoginApi.java`, `util/OkhttpUtil.java`.
-- Adapter uses `/v2/api`, `X-GEWE-TOKEN`, `/message/postText` and `ret=200`. Does not copy trust-all TLS code.
-- Callback outer casing observed in historical ecosystem integrations; real deployment compatibility remains unverified.
-- Real Gewechat and Notion credentials absent at implementation time; tests use mocked services.
+- Gewechat was removed: upstream is unmaintained and GeWe no longer accepted new registrations when checked on 2026-11-02.
+- https://github.com/thisnick/agent-wechat (MIT) is a third-party client, not a Tencent API. It logs in as a real WeChat account; account risk is not quantified anywhere we could find, so use a secondary account.
+- Routes, `Idempotency-Key`, event stream and `mentions` shape come from its `docs/src/content/docs/use/api.mdx`, `use/groups.mdx` and `packages/shared/src/native.generated.ts`.
 
 ## Weave v0.2 scope
 
 - Two separately stored local personas with independently scoped ParticipantAgent snapshots. Local consent, proposals, counterproposals and mutual confirmation protocol; not an implementation of Google A2A or a connected third-party agent network.
 - One-time reminders execute only while the Node server is running; local calendar plus ICS export, no external calendar API claimed.
-- Gewechat maps two explicitly configured wxids to their own personal state. Notion pages configured separately; no fallback to another person's page.
+- Notion pages configured separately; no fallback to another person's page. The local demo has no WeChat connection.
 - Browser runtime discovery returned no available browser. Local QA subsequently passed with standalone headless Chromium against an isolated server/data directory: desktop 1440×1000 and mobile 390×844, persona loading/failure recovery, habit planning, mutual confirmation, calendar download and reminder creation/cancellation. No page errors or mobile horizontal overflow were observed; external integrations remain mock-tested only.
 
 ## Weave v1 product implementation (2026-10-30)

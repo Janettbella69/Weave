@@ -1,7 +1,7 @@
 import {Store} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
-import {GewechatClient,drainGewechat} from './gewechat.mjs';
-import {chatFor} from './api.mjs';
+import {processInbound,wechatConfig} from './wechat.mjs';
+import {chatFor,groupChatFor} from './api.mjs';
 
 function queueReminderMessages(world,now,enabled){
   if(!enabled)return 0;
@@ -17,18 +17,15 @@ function queueReminderMessages(world,now,enabled){
   return queued;
 }
 
-export async function runScheduled({db,secret,env={},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),clientFactory=options=>new GewechatClient(options)}){
+export async function runScheduled({db,secret,env={},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
   if(!db)throw Error('Reminder database is unavailable');
+  const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey};
   for(let attempt=0;attempt<3;attempt++)try{
     const store=new Store(db),world=await store.load();
-    const config=env.baseUrl?env:{baseUrl:env.GEWECHAT_BASE_URL||'',token:env.GEWECHAT_TOKEN||'',appId:env.GEWECHAT_APP_ID||''};
-    const enabled=!!(config.baseUrl&&config.token&&config.appId&&secret),delivered=deliverReminders(world,now),queued=queueReminderMessages(world,now,enabled);
-    let sent=0;
-    if(enabled){
-      const client=clientFactory({baseUrl:config.baseUrl,token:config.token,appId:config.appId});
-      sent=await drainGewechat(world,{client,secret,now,handleMessage:(person,text)=>chatFor(person,world,text,{secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey})});
-    }
-    if(delivered||queued||sent)await store.save(world);
-    return {delivered,queued,sent};
+    const enabled=!!(wechatConfig(env).token&&secret),delivered=deliverReminders(world,now),queued=queueReminderMessages(world,now,enabled);
+    // Replies are only queued here; the local bridge is what actually reaches WeChat.
+    const processed=enabled?await processInbound(world,{secret,now,handleMessage:(person,text)=>chatFor(person,world,text,agent),handleGroup:(person,input)=>groupChatFor(person,world,input,agent)}):0;
+    if(delivered||queued||processed)await store.save(world);
+    return {delivered,queued,processed};
   }catch(error){if(attempt===2)throw error;}
 }
