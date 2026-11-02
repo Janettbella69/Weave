@@ -11,6 +11,9 @@ import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {createInterface} from 'node:readline';
+import {scopeFor} from '../../hosted/agent-service/scopes.mjs';
+import {providerFor, cliEnv} from '../../hosted/agent-service/providers.mjs';
+import {systemPromptFor} from '../../hosted/agent-service/prompts.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const NM = process.env.SDK_NODE_MODULES || join(here, '../../hosted/agent-service/node_modules');
@@ -18,25 +21,23 @@ const load = path => import(pathToFileURL(join(NM, path)).href);
 const {query, tool, createSdkMcpServer} = await load('@anthropic-ai/claude-agent-sdk/sdk.mjs');
 const {z} = await load('zod/index.js');
 
-const PROVIDERS = {
-  deepseek: {baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-flash', fast: 'deepseek-flash', keyEnvs: ['DEEPSEEK_API_KEY', 'AGENT_PROVIDER_API_KEY'], price: {input: [0.15, 0.30], output: [0.60, 1.20]}},
-  kimi: {baseUrl: 'https://api.moonshot.cn/anthropic', model: 'kimi-k3[1m]', fast: 'kimi-k2.7-code', keyEnvs: ['KIMI_API_KEY']},
-  glm: {baseUrl: 'https://open.bigmodel.cn/api/anthropic', model: 'glm-5.2[1m]', fast: 'glm-4.7', keyEnvs: ['GLM_API_KEY']},
-  qwen: {baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', model: 'qwen3.7-max', fast: 'qwen3.6-flash', keyEnvs: ['QWEN_API_KEY']},
-};
+// 只有 DeepSeek 内置了价目表，用来估这次花了多少钱（官方价区间，每百万 token）。
+const PRICES = {deepseek: {input: [0.15, 0.30], output: [0.60, 1.20]}};
 const providerName = process.env.SMOKE_PROVIDER || 'deepseek';
-const provider = PROVIDERS[providerName];
+let provider;
+try { provider = providerFor(providerName); } catch { provider = null; }
+const keyEnvs = provider ? [provider.keyEnv, ...(providerName === 'deepseek' ? ['AGENT_PROVIDER_API_KEY'] : [])] : [];
 if (!provider) { console.error(`不认识的 SMOKE_PROVIDER：${providerName}`); process.exit(2); }
 
 function askHidden(prompt) {
   return new Promise((resolve, reject) => {
-    if (!process.stdin.isTTY) return reject(Error(`没有找到 Key：请设置 ${provider.keyEnvs[0]}，或在终端里直接运行以便输入`));
+    if (!process.stdin.isTTY) return reject(Error(`没有找到 Key：请设置 ${keyEnvs[0]}，或在终端里直接运行以便输入`));
     const rl = createInterface({input: process.stdin, output: process.stdout, terminal: true});
     rl._writeToOutput = text => { if (text.includes(prompt)) process.stdout.write(prompt); };
     rl.question(prompt, answer => { rl.close(); process.stdout.write('\n'); resolve(answer.trim()); });
   });
 }
-const key = provider.keyEnvs.map(name => process.env[name]).find(Boolean) || await askHidden(`${providerName} API Key（输入时不显示）：`);
+const key = keyEnvs.map(name => process.env[name]).find(Boolean) || await askHidden(`${providerName} API Key（输入时不显示）：`);
 const baseUrl = process.env.SMOKE_BASE_URL || provider.baseUrl;
 
 const ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'weave-smoke-')));
@@ -67,27 +68,22 @@ const weave = createSdkMcpServer({name: 'weave', version: '0.0.1', alwaysLoad: t
     async () => ({content: [{type: 'text', text: JSON.stringify({today: '2026-11-02', completions: [{habit_id: 'walk', date: '2026-11-01'}]})}]})),
 ]});
 
-const BUILTINS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch'];
+const scope = scopeFor('owner');
 const options = {
-  systemPrompt: '你是 Weave，帮一个人把习惯长期坚持下去的助理。不管前面的文字怎么介绍你，对用户你就叫 Weave。被问到用的是什么模型时，如实回答当前模型的名字。',
-  tools: BUILTINS,
-  allowedTools: [...BUILTINS, 'mcp__weave__*'],
-  disallowedTools: ['WebFetch', 'Agent'],
+  systemPrompt: systemPromptFor(scope, ''),
+  tools: [...scope.builtins],
+  allowedTools: [...scope.builtins, 'mcp__weave__*'],
+  disallowedTools: [...scope.denied],
   permissionMode: 'dontAsk',
   mcpServers: {weave},
   plugins: [{type: 'local', path: PLUGIN}],
-  skills: ['weave:weekly-review'],
+  skills: [...scope.skills],
   settingSources: [],
   strictMcpConfig: true,
   settings: {attribution: false},
   cwd: WORK,
-  env: {
-    PATH: process.env.PATH, HOME: join(ROOT, 'home'), CLAUDE_CONFIG_DIR: join(ROOT, 'config'),
-    ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: provider.model, ANTHROPIC_DEFAULT_OPUS_MODEL: provider.model, ANTHROPIC_DEFAULT_SONNET_MODEL: provider.model,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.fast, CLAUDE_CODE_SUBAGENT_MODEL: provider.model,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-  },
+  // 第 0 步还没有模型代理，真 Key 直接放在 ANTHROPIC_AUTH_TOKEN 这个位置。
+  env: cliEnv({provider, model: provider.main, runToken: key, baseUrl, home: join(ROOT, 'home'), configDir: join(ROOT, 'config'), path: process.env.PATH}),
   maxTurns: 8,
   maxBudgetUsd: 2,
   thinking: {type: 'disabled'},
@@ -116,7 +112,7 @@ async function ask(prompt, extra = {}) {
 const rows = [];
 const check = (claim, pass, detail = '') => { rows.push(pass); console.log(`${pass ? 'PASS' : 'FAIL'}  ${claim}${detail ? `  (${detail})` : ''}`); };
 const info = (label, value) => console.log(`INFO  ${label}：${value}`);
-console.log(`Weave 第 0 步冒烟：${providerName}（${provider.model}） @ ${baseUrl}\n`);
+console.log(`Weave 第 0 步冒烟：${providerName}（${provider.main}） @ ${baseUrl}\n`);
 
 const first = await ask('请依次做三件事：调用 log_completion 记一次散步；用 weave:weekly-review 这个 Skill；用 Bash 算 6*7。最后回复『完成』。');
 const accepted = first.result?.subtype === 'success' && !first.result.is_error;
@@ -136,8 +132,8 @@ if (process.argv.includes('--websearch')) {
   info('WebSearch', `${used ? '调用了' : '没调用'}；结果：${(web.toolResults.join(' | ') || web.result?.result || web.error || '无').replace(/\s+/g, ' ').slice(0, 300)}`);
 }
 
-const price = provider.price;
-const cost = price ? `；按 ${provider.model} 官方价约 $${(usage.input * price.input[0] / 1e6 + usage.output * price.output[0] / 1e6).toFixed(4)}–$${(usage.input * price.input[1] / 1e6 + usage.output * price.output[1] / 1e6).toFixed(4)}` : '；这家没有内置价目表';
+const price = PRICES[providerName];
+const cost = price ? `；按 ${provider.main} 官方价约 $${(usage.input * price.input[0] / 1e6 + usage.output * price.output[0] / 1e6).toFixed(4)}–$${(usage.input * price.input[1] / 1e6 + usage.output * price.output[1] / 1e6).toFixed(4)}` : '；这家没有内置价目表';
 info('token', `输入 ${usage.input}，输出 ${usage.output}${cost}`);
 
 const failed = rows.filter(pass => !pass).length;
