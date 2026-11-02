@@ -68,7 +68,7 @@ test('/wake 返回 500、连不上、或这一轮没成功：回复「结果不�
   for (const agent of [
     async () => new Response('boom', {status: 500}),
     async () => { throw Error('connect ECONNREFUSED'); },
-    async () => ok({outcome: 'error_max_turns', reply: '', sessionId: 's', tools: []}),
+    async () => ok({outcome: 'error_max_budget_usd', reply: '', sessionId: 's', tools: []}),
     async () => ok({outcome: 'success', reply: '   ', sessionId: 's', tools: []}),
   ]) {
     const h = harness(agent);

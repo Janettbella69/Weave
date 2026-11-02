@@ -8,6 +8,9 @@ import {platform} from 'node:os';
 import {createHarness, message, REAL_KEY, PLUGIN_DIR} from './helpers/harness.mjs';
 import {isMain, lastToolResults, steps} from './helpers/fake-model.mjs';
 import {scopeFor} from '../scopes.mjs';
+import {wake} from '../runner.mjs';
+import {isolationFor} from '../sandbox.mjs';
+import {providerFor} from '../providers.mjs';
 
 let h;
 before(async () => { h = await createHarness(); });
@@ -104,16 +107,36 @@ test('Agent 用 Bash 写的 .claude/settings.json Hook，下一轮不执行', as
   assert.ok(!existsSync(marker));
 });
 
-test('maxTurns 到了 outcome 是 error_max_turns；熔断到了是 error_max_budget_usd；都不重试', async () => {
+test('不设轮数上限：传给 query() 的 options 里没有 maxTurns', async () => {
+  let options = null;
+  const queryFn = async function* (call) {
+    options = call.options;
+    yield {type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: 's', total_cost_usd: 0};
+  };
+  const scope = scopeFor('owner');
+  const isolation = isolationFor({mode: 'local', scope, dirs: h.tenant(), pluginDir: PLUGIN_DIR, proxy: {url: h.proxyUrl}, sandbox: false});
+  const r = await wake({scope, trigger: message('你好'), provider: providerFor('deepseek'), model: 'deepseek-flash', runToken: 'run-token', isolation, rpc: async () => ({ok: true, text: 'ok'}), queryFn});
+  assert.equal(r.outcome, 'success');
+  assert.ok(options, 'query() was never called');
+  assert.ok(!('maxTurns' in options), `maxTurns is in options: ${options.maxTurns}`);
+  assert.equal(options.maxBudgetUsd, scopeFor('owner').circuitBreakerUsd);
+});
+
+test('连续 25 次工具调用也能跑完（以前到 20 轮就停）', {timeout: 120000}, async () => {
+  const calls = Array.from({length: 25}, (_, i) => ({tool: 'Bash', input: {command: `echo ${i + 1}`, description: 'x'}}));
+  fresh(steps([...calls, {text: '25 次都做完了'}]));
+  const r = await h.wakeOnce();
+  assert.equal(r.outcome, 'success');
+  assert.equal(r.reply, '25 次都做完了');
+  assert.equal(mainCalls().length, 26, 'the model should be asked 25 times for a tool call and once more for the reply');
+});
+
+test('熔断到了是 error_max_budget_usd，不重试', async () => {
   const loop = b => isMain(b) ? {tool: 'Bash', input: {command: 'echo 1', description: 'x'}} : {text: 't'};
-  fresh(loop);
-  const turns = await h.wakeOnce({scope: {...scopeFor('owner'), maxTurns: 2}});
-  assert.equal(turns.outcome, 'error_max_turns');
-  assert.equal(turns.reply, '');
-  assert.equal(mainCalls().length, 2);
   fresh(loop, {input: 800000, output: 100000});
   const budget = await h.wakeOnce({scope: {...scopeFor('owner'), circuitBreakerUsd: 0.01}});
   assert.equal(budget.outcome, 'error_max_budget_usd');
+  assert.equal(budget.reply, '');
   assert.equal(mainCalls().length, 1);
 });
 
