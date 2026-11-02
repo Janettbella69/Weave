@@ -30,8 +30,8 @@ export function createDaemon({baseUrl,token,account,fetcher=fetch}){
   };
 }
 export function createWeave({origin,token,fetcher=fetch}){
-  return async(path,data)=>{
-    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(25000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data)});
+  return async(path,data,{timeoutMs=25000}={})=>{
+    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(timeoutMs),headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data)});
     if(!response.ok){const error=Error('Weave 拒绝了请求 ('+response.status+')');error.status=response.status;throw error;}
     return response.json();
   };
@@ -89,6 +89,13 @@ export function cursorStore(file){
     async save(cursor){await mkdir(dirname(file),{recursive:true,mode:0o700});const temp=file+'.tmp';await writeFile(temp,JSON.stringify({cursor}),{mode:0o600});await rename(temp,file);},
   };
 }
+// For deployments where Cron does not fire. A tick can wait on several model calls.
+async function tickLoop({weave,isStopping}){
+  while(!isStopping()){
+    try{await weave('tick',{},{timeoutMs:170000});}catch(error){console.error('定时任务暂时跑不了：'+error.message);}
+    await delay(60000);
+  }
+}
 async function follow({daemon,weave,cursors,isStopping}){
   let cursor=await cursors.load();
   while(!isStopping()){
@@ -115,6 +122,7 @@ export async function main(env=process.env){
   let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;});
   console.log('微信桥接已启动。');
   void follow({daemon,weave,cursors,isStopping:()=>stopping});
+  if(env.WEAVE_TICK==='1')void tickLoop({weave,isStopping:()=>stopping});
   while(!stopping){
     try{await deliverOnce({daemon,weave});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
     // Weave queues replies from a once-a-minute Cron, and each poll reads D1.

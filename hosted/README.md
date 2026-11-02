@@ -55,7 +55,7 @@ Hermes runner 是独立的后台主动判断组件，不替代 Claude Agent SDK�
 
 Weave 的 Worker 不直接连微信。`hosted/wechat-bridge/` 和 [agent-wechat](https://github.com/thisnick/agent-wechat) 跑在同一台电脑上，只向外连接 Weave：把收到的文字消息发到 `/api/internal/wechat/events`，再从 `/api/internal/wechat/claim` 领取要发送的消息，用 `/api/internal/wechat/receipt` 回报结果。三个接口都用 `WECHAT_BRIDGE_TOKEN` 鉴权，这个密钥需要配置在 Sites 环境变量和桥接两边。
 
-消息先写入 D1，由每分钟的 Cron 调用 Agent，再进入发送队列，所以回复通常有一到两分钟的延迟。桥接所在的电脑关机时微信不在线；恢复后，6 小时内的消息会补回复，更早的私聊被忽略，更早的群消息只保存为上下文。
+消息先写入 D1，由每分钟的 Cron 调用 Agent，再进入发送队列，所以回复通常有一到两分钟的延迟。用 `wrangler dev` 部署时 Cron 不会触发，要在桥接里设 `WEAVE_TICK=1`，见 [`docs/WECHAT.md`](../docs/WECHAT.md)。桥接所在的电脑关机时微信不在线；恢复后，6 小时内的消息会补回复，更早的私聊被忽略，更早的群消息只保存为上下文。
 
 登录 Weave 后进入“个人设置”里的 Channels，点击微信“连接”，再在自己的微信中发送页面显示的一次性 `绑定 <code>` 消息。之后微信消息进入该账号自己的 Personal Agent、反馈记录和 Notion 长期记忆；每个账号最多绑定一个微信身份，可随时断开。
 

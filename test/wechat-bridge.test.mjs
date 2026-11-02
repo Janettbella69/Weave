@@ -86,6 +86,7 @@ test('the daemon error code is kept for the log',async()=>{
 test('the Weave client posts to the internal route with the bridge token',async()=>{
   let call;const weave=createWeave({origin:'https://weave.example/',token:'t',fetcher:async(url,options)=>{call={url,options};return Response.json({ok:true});}});
   await weave('claim',{});assert.equal(call.url,'https://weave.example/api/internal/wechat/claim');assert.equal(call.options.headers.Authorization,'Bearer t');
+  await weave('tick',{},{timeoutMs:170000});assert.equal(call.url,'https://weave.example/api/internal/wechat/tick');
   const failing=createWeave({origin:'https://weave.example',token:'t',fetcher:async()=>new Response('{}',{status:503})});
   await assert.rejects(failing('claim',{}),e=>e.status===503);
 });

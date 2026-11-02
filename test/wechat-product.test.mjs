@@ -27,6 +27,14 @@ function schedule(h,reply='收到',seen=[]){
   return runScheduled({db:h.db,secret,env:{WECHAT_BRIDGE_TOKEN:token},agentProviderApiKey:'managed-provider-key',fetcher,now:h.now});
 }
 
+test('the tick endpoint needs the bridge token and does the scheduled work',async()=>{
+  const h=await setup();await h.bind();await h.bridge('events',h.message('你好'));
+  assert.equal((await h.call(null,'internal/wechat/tick',{})).status,401);
+  const r=await h.bridge('tick',{});
+  // No model is configured in this harness, so the message is attempted and recorded as uncertain.
+  assert.equal(r.status,200);assert.equal(r.data.processed,1);
+  assert.equal(Object.values((await h.read()).wechat).filter(x=>x.direction==='inbound'&&x.status==='queued').length,0);
+});
 test('bridge endpoints reject a missing or wrong token',async()=>{
   const h=await setup();
   assert.equal((await h.call(null,'internal/wechat/claim',{})).status,401);

@@ -6,6 +6,7 @@ import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from 
 import {hermesQueue} from './hermes-queue.mjs';
 import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction} from './proactivity.mjs';
 import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wechat.mjs';
+import {runScheduled} from './scheduler.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
   if(!request.headers.get('content-type')?.startsWith('application/json'))domain.fail('需要 JSON 请求',415);
@@ -57,7 +58,9 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
     const requestURL=new URL(request.url),requestPath=requestURL.pathname;
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,readBody:body,now});
-    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,now});
+    // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
+    const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token},agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
+    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
     if(requestPath==='/api/connections/notion/callback'){
       const redirect=(status)=>Response.redirect(new URL(`/`+`?connection=notion&status=${status}`,request.url),303);
       if(request.method!=='GET'||!db||!notionOAuth?.clientId||!notionOAuth?.clientSecret||!notionOAuth?.redirectUri)return redirect('error');

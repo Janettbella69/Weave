@@ -11,7 +11,6 @@ const W=new URL('../..',import.meta.url).pathname.replace(/\/$/,'');
 const {NativeWeChatClient}=await import(SRC+'/packages/shared/src/native-client.ts');
 const {createDaemon,handleEvent,deliverOnce,sseEvents}=await import(W+'/hosted/wechat-bridge/bridge.mjs');
 const {handleAPI}=await import(W+'/hosted/lib/weave/api.mjs');
-const {runScheduled}=await import(W+'/hosted/lib/weave/scheduler.mjs');
 const {Store}=await import(W+'/hosted/lib/weave/store.mjs');
 const {ensurePerson}=await import(W+'/hosted/lib/weave/domain.mjs');
 const {hash}=await import(W+'/hosted/lib/weave/crypto.mjs');
@@ -49,15 +48,16 @@ try{
   let now=Date.parse('2023-11-14T22:13:30Z');
   const callWeave=async(identity,path,data,headers={})=>{const r=await handleAPI(new Request('https://weave.example/api/'+path,{method:data===undefined?'GET':'POST',headers:data?{Origin:'https://weave.example','Content-Type':'application/json',...headers}:headers,body:data?JSON.stringify(data):undefined}),{db,secret,identity:identity?{userId:identity,displayName:identity,email:identity+'@example.test'}:null,wechat:{token:bridgeToken},now});return r.json();};
   // Exactly what the bridge sends: no Origin header.
-  const forwarded=[];let lastResult;
+  const forwarded=[],prompts=[];let lastResult,stubReply='收到';
+  const stubModel=async(_u,o)=>{prompts.push(JSON.parse(o.body));return Response.json({content:[{type:'text',text:stubReply}],stop_reason:'end_turn'});};
   const weave=async(path,body)=>{
     if(path==='events'&&body.createdAt)now=Math.max(now,Date.parse(body.createdAt)+1000);
-    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},now});
+    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},agentProviderApiKey:'managed-provider-key',fetcher:stubModel,now});
     if(!r.ok)throw Error('weave '+path+' '+r.status+' '+await r.text());
     const result=await r.json();if(path==='events'){forwarded.push({message:body,result});lastResult=result;}return result;
   };
-  const prompts=[];let stubReply='收到';
-  const schedule=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:bridgeToken},agentProviderApiKey:'managed-provider-key',now,fetcher:async(_u,o)=>{prompts.push(JSON.parse(o.body));return Response.json({content:[{type:'text',text:stubReply}],stop_reason:'end_turn'});}});
+  // The same call the bridge makes each minute with WEAVE_TICK=1.
+  const schedule=()=>weave('tick',{});
   const daemon=createDaemon({baseUrl:hub.ready.endpoint+'/v1',token,account:ACCOUNT});
   let cursor='';
   const follow=()=>{const controller=new AbortController();const done=(async()=>{try{const r=await daemon.stream(cursor,controller.signal);for await(const e of sseEvents(r.body))await handleEvent(e,{daemon,weave,saveCursor:async c=>{cursor=c;}});}catch(e){if(!controller.signal.aborted)console.log('stream error',e.message);}})();return {stop:async()=>{controller.abort();await done;}};};
