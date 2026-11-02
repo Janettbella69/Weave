@@ -66,7 +66,8 @@ test('没有通行证、过期、篡改都是 401；POST 是 405；group 通行�
   // 微信分支的通行证要求群范围带 group；这里先带上，两边合并后测试照样能过。
   const group = await s.snapshot(await s.cap(s.alice, {scope: 'group', group: 'g1'}));
   assert.equal(group.status, 200);
-  assert.deepEqual(group.data.tables, {});
+  assert.deepEqual(group.data.tables, {group_messages: []}, '没有开启的群就没有消息');
+  assert.equal(group.data.timezone, null);
   assert.deepEqual(group.data.files, {});
   assert.ok(!JSON.stringify(group.data).includes('走路'));
 });

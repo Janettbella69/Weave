@@ -5,6 +5,7 @@
 import {Store} from './store.mjs';
 import {verifyCapability} from './capability.mjs';
 import {localClock} from './proactivity.mjs';
+import {groupSnapshotMessages} from './wechat.mjs';
 
 const habitRow = h => ({
   habit_id: h.id, name: h.name, identity: h.identity ?? '', trigger: h.trigger ?? '', minimum_action: h.minimumAction ?? '',
@@ -13,9 +14,10 @@ const habitRow = h => ({
 const completionRow = c => ({habit_id: c.habitId, date: c.date, note: c.note ?? '', source: c.source ?? null, created_at: c.createdAt ?? null});
 
 export function snapshotFor(person, claims, now) {
-  const snapshot = {version: 1, today: localClock(person, now).day, timezone: person.profile?.timezone ?? null, tables: {}, files: {}};
-  // 群那一轮看不到任何人的私人资料；群消息（group_messages）由微信那边填。
-  if (claims.scope !== 'owner') return snapshot;
+  const owner = claims.scope === 'owner';
+  // 群那一轮看不到任何人的私人资料，连开启者在哪个时区也不给（today 照给，按开启者的当地日期）。
+  const snapshot = {version: 1, today: localClock(person, now).day, timezone: owner ? person.profile?.timezone ?? null : null, tables: {}, files: {}};
+  if (!owner) return snapshot;
   snapshot.tables.habits = (person.habits || []).map(habitRow);
   snapshot.tables.completions = (person.completions || []).map(completionRow);
   return snapshot;
@@ -32,7 +34,10 @@ export async function handleAgentSnapshot(request, {db, secret, now = Date.now()
     const world = await new Store(db).load();
     const person = Object.hasOwn(world.people || {}, claims.owner) ? world.people[claims.owner] : null;
     if (!person) return json({error: '账号不存在'}, 404);
-    return json(snapshotFor(person, claims, now));
+    const snapshot = snapshotFor(person, claims, now);
+    // 群那一轮：只有这个群自己的消息（成员编号、文字、时间），由微信那边给。
+    if (claims.scope === 'group') snapshot.tables.group_messages = await groupSnapshotMessages(world, {groupId: claims.group, ownerId: claims.owner, secret});
+    return json(snapshot);
   } catch (error) {
     return json({error: error.status ? error.message : '快照暂时取不到'}, error.status || 500);
   }
