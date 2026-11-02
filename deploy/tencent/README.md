@@ -79,6 +79,12 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 打开 https://weave.azorashopping.site ，浏览器会弹出账号密码框，填第 2 步打印的那组。
 
+## 接入微信（可选，试点）
+
+微信通道的两个程序（wx 守护进程和桥接）跑在你自己的 Mac 上，只向外连接这个网站；服务器这边只多一个 `WECHAT_BRIDGE_TOKEN`。整套步骤（装、配令牌、扫码、验证、回退、该警惕的征兆）在 [`deploy/wechat-mac/README.md`](../wechat-mac/README.md)。
+
+服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
+
 ## 以后更新
 
 ```
