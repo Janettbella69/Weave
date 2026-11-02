@@ -76,9 +76,10 @@ export function createModelProxy({keys, upstreams = {}, ledger, limits, fetcher 
     let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > MAX_BODY) return sendError(res, 413, 'request_too_large', 'Request too large', {Connection: 'close'});
-      chunks.push(chunk);
+      // 超长后不再缓存，但把请求读完再回答：提前断开的话，客户端只看到连接被重置，看不到 413。
+      if (size <= MAX_BODY) chunks.push(chunk);
     }
+    if (size > MAX_BODY) return sendError(res, 413, 'request_too_large', 'Request too large');
     const raw = Buffer.concat(chunks);
     let body;
     try { body = JSON.parse(raw); } catch { return sendError(res, 400, 'invalid_request_error', 'Invalid JSON'); }
