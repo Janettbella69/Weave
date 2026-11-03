@@ -92,3 +92,42 @@ if echo "$reply" | grep -q '还没有配置好\|暂时不可用'; then echo "FAI
 # 假 Key 会被 DeepSeek 拒绝，所以回复是「结果不确定」；要确认的是一次性容器真的起来过：CLI 会在配置目录里写东西。
 find "$data/owner" -path '*/claude/*' -type f | head -3 | grep -q . || { echo "FAIL 一次性容器没有起来（配置目录是空的）"; exit 1; }
 echo "PASS 网站 → Agent 服务 → 一次性容器整条链路走通了"
+
+# workerd 被内核按内存杀掉时 wrangler 不会跟着退出：网站一直 502，Docker 也不重启它（2026-11-03 线上出过一次，持续约一个半小时）。
+# 网站容器里的看门狗（hosted/scripts/web-watchdog.sh）发现网站连续 3 次没有正常回答，就让 wrangler 退出，由 Docker 重启容器。
+# 这里在容器里杀掉占内存最多的那个 workerd（-9，和内核 OOM 一样），看容器是不是自己重启、网站是不是重新回答 401。
+logs=$(docker logs weave-web-1 2>&1)
+[[ $logs == *看门狗开始盯着* ]] || { echo "FAIL 网站容器里的看门狗没有开始盯着"; exit 1; }
+echo "PASS 网站容器里的看门狗已经开始盯着"
+before=$(docker inspect -f '{{.RestartCount}}' weave-web-1)
+# 单引号里的这段在网站容器里跑，$ 由容器里的 bash 展开。
+# shellcheck disable=SC2016
+victim=$(docker compose exec -T web bash -c '
+  best= most=0
+  for f in /proc/[0-9]*/status; do
+    name= rss=0
+    while read -r k v _; do
+      [ "$k" = Name: ] && name=$v
+      [ "$k" = VmRSS: ] && rss=$v
+    done < "$f"
+    if [ "$name" = workerd ] && [ "$rss" -gt "$most" ]; then best=${f#/proc/}; best=${best%/status}; most=$rss; fi
+  done 2>/dev/null
+  [ -n "$best" ] && kill -9 "$best" && echo "$best $((most / 1024))"' || true)
+[ -n "$victim" ] || { echo "FAIL 网站容器里找不到 workerd"; exit 1; }
+echo "杀掉了网站容器里占内存最多的 workerd（进程号 ${victim% *}，${victim#* } MiB），等看门狗让容器重启……"
+start=$SECONDS
+restarts=$before
+code=000
+while [ $((SECONDS - start)) -lt 120 ]; do
+  sleep 2
+  restarts=$(docker inspect -f '{{.RestartCount}}' weave-web-1)
+  [ "$restarts" -gt "$before" ] || continue
+  code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$url/" || true)
+  [ "$code" = 401 ] && break
+done
+took=$((SECONDS - start))
+logs=$(docker logs weave-web-1 2>&1)
+grep 'weave watchdog\|weave memory' <<<"$logs" || true
+[ "$restarts" -ge 1 ] && [ "$restarts" -gt "$before" ] && [ "$code" = 401 ] || { echo "FAIL workerd 被杀以后 120 秒内网站没有自己恢复：RestartCount 从 ${before} 到 ${restarts}，网站回 HTTP ${code}"; exit 1; }
+[[ $logs == *看门狗正在重启网站容器* ]] || { echo "FAIL 容器重启了，但日志里没有看门狗重启它的那一行"; exit 1; }
+echo "PASS workerd 被杀以后约 ${took} 秒，看门狗让容器重启（RestartCount 从 ${before} 到 ${restarts}），网站重新回答 401"

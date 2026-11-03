@@ -16,8 +16,8 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY drizzle ./drizzle
-COPY scripts/start-vps.sh scripts/notion-oauth-proxy.mjs scripts/patch-wrangler-proxy.mjs ./scripts/
-RUN chmod +x ./scripts/start-vps.sh && mkdir -p /app/.wrangler/state && chown -R node:node /app
+COPY scripts/start-vps.sh scripts/web-watchdog.sh scripts/notion-oauth-proxy.mjs scripts/patch-wrangler-proxy.mjs ./scripts/
+RUN chmod +x ./scripts/start-vps.sh ./scripts/web-watchdog.sh && mkdir -p /app/.wrangler/state && chown -R node:node /app
 USER node
 # X_LOCAL_EXPLORER=false：关掉 wrangler 自带的本机数据浏览器（/cdn-cgi/explorer）。它在 Worker 之前处理请求、
 # 不经过访问密码，同一台机器上的其他容器带上 Host: localhost 就能读写整个数据库。
