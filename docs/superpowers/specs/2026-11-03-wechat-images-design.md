@@ -212,5 +212,10 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；**�
 
 - 打开看图的步骤里去掉了「重装 nginx」：那套办法会用最近的备份覆盖共用的 `nginx.conf`。`client_body_buffer_size 1m;` 留在 `weave.nginx.conf` 里给以后新装用，文档写成可选的加固；`nginx-add-weave.sh` 没改。
 - 群说明没确认发出时的重发加了上限：每个群每个北京时间（`GROUP_TIMEZONE`）的一天最多重发一次（`photoNoticeTried`、`photoNoticeResentOn` 两个标记）；确认发出以前照旧不用照片。测试在 `test/wechat-images-gates.test.mjs`。
-- 记下两件事：去掉 APP1 时也去掉了 EXIF 里的照片朝向，微信的副本如果靠它摆正，模型看到的可能是转了的（真机试的时候看；以后可以只留一个只有朝向的 APP1）；过期照片的清理只在桥接发来请求时才跑（事件、定时任务、交照片；VPS 上 Cron 不触发），桥接一直不连时过期的照片行会留到它再连上（是加密的；删账号时照样马上删）。
+- 记下两件事：去掉 APP1 时也去掉了 EXIF 里的照片朝向，微信的副本如果靠它摆正，模型看到的可能是转了的（真机试的时候看；以后可以只留一个只有朝向的 APP1）。
+
+### 合进 #35 以后（2026-11-03）
+
+- 把 `feat/deploy-tencent`（#35 主动服务、#37 README）合进了这个分支，8 个文件两边都留：`wake()` 和 `/wake` 同时带照片（`image`/`photo`）和后台轮（`forkSession`/`background`）；带照片的一轮不动 `sessions.json`，后台轮出错也不清。
+- #35 让 Agent 服务每分钟敲一次 `/api/internal/tick`，而过期照片的清理在 `runScheduled` 一开头，所以清理现在每分钟都跑，不再要等桥接发请求（`test/wechat-images-gates.test.mjs` 里只敲服务器闹钟就能清掉过期照片）。
 
