@@ -205,3 +205,23 @@ launchctl kickstart -k gui/$(id -u)/com.weave.wechat.bridge
 - 小号掉线的频率、被限制多久：没有数据。
 - 发送限速的数字：猜的。
 - 手机和 Mac 同一局域网这一步是不是必须：文档说「有的批准需要」，具体什么时候触发，不知道。
+
+## 8. 看图（默认关闭）
+
+<!-- 草稿文案，待确认 -->
+
+打开以后，@ 它的人（私聊里是你自己）在前 60 秒内或后 10 秒内发的一张照片，会和那句话一起交给模型看。规则和隐私说明见 [`docs/WECHAT.md`](../../docs/WECHAT.md) 的「看图（默认关闭）」。
+
+先确认 PR 里列的新文字，在服务器 `web.env` 里加 `WEAVE_WECHAT_IMAGES=1` 并重新部署，再在这台 Mac 上：
+
+```
+cd ~/weave-wechat && git pull && bash deploy/wechat-mac/images.sh on
+```
+
+它会重建桥接用的 wx 密钥（读、发，加上只用来读已存好的照片副本的 `media`），在 `bridge.env` 里写 `WEAVE_WECHAT_IMAGES=1`，再重启桥接。重建密钥不会让小号掉线，新密钥不显示。之后重跑 `login.sh` 也会保留 `media`。
+
+关掉：`bash ~/weave-wechat/deploy/wechat-mac/images.sh off`（密钥去掉 `media`，开关清空，重启桥接），服务器那行也删掉再部署。
+
+看它在不在工作：桥接日志里会有「照片已交给 Weave（类型，字节数）」或「照片没有交给 Weave（原因）」。原因是 `media_403` 时，说明密钥还没有 `media` 权限，重跑 `images.sh on`。
+
+还没验证：真实微信里的图片消息是不是 `type` 3、副本的 `contentType` 和大小，都是照 agent-wechat 的源码和文档写的，没有在真机上看过。
