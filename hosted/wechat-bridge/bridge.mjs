@@ -380,7 +380,10 @@ export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.e
       prune();
       const key=keyOf(message),at=timeOf(message,now()),watch=watching.get(key);
       if(watch&&pairs(at,watch.at)){cancel(watch.timer);watching.delete(key);void send(watch.text,message.id);return;}
-      held.set(key,{id:message.id,at,seenAt:now()});
+      // 60 秒后从内存里删掉，哪怕这期间再没有别的消息进来。
+      const photo={id:message.id,at,seenAt:now()};
+      held.set(key,photo);
+      later(()=>{if(held.get(key)===photo)held.delete(key);},PHOTO_PAIR_MS)?.unref?.();
     },
     extraFor(message){
       // 只有可能开始一轮的消息才带：私聊里的每一句，群里 @ 了它的。

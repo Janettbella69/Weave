@@ -119,11 +119,22 @@ test('@ first: no photo within 10 s, or one from someone else, or one taken late
   await r.deliver('other');
   await r.deliver('late');
   assert.deepEqual(r.photos(), []);
-  assert.equal(r.timers.length, 1);
-  assert.equal(r.timers[0].ms, 10_000);
+  assert.deepEqual(r.timers.filter(timer => timer.ms === 10_000).length, 1, 'one wait for the @');
   r.fire();
   await r.settled();
   assert.deepEqual(r.photos(), [{for: 't1', none: 'none'}]);
+  assert.deepEqual(daemon.routes.filter(route => !route.startsWith('message')), []);
+});
+
+test('a photo the bridge holds is forgotten 60 s later even when nothing else arrives', async () => {
+  const daemon = fakeDaemon({messages: {p1: photoMessage('p1', {at: T0}), t1: textMessage('t1', '@助理 这顿多少卡', {at: T0 + 30_000})}, assets: {p1: [asset('p1', 'standard')]}});
+  const r = rig({daemon, answer: uploadAnswer});
+  await r.deliver('p1');
+  assert.deepEqual(r.timers.map(timer => timer.ms), [60_000]);
+  r.fire();
+  await r.deliver('t1');
+  await r.settled();
+  assert.equal(r.events()[0].photo, 'watch', 'the photo is no longer held');
   assert.deepEqual(daemon.routes.filter(route => !route.startsWith('message')), []);
 });
 
