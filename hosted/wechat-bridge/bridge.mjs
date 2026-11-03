@@ -38,12 +38,13 @@ export function createDaemon({baseUrl,token,account,fetcher=fetch}){
     content:id=>request('/media/'+encodeURIComponent(id)+'/content',{signal:AbortSignal.timeout(30000)}),
   };
 }
-export function createWeave({origin,token,fetcher=fetch}){
+// photos：看图开着（WEAVE_WECHAT_IMAGES=1）。这时每个请求都带 X-Weave-Photos: on：Weave 只在听到它时才把看图当成打开了。
+export function createWeave({origin,token,fetcher=fetch,photos=false}){
   return async(path,data,{timeoutMs=25000}={})=>{
-    // 看图：一张照片按原样的字节发，它属于哪条消息、谁发的写在请求头里（不进地址，免得进 nginx 的访问日志）。别的都是 JSON。
+    // 看图：一张照片按字节发，它属于哪条消息、谁发的写在请求头里（不进地址，免得进 nginx 的访问日志）。别的都是 JSON。
     const photo=data?.bytes instanceof Uint8Array;
     const headers=photo?{'Content-Type':data.mediaType,'X-Weave-For':data.for,'X-Weave-Thread':data.threadId,'X-Weave-Sender':data.senderId}:{'Content-Type':'application/json'};
-    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(timeoutMs),headers:{...headers,Authorization:'Bearer '+token},body:photo?data.bytes:JSON.stringify(data)});
+    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(timeoutMs),headers:{...headers,...(photos?{'X-Weave-Photos':'on'}:{}),Authorization:'Bearer '+token},body:photo?data.bytes:JSON.stringify(data)});
     if(!response.ok){const error=Error('Weave 拒绝了请求 ('+response.status+')');error.status=response.status;throw error;}
     return response.json();
   };
@@ -292,7 +293,7 @@ async function follow({daemon,weave,cursors,isStopping,photos}){
   }
 }
 // ── 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）───────────────────────
-// 群里谁都能发照片，所以照片默认不离开这台 Mac。这里只在内存里记住最近 60 秒里每个人（按聊天 + 发照片的人）发的最后一张照片的
+// 群里谁都能发照片，所以照片默认不离开运行桥接的这台机器（现在是她的 Mac，以后可能是服务器；这里只看 WEAVE_WECHAT_IMAGES 和 WX_TOKEN 的权限）。这里只在内存里记住最近 60 秒里每个人（按聊天 + 发照片的人）发的最后一张照片的
 // 消息 id，不记内容。这个人 @ 它（私聊里是发一句话）时，在交给 Weave 的那条文字上加 photo：'ready' 是有一张配得上的照片，
 // 'watch' 是没有、但可以再等 10 秒。Weave 只在这条消息真的要回复时（已绑定的本人、开启的群、不是「别记」）回 photo:'upload' 或
 // 'watch'，这时才把照片读出来交过去（POST /photo）；回别的就什么都不做。读照片只读守护进程已经存好的副本（standard，没有就
@@ -315,6 +316,8 @@ const inGroup=threadId=>typeof threadId==='string'&&threadId.endsWith('@chatroom
 const senderOf=message=>typeof message?.senderId==='string'&&message.senderId?message.senderId:inGroup(message?.threadId)?'':message?.threadId;
 // 照片和文字配得上：照片在文字之前 60 秒内，或之后 10 秒内。用微信自己的时间，所以重启后补读的一批消息也一样配。
 const pairs=(photoAt,textAt)=>photoAt-textAt<=PHOTO_WATCH_MS&&textAt-photoAt<=PHOTO_PAIR_MS;
+// 能开始一轮的消息：私聊里的每一句，群里 @ 了它的。
+const mayStartTurn=message=>!inGroup(message?.threadId)||message?.mentions?.self===true;
 // 日志里代替消息 id 的短指纹。
 const print=id=>createHash('sha256').update(String(id)).digest('hex').slice(0,8);
 async function readCapped(response,limit){
@@ -323,11 +326,130 @@ async function readCapped(response,limit){
   for await(const chunk of response.body??[]){size+=chunk.length;if(size>limit)return null;chunks.push(chunk);}
   return new Uint8Array(Buffer.concat(chunks));
 }
-// 一张照片在守护进程里已经存好的副本：{bytes, mediaType}，或者 {problem: 原因代码}。
-export async function readPhoto(daemon,messageId){
-  let items;
-  try{items=(await daemon.media(messageId))?.items;}catch(error){return {problem:'media_'+(Number.isInteger(error?.status)?error.status:'error')};}
-  const usable=(Array.isArray(items)?items:[]).filter(a=>a&&typeof a.id==='string'&&a.messageId===messageId&&a.kind==='image'&&a.state==='available');
+// ── 照片交出去之前，去掉附加信息（拍摄时间、GPS 位置、设备、说明文字、缩略图这些）─────────────────────────────────────
+// 按格式只留认得的、画面需要的部分（白名单），别的一律去掉；文件结尾之后的东西（有的手机会接一段视频）也去掉。
+// 结构读不懂就抛错，调用的地方就不交这张照片（宁可这一轮没有照片）。不用任何图片库，也不重新编码，画面一个像素都不动。
+const concatBytes=parts=>{const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let at=0;for(const p of parts){out.set(p,at);at+=p.length;}return out;};
+const asciiAt=(b,i,n)=>i+n<=b.length?String.fromCharCode(...b.subarray(i,i+n)):'';
+const unreadable=what=>{throw Error('照片结构读不懂：'+what);};
+// JPEG：留 APP0 的 JFIF、APP2 的 ICC 颜色配置、APP14 的 Adobe 颜色信息和所有画面数据；去掉其余的 APPn（APP1 的 Exif、XMP，APP13 的
+// IPTC 等）和注释（COM）；读到图像结束（EOI）就停。
+function stripJpeg(b){
+  if(b[0]!==0xff||b[1]!==0xd8)unreadable('jpeg start');
+  const out=[b.subarray(0,2)];let i=2,scanned=false;
+  while(true){
+    if(i+1>=b.length)unreadable('jpeg end');
+    if(b[i]!==0xff)unreadable('jpeg marker');
+    const marker=b[i+1];
+    if(marker===0xff){i++;continue;}
+    if(marker===0xd9){if(!scanned)unreadable('jpeg without image data');out.push(b.subarray(i,i+2));return concatBytes(out);}
+    if(marker===0x01||marker===0xd8||(marker>=0xd0&&marker<=0xd7)||marker===0x00)unreadable('jpeg marker '+marker);
+    if(i+4>b.length)unreadable('jpeg segment');
+    const length=(b[i+2]<<8)|b[i+3];
+    if(length<2||i+2+length>b.length)unreadable('jpeg length');
+    const app=marker>=0xe0&&marker<=0xef;
+    const keep=!app&&marker!==0xfe||marker===0xe0&&asciiAt(b,i+4,5)==='JFIF\0'||marker===0xe2&&asciiAt(b,i+4,12)==='ICC_PROFILE\0'||marker===0xee&&asciiAt(b,i+4,5)==='Adobe';
+    if(keep)out.push(b.subarray(i,i+2+length));
+    i+=2+length;
+    if(marker!==0xda)continue;
+    // 扫描数据（画面本身）：一直到下一个不是填充、不是 RST 的标记。
+    scanned=true;
+    const start=i;
+    while(true){
+      if(i+1>=b.length)unreadable('jpeg scan');
+      if(b[i]===0xff&&b[i+1]!==0x00&&!(b[i+1]>=0xd0&&b[i+1]<=0xd7))break;
+      i+=b[i]===0xff?2:1;
+    }
+    out.push(b.subarray(start,i));
+  }
+}
+// PNG：留画面需要的块（IHDR、PLTE、IDAT、IEND、透明度、颜色、物理尺寸、动画帧）；去掉 eXIf、tEXt、iTXt、zTXt、tIME 和别的块；IEND 之后的不要。
+const PNG_KEEP=new Set(['IHDR','PLTE','IDAT','IEND','tRNS','gAMA','cHRM','sRGB','iCCP','sBIT','bKGD','pHYs','acTL','fcTL','fdAT']);
+function stripPng(b){
+  if(asciiAt(b,12,4)!=='IHDR')unreadable('png header');
+  const out=[b.subarray(0,8)];let i=8;
+  while(true){
+    if(i+12>b.length)unreadable('png chunk');
+    const length=((b[i]<<24)>>>0)+(b[i+1]<<16)+(b[i+2]<<8)+b[i+3],type=asciiAt(b,i+4,4);
+    if(!/^[A-Za-z]{4}$/.test(type)||length>b.length-i-12)unreadable('png chunk '+type);
+    if(PNG_KEEP.has(type))out.push(b.subarray(i,i+12+length));
+    i+=12+length;
+    if(type==='IEND')return concatBytes(out);
+  }
+}
+// WebP：留画面块（VP8、VP8L、VP8X、ALPH、ANIM、ANMF、ICCP），去掉 EXIF、XMP 和别的块；VP8X 里「有 EXIF」「有 XMP」两个标记也清掉。
+const WEBP_KEEP=new Set(['VP8 ','VP8L','VP8X','ALPH','ANIM','ANMF','ICCP']);
+function stripWebp(b){
+  if(asciiAt(b,0,4)!=='RIFF'||asciiAt(b,8,4)!=='WEBP')unreadable('webp header');
+  const size=b[4]+(b[5]<<8)+(b[6]<<16)+((b[7]<<24)>>>0),end=8+size;
+  if(size<4||end>b.length)unreadable('webp size');
+  const chunks=[];let i=12;
+  while(i<end){
+    if(i+8>end)unreadable('webp chunk');
+    const type=asciiAt(b,i,4),length=b[i+4]+(b[i+5]<<8)+(b[i+6]<<16)+((b[i+7]<<24)>>>0);
+    if(i+8+length>end)unreadable('webp chunk '+type);
+    if(WEBP_KEEP.has(type)){
+      const chunk=new Uint8Array(8+length+(length&1));
+      chunk.set(b.subarray(i,i+8+length));
+      if(type==='VP8X'){if(length<10)unreadable('webp vp8x');chunk[8]&=~0x0c;}
+      chunks.push(chunk);
+    }
+    i+=8+length+(length&1);
+  }
+  if(!chunks.some(c=>['VP8 ','VP8L','ANMF'].includes(asciiAt(c,0,4))))unreadable('webp without image data');
+  const body=concatBytes(chunks),head=new Uint8Array(12);
+  head.set([0x52,0x49,0x46,0x46]);
+  const riff=body.length+4;
+  head.set([riff&0xff,(riff>>8)&0xff,(riff>>16)&0xff,(riff>>>24)&0xff],4);
+  head.set([0x57,0x45,0x42,0x50],8);
+  return concatBytes([head,body]);
+}
+// GIF：留文件头、调色板、图形控制（每一帧的时间和透明度）和图像；去掉注释、应用扩展（包括循环播放的 NETSCAPE 设置）和纯文本扩展；结尾（0x3B）之后的不要。
+function stripGif(b){
+  if(asciiAt(b,0,6)!=='GIF87a'&&asciiAt(b,0,6)!=='GIF89a'||b.length<13)unreadable('gif header');
+  let i=13;
+  if(b[10]&0x80)i+=3*(1<<((b[10]&7)+1));
+  if(i>b.length)unreadable('gif palette');
+  const out=[b.subarray(0,i)];
+  const subBlocks=start=>{let j=start;while(true){if(j>=b.length)unreadable('gif data');const n=b[j];j+=1+n;if(n===0)return j;}};
+  let images=0;
+  while(true){
+    if(i>=b.length)unreadable('gif end');
+    const block=b[i];
+    if(block===0x3b){if(!images)unreadable('gif without image data');out.push(b.subarray(i,i+1));return concatBytes(out);}
+    if(block===0x21){
+      if(i+2>b.length)unreadable('gif extension');
+      const end=subBlocks(i+2);
+      if(b[i+1]===0xf9)out.push(b.subarray(i,end));
+      i=end;continue;
+    }
+    if(block===0x2c){
+      if(i+10>b.length)unreadable('gif image');
+      let j=i+10;
+      if(b[i+9]&0x80)j+=3*(1<<((b[i+9]&7)+1));
+      const end=subBlocks(j+1);
+      out.push(b.subarray(i,end));i=end;images++;continue;
+    }
+    unreadable('gif block '+block);
+  }
+}
+const STRIP={'image/jpeg':stripJpeg,'image/png':stripPng,'image/webp':stripWebp,'image/gif':stripGif};
+export function stripMetadata(bytes,mediaType){
+  const strip=STRIP[mediaType];
+  if(!strip)unreadable('type');
+  const out=strip(bytes);
+  if(sniffImage(out)!==mediaType)unreadable('result');
+  return out;
+}
+// 一张照片在守护进程里已经存好的副本，去掉了附加信息：{bytes, mediaType, variant}，或者 {problem: 原因代码}。
+// standard 还没好时先等一会儿（最多约 3 秒，每半秒看一次），standard 比 thumbnail 清楚得多；还没有再用 thumbnail。
+export async function readPhoto(daemon,messageId,{sleep=delay,waitMs=500,waits=6}={}){
+  const list=async()=>{const items=(await daemon.media(messageId))?.items;return (Array.isArray(items)?items:[]).filter(a=>a&&typeof a.id==='string'&&a.messageId===messageId&&a.kind==='image'&&a.state==='available');};
+  let usable;
+  try{
+    usable=await list();
+    for(let n=0;n<waits&&!usable.some(a=>(a.actualVariant??a.variant)==='standard');n++){await sleep(waitMs);usable=await list();}
+  }catch(error){return {problem:'media_'+(Number.isInteger(error?.status)?error.status:'error')};}
   let problem='not_cached';
   for(const variant of ['standard','thumbnail']){
     const asset=usable.find(a=>(a.actualVariant??a.variant)===variant);
@@ -340,7 +462,10 @@ export async function readPhoto(daemon,messageId){
     if(!bytes){problem='too_large';continue;}
     const mediaType=sniffImage(bytes);
     if(!mediaType){problem='unsupported';continue;}
-    return {bytes,mediaType};
+    // 去不掉附加信息就不交：宁可这一轮没有照片。
+    let clean;
+    try{clean=stripMetadata(bytes,mediaType);}catch{problem='strip_failed';continue;}
+    return {bytes:clean,mediaType,variant};
   }
   return {problem};
 }
@@ -348,7 +473,7 @@ export async function readPhoto(daemon,messageId){
 //   seen(message)              一张进来的照片（type 3）
 //   extraFor(message)          一条要交给 Weave 的文字带不带 photo
 //   answered(message, answer)  Weave 对那条文字的回答：'upload' 交照片，'watch' 等 10 秒
-export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.error(...args),later=(fn,ms)=>setTimeout(fn,ms),cancel=clearTimeout}){
+export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.error(...args),later=(fn,ms)=>setTimeout(fn,ms),cancel=clearTimeout,sleep=delay}){
   const held=new Map(),watching=new Map();
   let chain=Promise.resolve();
   // 照片一张一张地读、一张一张地交，不挡住事件流。
@@ -360,14 +485,14 @@ export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.e
   };
   const release=(forId,problem)=>run(async()=>{log(`这条消息不带照片（${word(problem)}）：${print(forId)}`);await tell(forId,problem);});
   const send=(text,photoId)=>run(async()=>{
-    const photo=await readPhoto(daemon,photoId);
+    const photo=await readPhoto(daemon,photoId,{sleep});
     if(!photo.bytes){
-      log(`照片没有交给 Weave（${word(photo.problem)}${/^(media|content)_403$/.test(photo.problem)?'，桥接密钥可能没有 media 权限：跑 deploy/wechat-mac/images.sh on':''}）：${print(text.id)}`);
+      log(`照片没有交给 Weave（${word(photo.problem)}${/^(media|content)_403$/.test(photo.problem)?'，WX_TOKEN 可能没有 media 权限':''}）：${print(text.id)}`);
       return tell(text.id,photo.problem);
     }
     try{
       await weave('photo',{for:text.id,threadId:text.threadId,senderId:senderOf(text),bytes:photo.bytes,mediaType:photo.mediaType},{timeoutMs:60000});
-      log(`照片已交给 Weave（${photo.mediaType}，${photo.bytes.length} 字节）：${print(text.id)}`);
+      log(`照片已交给 Weave（${photo.mediaType}，${photo.bytes.length} 字节，${photo.variant}）：${print(text.id)}`);
     }catch(error){
       log(`照片没能交给 Weave（${why(error)}）：${print(text.id)}`);
       await tell(text.id,'upload_failed');
@@ -387,7 +512,7 @@ export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.e
     },
     extraFor(message){
       // 只有可能开始一轮的消息才带：私聊里的每一句，群里 @ 了它的。
-      if(inGroup(message?.threadId)&&message.mentions?.self!==true)return {};
+      if(!mayStartTurn(message))return {};
       prune();
       const photo=held.get(keyOf(message));
       return {photo:photo&&pairs(photo.at,timeOf(message,now()))?'ready':'watch'};
@@ -396,8 +521,10 @@ export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.e
       const key=keyOf(message);
       if(answer?.photo==='upload'){
         const photo=held.get(key);held.delete(key);
-        if(photo)void send(message,photo.id);else void release(message.id,'gone');
-      }else if(answer?.photo==='watch'){
+        // 读照片之前自己再核对一遍：这句话能开始一轮，照片也确实和它配得上。不然一个字节都不读，告诉 Weave 没有照片。
+        if(photo&&mayStartTurn(message)&&pairs(photo.at,timeOf(message,now())))void send(message,photo.id);
+        else void release(message.id,photo?'not_paired':'gone');
+      }else if(answer?.photo==='watch'&&mayStartTurn(message)){
         const old=watching.get(key);
         if(old){cancel(old.timer);watching.delete(key);void release(old.text.id,'replaced');}
         const watch={text:message,at:timeOf(message,now())};
@@ -418,7 +545,7 @@ export async function main(env=process.env){
   if(!env.WECHAT_BRIDGE_TOKEN||env.WECHAT_BRIDGE_TOKEN.length<32)throw Error('请配置 WECHAT_BRIDGE_TOKEN（至少 32 字符）');
   if(!env.WX_TOKEN||!env.WX_ACCOUNT)throw Error('请配置 WX_TOKEN 和 WX_ACCOUNT');
   const daemon=createDaemon({baseUrl:env.WX_BASE_URL||'http://127.0.0.1:6174/v1',token:env.WX_TOKEN,account:env.WX_ACCOUNT});
-  const weave=createWeave({origin,token:env.WECHAT_BRIDGE_TOKEN});
+  const weave=createWeave({origin,token:env.WECHAT_BRIDGE_TOKEN,photos:env.WEAVE_WECHAT_IMAGES==='1'});
   const cursors=cursorStore(resolve(env.WECHAT_BRIDGE_STATE||fileURLToPath(new URL('./.data/cursor.json',import.meta.url))));
   // On a stop signal the loops finish what they are doing, but some are asleep for up to a minute, and launchd gives a
   // process 20 s before it kills it. So leave after 3 s at most. Nothing is lost: an unfinished send keeps its
