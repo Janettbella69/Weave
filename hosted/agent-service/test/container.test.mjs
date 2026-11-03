@@ -5,12 +5,13 @@ import {test, before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, realpathSync} from 'node:fs';
+import {mkdtempSync, readdirSync, readFileSync, realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
 import {scopeDirs} from '../workspace.mjs';
 import {isMain, lastToolResults, steps, startFakeModel} from './helpers/fake-model.mjs';
+import {png} from './helpers/png.mjs';
 
 const IMAGE = process.env.WEAVE_TEST_DOCKER_IMAGE;
 const skip = IMAGE ? false : 'set WEAVE_TEST_DOCKER_IMAGE to an image built from Dockerfile.agent';
@@ -87,6 +88,26 @@ test('同一天第二次唤醒在容器里接上同一段会话（socket 也还�
   assert.equal(second.sessionId, outcome.sessionId);
   const first = fake.captured.find(c => isMain(c.body));
   assert.ok(JSON.stringify(first.body.messages).includes('跑一遍'));
+});
+
+// 微信看图（docs/superpowers/specs/2026-11-03-wechat-images-design.md）：生产用的就是容器，所以在容器里再跑一遍带照片的一轮。
+test('带照片的一轮在容器里也跑得通：照片原样到模型、用 deepseek-flash，sessions.json 不变，挂进容器的目录里没有它', {skip}, async () => {
+  const data = png(12, 12, 5).toString('base64'), dirs = scopeDirs(dataDir, 'owner', 'u:container');
+  const sessions = readFileSync(join(dirs.root, 'sessions.json'), 'utf8');
+  fake.captured.length = 0;
+  fake.script(b => isMain(b) ? {text: '看到了'} : {text: 't'});
+  const photo = await fetch(service.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify({
+    scope: 'owner', id: 'u:container', capability: 'cap-1', localDate: '2026-11-02', provider: 'deepseek', model: 'deepseek-v4-pro',
+    trigger: {kind: 'message', channel: 'wechat', direct: true, at: '2026-11-02T08:10:00+08:00', text: '这是什么'}, image: {mediaType: 'image/png', data},
+  })}).then(r => r.json());
+  assert.equal(photo.outcome, 'success', JSON.stringify(photo));
+  assert.equal(photo.reply, '看到了');
+  const calls = fake.captured.filter(c => isMain(c.body));
+  assert.ok(calls.length >= 1 && calls.every(c => c.body.model === 'deepseek-flash'), calls.map(c => c.body.model).join(','));
+  assert.ok(JSON.stringify(calls[0].body.messages).includes(data));
+  assert.equal(readFileSync(join(dirs.root, 'sessions.json'), 'utf8'), sessions);
+  const files = dir => readdirSync(dir, {withFileTypes: true}).flatMap(e => e.isDirectory() ? files(join(dir, e.name)) : e.isFile() ? [join(dir, e.name)] : []);
+  for (const file of files(dirs.root)) assert.equal(readFileSync(file).indexOf(data.slice(0, 120)), -1, 'the photo is in ' + file);
 });
 
 test('容器里 Bash 连不了网，也连不到宿主机', {skip}, () => {

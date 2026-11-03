@@ -1,7 +1,7 @@
 // 一次唤醒（docs/ARCHITECTURE.md 第 2 节）。这段配置就是 Agent 的全部定义：
 // 这一轮调什么工具、调几次、用不用 Skill，全部由模型决定，这里没有别的 Agent 逻辑。
 import {query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
-import {systemPromptFor, renderTrigger} from './prompts.mjs';
+import {systemPromptFor, renderTrigger, imageMessage} from './prompts.mjs';
 import {cliEnv} from './providers.mjs';
 import {weaveServer} from './mcp/tools.mjs';
 
@@ -11,7 +11,8 @@ const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 // forkSession：后台那一轮（定时、定期看看）从 sessionId 分叉出一段新会话，原会话不动（设计文档 2026-11-03-proactive-wake-design.md 4.6）。
 // SDK 文档原文：fork「creates a new session that starts with a copy of the original's history. The original stays unchanged.」
 // 要和 resume 一起用（sdk.d.ts：「Use with `resume`」），所以没有 sessionId 时不设；返回的 sessionId 是分叉出来的那段。
-export async function wake({scope, trigger, memory = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, queryFn = sdkQuery}) {
+// image：可选，{mediaType, data}（base64），这一轮带的那张照片（微信看图，docs/superpowers/specs/2026-11-03-wechat-images-design.md）。
+export async function wake({scope, trigger, memory = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery}) {
   const tools = [];
   const audit = async input => { if (input?.tool_name) tools.push(input.tool_name); return {}; };
   const abortController = new AbortController();
@@ -36,6 +37,9 @@ export async function wake({scope, trigger, memory = '', provider, model, runTok
     ...(isolation.spawnClaudeCodeProcess ? {spawnClaudeCodeProcess: isolation.spawnClaudeCodeProcess} : {}),
     ...(isolation.sandbox ? {sandbox: isolation.sandbox} : {}),
     ...(sessionId ? {resume: sessionId, ...(forkSession ? {forkSession: true} : {})} : {}),
+    // 带照片的一轮不写会话记录：照片不落在这台机器的磁盘上，下一轮接着用叫醒前那段会话（SDK 文档 sessions：
+    // persistSession: false「The session exists only in memory for the duration of the call」）。server.mjs 也不动 sessions.json。
+    ...(image ? {persistSession: false} : {}),
     // 不设轮数上限（教材 p.22、p.26）；兜底是 maxBudgetUsd 熔断和 10 分钟超时。
     maxBudgetUsd: scope.circuitBreakerUsd,
     thinking: {type: 'disabled'},
@@ -44,10 +48,12 @@ export async function wake({scope, trigger, memory = '', provider, model, runTok
     abortController,
   };
 
+  // 只有文字的一轮照旧传字符串；带照片的一轮用流式输入：一条用户消息，先文字后照片（prompts.mjs 的 imageMessage）。
+  const prompt = image ? (async function* () { yield imageMessage(trigger, image); })() : renderTrigger(trigger);
   let last = null, failure = null;
   try {
     // 一直读到结束：后台子 Agent 完成后，同一个 query() 会再出一个 result（实测）。
-    for await (const message of queryFn({prompt: renderTrigger(trigger), options})) {
+    for await (const message of queryFn({prompt, options})) {
       if (message.type === 'result') last = message;
     }
   } catch (error) {

@@ -6,7 +6,9 @@ const deepFreeze = value => {
 };
 
 export const PROVIDERS = deepFreeze({
-  deepseek: {name: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: ['deepseek-flash', 'deepseek-v4-pro'], main: 'deepseek-flash', fast: 'deepseek-flash', keyEnv: 'DEEPSEEK_API_KEY'},
+  // vision：能看图的那个模型，带照片的一轮一律用它（DeepSeek 文档：deepseek-flash 收图片，deepseek-v4-pro 把图片换成「[Unsupported Image]」）。
+  // 别的几家没有核实过，不写，带照片的一轮会被拒绝。
+  deepseek: {name: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: ['deepseek-flash', 'deepseek-v4-pro'], main: 'deepseek-flash', fast: 'deepseek-flash', vision: 'deepseek-flash', keyEnv: 'DEEPSEEK_API_KEY'},
   kimi: {name: 'kimi', baseUrl: 'https://api.moonshot.cn/anthropic', models: ['kimi-k3[1m]', 'kimi-k2.7-code'], main: 'kimi-k3[1m]', fast: 'kimi-k2.7-code', keyEnv: 'KIMI_API_KEY'},
   glm: {name: 'glm', baseUrl: 'https://open.bigmodel.cn/api/anthropic', models: ['glm-5.2[1m]', 'glm-4.7'], main: 'glm-5.2[1m]', fast: 'glm-4.7', keyEnv: 'GLM_API_KEY'},
   // 同一份文档还给了按工作空间的地址，先用 dashscope 这个。
