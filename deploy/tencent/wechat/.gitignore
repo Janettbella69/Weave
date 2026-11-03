@@ -1,0 +1,5 @@
+# 令牌和本机设置（权限 600），只在服务器上，不进 git。
+bridge.env
+bridge.env.*
+.env
+.env.*
