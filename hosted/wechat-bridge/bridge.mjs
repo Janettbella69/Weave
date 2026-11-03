@@ -1,5 +1,6 @@
 // Runs next to the agent-wechat daemon. Connects outward only: no public port, tunnel
 // or webhook. Follows the daemon's event stream into Weave and delivers Weave's queue.
+import {createHash} from 'node:crypto';
 import {mkdir,readFile,rename,writeFile} from 'node:fs/promises';
 import {dirname,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -31,11 +32,18 @@ export function createDaemon({baseUrl,token,account,fetcher=fetch}){
     // It starts an operation (202); operation() follows it.
     refreshMembers:async group=>(await request('/groups/'+encodeURIComponent(group)+'/members/refresh',{method:'POST',signal:AbortSignal.timeout(15000)})).json(),
     operation:async id=>(await request('/operations/'+encodeURIComponent(id),{signal:AbortSignal.timeout(15000)})).json(),
+    // 看图（media 权限）：一条消息的附件清单，和守护进程已经存好的一份副本。这两个都只读本机，不会去微信下载；
+    // 会去微信下载的是 POST /messages/{id}/media-transfers，这里没有，也不许加。
+    media:async id=>(await request('/messages/'+encodeURIComponent(id)+'/media',{signal:AbortSignal.timeout(15000)})).json(),
+    content:id=>request('/media/'+encodeURIComponent(id)+'/content',{signal:AbortSignal.timeout(30000)}),
   };
 }
 export function createWeave({origin,token,fetcher=fetch}){
   return async(path,data,{timeoutMs=25000}={})=>{
-    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(timeoutMs),headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data)});
+    // 看图：一张照片按原样的字节发，它属于哪条消息、谁发的写在请求头里（不进地址，免得进 nginx 的访问日志）。别的都是 JSON。
+    const photo=data?.bytes instanceof Uint8Array;
+    const headers=photo?{'Content-Type':data.mediaType,'X-Weave-For':data.for,'X-Weave-Thread':data.threadId,'X-Weave-Sender':data.senderId}:{'Content-Type':'application/json'};
+    const response=await fetcher(`${origin.replace(/\/$/,'')}/api/internal/wechat/${path}`,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(timeoutMs),headers:{...headers,Authorization:'Bearer '+token},body:photo?data.bytes:JSON.stringify(data)});
     if(!response.ok){const error=Error('Weave 拒绝了请求 ('+response.status+')');error.status=response.status;throw error;}
     return response.json();
   };
@@ -61,10 +69,13 @@ export async function* sseEvents(body){
     }
   }
 }
-export async function handleEvent(event,{daemon,weave,saveCursor}){
+// photos：看图打开时的 createPhotos()；关着时是 undefined，这里和以前一模一样。
+export async function handleEvent(event,{daemon,weave,saveCursor,photos}){
   if(event.kind==='message.committed'&&event.data?.direction==='incoming'&&typeof event.data.messageId==='string'){
-    const message=forwardable(await daemon.message(event.data.messageId));
-    if(message)await weave('events',message);
+    const full=await daemon.message(event.data.messageId),message=forwardable(full);
+    if(message&&photos)photos.answered(full,await weave('events',{...message,...photos.extraFor(full)}));
+    else if(message)await weave('events',message);
+    else photos?.seen(full);
   }
   // Advance only after Weave has the message, so a failure replays instead of losing it.
   if(event.cursor){await saveCursor(event.cursor);await daemon.ack(event.cursor).catch(()=>{});}
@@ -229,11 +240,12 @@ export function createTick({weave,afterTick=()=>{}}){
   });
 }
 // Weave answers /events with wake:true when it queued something for the Agent and outbound:true when it queued a message to send.
-// A server that sends neither (an older one) changes nothing. Only the answer to /events is looked at.
+// A server that sends neither (an older one) changes nothing. Only the answers to /events and /photo (看图: the message that waited
+// for a photo is queued now) are looked at.
 export function withHints(weave,{onWake,onOutbound}){
   return async(path,data,options)=>{
     const result=await weave(path,data,options);
-    if(path==='events'&&result){
+    if((path==='events'||path==='photo')&&result){
       if(result.wake===true)onWake();
       if(result.outbound===true)onOutbound();
     }
@@ -262,7 +274,7 @@ export async function deliveryLoop({delivery,isStopping,wait=delay}){
 }
 // 3 s after the first failure, doubling up to 60 s. A logged-out daemon refuses every time; waiting longer keeps the log short.
 export const reconnectDelay=failures=>Math.min(3000*2**failures,60000);
-async function follow({daemon,weave,cursors,isStopping}){
+async function follow({daemon,weave,cursors,isStopping,photos}){
   let cursor=await cursors.load(),failures=0;
   while(!isStopping()){
     const controller=new AbortController();
@@ -271,13 +283,129 @@ async function follow({daemon,weave,cursors,isStopping}){
       // Connected: whatever was wrong before is over, even if nothing arrives for a long while.
       failures=0;
       for await(const event of sseEvents(response.body)){
-        await handleEvent(event,{daemon,weave,saveCursor:async next=>{cursor=next;await cursors.save(next);}});
+        await handleEvent(event,{daemon,weave,photos,saveCursor:async next=>{cursor=next;await cursors.save(next);}});
         if(isStopping())break;
       }
     }catch(error){console.error('事件连接中断，将从保存的位置继续：'+error.message);}
     finally{controller.abort();}
     if(!isStopping()){await delay(reconnectDelay(failures));failures++;}
   }
+}
+// ── 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）───────────────────────
+// 群里谁都能发照片，所以照片默认不离开这台 Mac。这里只在内存里记住最近 60 秒里每个人（按聊天 + 发照片的人）发的最后一张照片的
+// 消息 id，不记内容。这个人 @ 它（私聊里是发一句话）时，在交给 Weave 的那条文字上加 photo：'ready' 是有一张配得上的照片，
+// 'watch' 是没有、但可以再等 10 秒。Weave 只在这条消息真的要回复时（已绑定的本人、开启的群、不是「别记」）回 photo:'upload' 或
+// 'watch'，这时才把照片读出来交过去（POST /photo）；回别的就什么都不做。读照片只读守护进程已经存好的副本（standard，没有就
+// thumbnail，状态是 available），不调用 media-transfers，所以不会为了这个去微信下载。只收 JPEG、PNG、GIF、WebP，最多 2 MiB。
+// 不合规定、读不出来、10 秒内没等到，就告诉 Weave「没有照片」（{for, none}），这一轮照常回答。日志里只有短指纹、大小和原因代码。
+export const PHOTO_PAIR_MS=60000,PHOTO_WATCH_MS=10000,PHOTO_MAX_BYTES=2*1024*1024;
+const PHOTO_TYPES=['image/jpeg','image/png','image/gif','image/webp'];
+// 看字节开头认格式。和 hosted/lib/weave/wechat-photos.mjs、hosted/agent-service/images.mjs 里的是同一段（test/wechat-images-sync.test.mjs）。
+export function sniffImage(bytes) {
+  const at = (offset, text) => [...text].every((c, i) => bytes[offset + i] === c.charCodeAt(0));
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 8 && bytes[0] === 0x89 && at(1, 'PNG\r\n\x1a\n')) return 'image/png';
+  if (bytes.length >= 6 && (at(0, 'GIF87a') || at(0, 'GIF89a'))) return 'image/gif';
+  if (bytes.length >= 12 && at(0, 'RIFF') && at(8, 'WEBP')) return 'image/webp';
+  return null;
+}
+const timeOf=(message,fallback)=>{const t=Date.parse(message?.createdAt);return Number.isFinite(t)?t:fallback;};
+const inGroup=threadId=>typeof threadId==='string'&&threadId.endsWith('@chatroom');
+// 和 Weave 一样认人：私聊里聊天本身就是那个人。
+const senderOf=message=>typeof message?.senderId==='string'&&message.senderId?message.senderId:inGroup(message?.threadId)?'':message?.threadId;
+// 照片和文字配得上：照片在文字之前 60 秒内，或之后 10 秒内。用微信自己的时间，所以重启后补读的一批消息也一样配。
+const pairs=(photoAt,textAt)=>photoAt-textAt<=PHOTO_WATCH_MS&&textAt-photoAt<=PHOTO_PAIR_MS;
+// 日志里代替消息 id 的短指纹。
+const print=id=>createHash('sha256').update(String(id)).digest('hex').slice(0,8);
+async function readCapped(response,limit){
+  if(Number(response.headers?.get?.('content-length'))>limit){await response.body?.cancel().catch(()=>{});return null;}
+  const chunks=[];let size=0;
+  for await(const chunk of response.body??[]){size+=chunk.length;if(size>limit)return null;chunks.push(chunk);}
+  return new Uint8Array(Buffer.concat(chunks));
+}
+// 一张照片在守护进程里已经存好的副本：{bytes, mediaType}，或者 {problem: 原因代码}。
+export async function readPhoto(daemon,messageId){
+  let items;
+  try{items=(await daemon.media(messageId))?.items;}catch(error){return {problem:'media_'+(Number.isInteger(error?.status)?error.status:'error')};}
+  const usable=(Array.isArray(items)?items:[]).filter(a=>a&&typeof a.id==='string'&&a.messageId===messageId&&a.kind==='image'&&a.state==='available');
+  let problem='not_cached';
+  for(const variant of ['standard','thumbnail']){
+    const asset=usable.find(a=>(a.actualVariant??a.variant)===variant);
+    if(!asset)continue;
+    const declared=typeof asset.contentType==='string'?asset.contentType.split(';')[0].trim().toLowerCase():'';
+    if(Number.isFinite(asset.byteLength)&&asset.byteLength>PHOTO_MAX_BYTES){problem='too_large';continue;}
+    if(declared&&!PHOTO_TYPES.includes(declared)){problem='unsupported';continue;}
+    let bytes;
+    try{bytes=await readCapped(await daemon.content(asset.id),PHOTO_MAX_BYTES);}catch(error){problem='content_'+(Number.isInteger(error?.status)?error.status:'error');continue;}
+    if(!bytes){problem='too_large';continue;}
+    const mediaType=sniffImage(bytes);
+    if(!mediaType){problem='unsupported';continue;}
+    return {bytes,mediaType};
+  }
+  return {problem};
+}
+// 看图在桥接这边的全部状态，只在内存里，重启就没了（没了也只是这一轮按没有照片回答）。
+//   seen(message)              一张进来的照片（type 3）
+//   extraFor(message)          一条要交给 Weave 的文字带不带 photo
+//   answered(message, answer)  Weave 对那条文字的回答：'upload' 交照片，'watch' 等 10 秒
+export function createPhotos({daemon,weave,now=Date.now,log=(...args)=>console.error(...args),later=(fn,ms)=>setTimeout(fn,ms),cancel=clearTimeout}){
+  const held=new Map(),watching=new Map();
+  let chain=Promise.resolve();
+  // 照片一张一张地读、一张一张地交，不挡住事件流。
+  const run=task=>{chain=chain.then(task).catch(error=>log('看图出错：'+error.message));return chain;};
+  const keyOf=message=>message.threadId+'\n'+senderOf(message);
+  const prune=()=>{const t=now();for(const [key,photo] of held)if(t-photo.seenAt>PHOTO_PAIR_MS)held.delete(key);};
+  const tell=async(forId,problem)=>{
+    try{await weave('photo',{for:forId,none:problem});}catch(error){log(`没能告诉 Weave 这条消息不带照片（${why(error)}），它最多 30 秒后自己开始：${print(forId)}`);}
+  };
+  const release=(forId,problem)=>run(async()=>{log(`这条消息不带照片（${word(problem)}）：${print(forId)}`);await tell(forId,problem);});
+  const send=(text,photoId)=>run(async()=>{
+    const photo=await readPhoto(daemon,photoId);
+    if(!photo.bytes){
+      log(`照片没有交给 Weave（${word(photo.problem)}${/^(media|content)_403$/.test(photo.problem)?'，桥接密钥可能没有 media 权限：跑 deploy/wechat-mac/images.sh on':''}）：${print(text.id)}`);
+      return tell(text.id,photo.problem);
+    }
+    try{
+      await weave('photo',{for:text.id,threadId:text.threadId,senderId:senderOf(text),bytes:photo.bytes,mediaType:photo.mediaType},{timeoutMs:60000});
+      log(`照片已交给 Weave（${photo.mediaType}，${photo.bytes.length} 字节）：${print(text.id)}`);
+    }catch(error){
+      log(`照片没能交给 Weave（${why(error)}）：${print(text.id)}`);
+      await tell(text.id,'upload_failed');
+    }
+  });
+  return {
+    seen(message){
+      if(message?.type!==3||message.direction!=='incoming'||typeof message.id!=='string'||!message.id||typeof message.threadId!=='string')return;
+      if(!senderOf(message))return;
+      prune();
+      const key=keyOf(message),at=timeOf(message,now()),watch=watching.get(key);
+      if(watch&&pairs(at,watch.at)){cancel(watch.timer);watching.delete(key);void send(watch.text,message.id);return;}
+      held.set(key,{id:message.id,at,seenAt:now()});
+    },
+    extraFor(message){
+      // 只有可能开始一轮的消息才带：私聊里的每一句，群里 @ 了它的。
+      if(inGroup(message?.threadId)&&message.mentions?.self!==true)return {};
+      prune();
+      const photo=held.get(keyOf(message));
+      return {photo:photo&&pairs(photo.at,timeOf(message,now()))?'ready':'watch'};
+    },
+    answered(message,answer){
+      const key=keyOf(message);
+      if(answer?.photo==='upload'){
+        const photo=held.get(key);held.delete(key);
+        if(photo)void send(message,photo.id);else void release(message.id,'gone');
+      }else if(answer?.photo==='watch'){
+        const old=watching.get(key);
+        if(old){cancel(old.timer);watching.delete(key);void release(old.text.id,'replaced');}
+        const watch={text:message,at:timeOf(message,now())};
+        watch.timer=later(()=>{if(watching.get(key)===watch){watching.delete(key);void release(message.id,'none');}},PHOTO_WATCH_MS);
+        watch.timer?.unref?.();
+        watching.set(key,watch);
+      }
+    },
+    // 测试用：等手头的照片都处理完。
+    settled:()=>chain,
+  };
 }
 export async function main(env=process.env){
   // launchd's log has no times of its own, and times are what you need when WeChat starts acting up.
@@ -297,7 +425,10 @@ export async function main(env=process.env){
   console.log('微信桥接已启动。');
   const deliver=async()=>{try{await deliverOnce({daemon,weave,throttle,memory});}catch(error){console.error('发送队列暂时不可用：'+error.message);}};
   const {hinted,delivery,ticking}=createFastPath({weave,deliver,withTick:env.WEAVE_TICK==='1',isStopping:()=>stopping});
-  void follow({daemon,weave:hinted,cursors,isStopping:()=>stopping});
+  // 看图默认关。打开要三样都有：这里的 WEAVE_WECHAT_IMAGES=1、带 media 权限的 WX_TOKEN、服务器的 WEAVE_WECHAT_IMAGES=1。
+  const photos=env.WEAVE_WECHAT_IMAGES==='1'?createPhotos({daemon,weave:hinted}):undefined;
+  if(photos)console.log('看图已打开：@ 它（私聊里是发一句话）的人刚发的一张照片会交给 Weave。');
+  void follow({daemon,weave:hinted,cursors,isStopping:()=>stopping,photos});
   if(ticking)void tickLoop({ticking,isStopping:()=>stopping});
   await deliveryLoop({delivery,isStopping:()=>stopping});
 }
