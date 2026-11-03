@@ -5,8 +5,10 @@ WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY . .
-# wrangler 4.92.0 的开发代理会把被空闲连接掐断的 GET 挂起来，等下一个请求才放出去，页面轮询因此偶尔卡 5 秒到 25 秒。
-# 构建时打上补丁（原因和做法见 scripts/patch-wrangler-proxy.mjs）；文件对不上会让构建失败，不会悄悄跳过。
+# wrangler 4.92.0 有两处在服务器上会出事，构建时打上补丁（原因和做法见 scripts/patch-wrangler-proxy.mjs）：
+# 开发代理会把被空闲连接掐断的 GET 挂起来，页面轮询因此偶尔卡 5 秒到 25 秒；调试代理在没人打开 DevTools 时
+# 也把网站程序每一次 D1 查询连同回答存着，监听 4317 的那个 workerd 内存一直涨，到容器上限时被内核杀掉。
+# 文件对不上会让构建失败，不会悄悄跳过。
 RUN node scripts/patch-wrangler-proxy.mjs
 RUN npm run build
 

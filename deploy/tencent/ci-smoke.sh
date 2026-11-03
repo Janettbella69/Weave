@@ -77,6 +77,11 @@ echo "PASS 带请求体的 POST 连发 60 次都是 401，网站还在"
 # 没打补丁时本机大约三分之一的轮询会卡 5 秒，20 次几乎必然露馅。
 node ../../hosted/scripts/check-status-stall.mjs --url "$url" --auth weave:ci-password --polls 20 || { echo "FAIL 页面轮询 /api/status 出现卡顿"; exit 1; }
 
+# 调试代理的补丁没打时，监听 4317 的 workerd 会把网站程序每一次 D1 查询连同回答存着，内存一直涨到被内核杀掉
+# （见 hosted/scripts/patch-wrangler-proxy.mjs）。这里只检查镜像里两个文件都打上了补丁，不读任何数据。
+docker compose exec -T web node scripts/patch-wrangler-proxy.mjs --check || { echo "FAIL 镜像里的 wrangler 有文件没打补丁"; exit 1; }
+echo "PASS 镜像里的 wrangler 两个补丁都打上了"
+
 # 关掉后这个地址交给网站本身（没带密码就是 401）。只要不返回 200（不吐数据）就算关着；短超时是为了出问题时不卡住 CI。
 explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
