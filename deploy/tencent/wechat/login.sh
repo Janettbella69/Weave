@@ -172,7 +172,7 @@ fi
 new_key=$(printf '%s' "$created" | json_get token)
 new_id=$(printf '%s' "$created" | json_get grant.id)
 created=""
-[ -n "$new_key" ] && [ -n "$new_id" ] || die "建密钥没成功。旧的配置和密钥都没动。"
+if [ -z "$new_key" ] || [ -z "$new_id" ]; then die "建密钥没成功。旧的配置和密钥都没动。"; fi
 # 先试新密钥能不能用：令牌放进 curl 的配置，走标准输入，不进命令行参数。
 tried=$(printf 'header = "Authorization: Bearer %s"\n' "$new_key" | curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 15 -K - "$wx_url/v1/accounts/$id" || true)
 if [ "$tried" != 200 ]; then
