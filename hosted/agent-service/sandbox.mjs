@@ -3,7 +3,20 @@
 //   模型请求经挂进来的 Unix socket 到 Agent 服务里的模型代理，容器里由 socat 转成 127.0.0.1:4321。
 // local：只给没有 Docker 的本机开发用。SDK 的 sandbox 管 Bash（断网、写不出工作目录），
 //   路径规则 Read(./**)、Edit(./**) 管文件工具（sandbox 管不到 Write，实测）。
-import {spawn} from 'node:child_process';
+import {spawn, execFile} from 'node:child_process';
+import {join} from 'node:path';
+
+// 删掉这一轮的容器，等 docker rm 真正结束再返回。SDK 中止一轮时只等 CLI 两秒、杀的是 docker run 客户端，
+// 容器可能还活着；不等它删完就放下一轮进来，下一轮整理目录时会和它抢（审查发现）。
+// 「没有这个容器」是正常情况（--rm 已经删了）；别的错误只记日志，不让这一轮的结果变成失败。
+export function removeContainer(name, exec = execFile) {
+  return new Promise(resolve => exec('docker', ['rm', '-f', name], (error, stdout, stderr) => {
+    if (error && !/No such container/i.test(`${stderr || ''} ${error.message || ''}`)) {
+      console.error('Agent service: docker rm failed:', name, error.message || 'unknown');
+    }
+    resolve();
+  }));
+}
 
 const IN_CONTAINER = {
   cwd: '/workspace',
@@ -22,6 +35,8 @@ export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid,
     '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', `/home/agent:uid=${uid},gid=${gid},size=64m`,
     '-w', IN_CONTAINER.cwd,
     '-v', `${dirs.workspace}:${IN_CONTAINER.cwd}`,
+    // 快照只读：Agent 用 SQL 查得到，改不了；宿主写入后的同步只碰这份宿主自己的文件。
+    '-v', `${dirs.snapshot}:${IN_CONTAINER.cwd}/weave:ro`,
     '-v', `${dirs.config}:${IN_CONTAINER.configDir}`,
     '-v', `${pluginDir}:${IN_CONTAINER.pluginPath}:ro`,
     // 所有容器共用这一个 socket，所以只读：连接 socket 不受影响，删掉或换掉它都会被拒绝（EROFS）。
@@ -35,6 +50,7 @@ export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, 
   if (mode === 'docker') {
     return {
       ...IN_CONTAINER,
+      snapshotDir: dirs.snapshot,
       allowedTools: [...scope.builtins, 'mcp__weave__*'],
       // SDK 传来的 command 是宿主机上的 CLI 路径，用不上；容器里有同版本的 claude。
       spawnClaudeCodeProcess: ({args, env, signal}) => spawn('docker',
@@ -46,6 +62,8 @@ export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, 
     const fileTools = {Read: ['Read(./**)'], Edit: ['Edit(./**)'], Write: []};
     return {
       cwd: dirs.workspace,
+      // 本机开发没有容器，快照就放在工作目录里，Agent 改得到（只用于本机）。
+      snapshotDir: join(dirs.workspace, 'weave'),
       pluginPath: pluginDir,
       baseUrl: proxy.url,
       home: dirs.home,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createDaemon,createWeave,cursorStore,deliverOnce,forwardable,handleEvent,sseEvents} from '../hosted/wechat-bridge/bridge.mjs';
+import {createDaemon,createThrottle,createWeave,cursorStore,deliverOnce,forwardable,handleEvent,reconnectDelay,sseEvents,throttleFromEnv} from '../hosted/wechat-bridge/bridge.mjs';
 
 const sse=text=>new Response(text).body;
 const collect=async iterable=>{const items=[];for await(const item of iterable)items.push(item);return items;};
@@ -94,4 +94,121 @@ test('the cursor survives a restart',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'weave-bridge-'));
   try{const file=join(dir,'nested/cursor.json');assert.equal(await cursorStore(file).load(),'');await cursorStore(file).save('77');assert.equal(await cursorStore(file).load(),'77');}
   finally{await rm(dir,{recursive:true,force:true});}
+});
+
+// ── Outbound throttle ──────────────────────────────────────────────────────────────────────
+// WeChat's risk control is unverified, so the bridge keeps its own conservative limits on what it sends.
+const clockAt = start => { const clock = {t: start, now: () => clock.t, advance(ms) { clock.t += ms; }}; return clock; };
+const sendOne = (throttle, job) => { const verdict = throttle.admit(job); if (verdict === 'send') throttle.record(job); return verdict; };
+
+test('throttle: one chat may send its per-minute limit, the rest are held until the minute has passed', () => {
+  const clock = clockAt(0), throttle = createThrottle({perChatPerMinute: 3, totalPerMinute: 100, minGapMs: 0, now: clock.now});
+  const jobs = ['a', 'b', 'c', 'd', 'e'].map(id => ({id, threadId: 'chat-1'}));
+  assert.deepEqual(jobs.map(job => sendOne(throttle, job)), ['send', 'send', 'send', 'hold', 'hold']);
+  clock.advance(59_999);
+  assert.equal(sendOne(throttle, jobs[3]), 'hold');
+  clock.advance(1);
+  assert.equal(sendOne(throttle, jobs[3]), 'send');
+});
+
+test('throttle: chats are limited separately, and all chats together have a total limit', () => {
+  const clock = clockAt(0), throttle = createThrottle({perChatPerMinute: 2, totalPerMinute: 3, minGapMs: 0, now: clock.now});
+  assert.deepEqual([['1', 'x'], ['2', 'x'], ['3', 'x'], ['4', 'y']].map(([id, threadId]) => sendOne(throttle, {id, threadId})), ['send', 'send', 'hold', 'send']);
+  assert.equal(sendOne(throttle, {id: '5', threadId: 'z'}), 'hold');
+  clock.advance(60_000);
+  assert.equal(sendOne(throttle, {id: '5', threadId: 'z'}), 'send');
+});
+
+test('throttle: a daily limit stops a runaway loop that stays under the per-minute limits', () => {
+  const clock = clockAt(0), throttle = createThrottle({perChatPerMinute: 100, totalPerMinute: 100, perDay: 5, minGapMs: 0, now: clock.now});
+  const verdicts = [];
+  for (let i = 0; i < 7; i++) { verdicts.push(sendOne(throttle, {id: 'j' + i, threadId: 'c' + i})); clock.advance(61_000); }
+  assert.deepEqual(verdicts, ['send', 'send', 'send', 'send', 'send', 'hold', 'hold']);
+});
+
+test('throttle: a minimum gap between sends is asked for as a wait, not a refusal', () => {
+  const clock = clockAt(1000), throttle = createThrottle({minGapMs: 1500, now: clock.now});
+  assert.equal(throttle.gap(), 0);
+  throttle.record({id: 'a', threadId: 't'});
+  clock.advance(500);
+  assert.equal(throttle.gap(), 1000);
+  clock.advance(1000);
+  assert.equal(throttle.gap(), 0);
+});
+
+test('throttle: a job held for too long is dropped, so a backlog is never sent hours late', () => {
+  const clock = clockAt(0), throttle = createThrottle({perChatPerMinute: 1, minGapMs: 0, maxHoldMs: 600_000, now: clock.now});
+  sendOne(throttle, {id: 'first', threadId: 't'});
+  const late = {id: 'late', threadId: 't'};
+  assert.equal(throttle.admit(late), 'hold');
+  clock.advance(600_001);
+  // The minute window has long passed, but the job is already too old to be worth sending.
+  assert.equal(throttle.admit(late), 'drop');
+  assert.equal(sendOne(throttle, {id: 'fresh', threadId: 't'}), 'send');
+});
+
+test('throttle: limits come from the environment; anything that is not a positive whole number keeps the default', () => {
+  const clock = clockAt(0);
+  const throttle = throttleFromEnv({WECHAT_SEND_PER_CHAT_PER_MIN: '2', WECHAT_SEND_TOTAL_PER_MIN: 'many', WECHAT_SEND_MIN_GAP_MS: '0'}, clock.now);
+  assert.deepEqual([1, 2, 3].map(i => sendOne(throttle, {id: 'p' + i, threadId: 'c'})), ['send', 'send', 'hold']);
+  assert.equal(throttle.gap(), 0);
+  const defaults = throttleFromEnv({WECHAT_SEND_PER_CHAT_PER_MIN: '-1', WECHAT_SEND_PER_DAY: '1.5', WECHAT_SEND_MIN_GAP_MS: ''}, clock.now);
+  const verdicts = [];
+  for (let i = 0; i < 7; i++) verdicts.push(sendOne(defaults, {id: 'd' + i, threadId: 'c'}));
+  assert.deepEqual(verdicts, ['send', 'send', 'send', 'send', 'send', 'send', 'hold']);
+  assert.ok(defaults.gap() > 0);
+});
+
+test('delivery: jobs over the limit are not sent, keep their lease, and go out on a later pass', async () => {
+  const clock = clockAt(0), sent = [], receipts = [];
+  const throttle = createThrottle({perChatPerMinute: 2, minGapMs: 0, now: clock.now});
+  const jobs = [1, 2, 3, 4].map(i => ({id: 'out:' + i, threadId: 'chat-1', text: 'm' + i}));
+  const daemon = {send: async job => { sent.push(job.id); return {id: 's' + job.id, state: 'accepted'}; }};
+  // Like Weave: what has a receipt is not claimed again; what was held is claimed again on a later pass.
+  const done = new Set();
+  const weave = async (path, data) => { if (path === 'claim') return {jobs: jobs.filter(job => !done.has(job.id))}; receipts.push(data); done.add(data.id); return {ok: true}; };
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 2);
+  assert.deepEqual(sent, ['out:1', 'out:2']);
+  assert.deepEqual(receipts, [{id: 'out:1', state: 'accepted'}, {id: 'out:2', state: 'accepted'}]);
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 0);
+  clock.advance(60_000);
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 2);
+  assert.deepEqual(sent, ['out:1', 'out:2', 'out:3', 'out:4']);
+});
+
+test('delivery: a held job that is still held past the limit is reported failed and never sent', async () => {
+  const clock = clockAt(0), sent = [], receipts = [];
+  const throttle = createThrottle({perChatPerMinute: 1, minGapMs: 0, maxHoldMs: 600_000, now: clock.now});
+  const daemon = {send: async job => { sent.push(job.id); return {id: 's', state: 'accepted'}; }};
+  const weave = async (path, data) => { if (path === 'claim') return {jobs: [{id: 'out:a', threadId: 't', text: 'a'}, {id: 'out:b', threadId: 't', text: 'b'}]}; receipts.push(data); return {ok: true}; };
+  await deliverOnce({daemon, weave, throttle, sleep: async () => {}});
+  assert.deepEqual(sent, ['out:a']);
+  clock.advance(600_001);
+  await deliverOnce({daemon, weave, throttle, sleep: async () => {}});
+  assert.ok(!sent.slice(1).includes('out:b'));
+  assert.deepEqual(receipts.at(-1), {id: 'out:b', state: 'failed'});
+});
+
+test('delivery: the minimum gap is slept between two sends, never before the first', async () => {
+  const clock = clockAt(1000), waits = [];
+  const throttle = createThrottle({perChatPerMinute: 10, totalPerMinute: 10, minGapMs: 1500, now: clock.now});
+  const daemon = {send: async () => ({id: 's', state: 'accepted'})};
+  const weave = async path => path === 'claim' ? {jobs: [1, 2, 3].map(i => ({id: 'out:' + i, threadId: 't' + i, text: 'x'}))} : {ok: true};
+  const sleep = async ms => { waits.push(ms); clock.advance(ms); };
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep}), 3);
+  assert.deepEqual(waits, [1500, 1500]);
+});
+
+test('delivery: a send that never reached WeChat (logged out, offline) does not use up the limit', async () => {
+  const clock = clockAt(0), throttle = createThrottle({perChatPerMinute: 1, minGapMs: 0, now: clock.now});
+  let fail = true;
+  const daemon = {send: async () => { if (fail) { const e = Error('auth_required'); e.status = 409; throw e; } return {id: 's', state: 'accepted'}; }};
+  const weave = async path => path === 'claim' ? {jobs: [{id: 'out:1', threadId: 't', text: 'x'}]} : {ok: true};
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 0);
+  fail = false;
+  assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 1);
+});
+
+test('reconnecting to the daemon backs off while it is down or logged out, so the log does not fill up and nobody is hammered', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 50].map(reconnectDelay), [3000, 6000, 12000, 24000, 48000, 60000, 60000, 60000]);
 });

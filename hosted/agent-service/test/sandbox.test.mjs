@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {dockerArgs, isolationFor} from '../sandbox.mjs';
+import {dockerArgs, isolationFor, removeContainer} from '../sandbox.mjs';
 import {scopeFor} from '../scopes.mjs';
 
-const dirs = {workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home'};
+const dirs = {root: '/srv/weave/owner/ab12', workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home', snapshot: '/srv/weave/owner/ab12/snapshot'};
 
 test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内存不够先杀它）；代理 socket 目录只读挂载', () => {
   const args = dockerArgs({
@@ -16,7 +16,8 @@ test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内�
     'run', '-i', '--rm', '--init', '--name', 'weave-run-abc', '--user', '1001:1001', '--network', 'none',
     '--memory', '1g', '--memory-swap', '1g', '--oom-score-adj', '500', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', '/home/agent:uid=1001,gid=1001,size=64m',
-    '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace', '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
+    '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace', '-v', '/srv/weave/owner/ab12/snapshot:/workspace/weave:ro',
+    '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
     '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave:ro',
     '-e', 'ANTHROPIC_AUTH_TOKEN=run-token', '-e', 'HOME=/home/agent',
     'weave-agent:0.3.316', 'claude', '--output-format', 'stream-json',
@@ -45,6 +46,22 @@ test('local 模式：文件工具只许碰工作目录；sandbox 打开时没有
   assert.deepEqual(iso.allowedTools, ['Bash', 'Read(./**)', 'Edit(./**)', 'Glob', 'Grep', 'Skill', 'WebSearch', 'mcp__weave__*']);
   assert.deepEqual(iso.sandbox, {enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: {allowedDomains: []}});
   assert.equal(isolationFor({mode: 'local', scope: scopeFor('owner'), dirs, pluginDir: '/p', proxy: {url: 'http://x'}, sandbox: false}).sandbox, undefined);
+});
+
+test('快照目录：docker 写在工作目录外、只读挂进容器；local（本机开发）写在工作目录里的 weave/', () => {
+  const common = {scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', image: 'weave-agent:0.3.316', name: 'weave-run-x', uid: 1001, gid: 1001};
+  assert.equal(isolationFor({...common, mode: 'docker', proxy: {socketDir: '/srv/weave/run'}}).snapshotDir, '/srv/weave/owner/ab12/snapshot');
+  assert.equal(isolationFor({...common, mode: 'local', proxy: {url: 'http://127.0.0.1:1'}}).snapshotDir, '/srv/weave/owner/ab12/workspace/weave');
+});
+
+test('removeContainer 等 docker rm 真正结束才返回；没有这个容器、或别的错误都不抛', async () => {
+  let finished = false;
+  await removeContainer('weave-run-x', (cmd, args, callback) => setTimeout(() => { finished = true; callback(null, '', ''); }, 50));
+  assert.equal(finished, true, '返回时 docker rm 应该已经结束');
+  const calls = [];
+  await removeContainer('weave-run-y', (cmd, args, callback) => { calls.push([cmd, args]); callback(Error('exit 1'), '', 'Error: No such container: weave-run-y'); });
+  assert.deepEqual(calls, [['docker', ['rm', '-f', 'weave-run-y']]]);
+  await removeContainer('weave-run-z', (cmd, args, callback) => callback(Error('Cannot connect to the Docker daemon'), '', ''));
 });
 
 test('不认识的隔离方式直接报错，不会静默退回不隔离', () => {

@@ -6,17 +6,16 @@ import {withWorld} from './store.mjs';
 import {verifyCapability} from './capability.mjs';
 import {fail, record, notify} from './domain.mjs';
 import {activeNow, localClock} from './proactivity.mjs';
-import {listHabits, saveHabit, logCompletion, queryCompletions} from './habits.mjs';
+import {saveHabit, logCompletion} from './habits.mjs';
+import {groupTool, queueOwnerText} from './wechat.mjs';
 
-// 这一轮能用哪些工具，按通行证上的范围。group 在第 3 步加。
+// 这一轮能用哪些工具，按通行证上的范围。群范围只有 send_message，而且只能发给通行证上的那个群。
+// 只有会写东西的工具；读数据走叫醒前的快照（agent-snapshot.mjs，教材 p.16）。
 export const TOOL_SCOPES = {
-  send_message: ['owner'],
-  list_habits: ['owner'],
+  send_message: ['owner', 'group'],
   save_habit: ['owner'],
   log_completion: ['owner'],
-  query_completions: ['owner'],
 };
-const READ_ONLY = new Set(['list_habits', 'query_completions']);
 const RECEIPTS = 200, DAILY_MESSAGES = 20, REPEAT_MS = 24 * 60 * 60 * 1000;
 
 // 草稿文案和每天 20 条的上限，待确认。
@@ -28,7 +27,7 @@ const TEXT = {
   sent: '已发出。',
 };
 
-// 收件人由通行证决定，模型选不了（文档第 4 节工具表）。第 1 步只有网页通道。
+// 收件人由通行证决定，模型选不了（文档第 4 节工具表）。通行证上的通道是微信就发到本人的微信，是网页就发网页通知。
 function sendMessage(world, person, claims, args, now) {
   const text = typeof args.text === 'string' ? args.text.trim() : '';
   if (!text || text.length > 700) fail(TEXT.length);
@@ -45,16 +44,15 @@ function sendMessage(world, person, claims, args, now) {
   outbox.recent.push({text, at: now});
   person.agentOutbox = outbox;
   record(person, text, {source: 'agent', runId: claims.runId});
-  notify(world, person.id, text);
+  if (claims.channel === 'wechat') queueOwnerText(world, person, text, now);
+  else notify(world, person.id, text);
   return TEXT.sent;
 }
 
 const BACKENDS = {
   send_message: sendMessage,
-  list_habits: (world, person) => JSON.stringify(listHabits(person)),
   save_habit: (world, person, claims, args, now) => JSON.stringify(saveHabit(person, args, now)),
   log_completion: (world, person, claims, args, now) => JSON.stringify(logCompletion(person, args, now, 'agent')),
-  query_completions: (world, person, claims, args, now) => JSON.stringify(queryCompletions(person, args, now)),
 };
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}});
@@ -76,6 +74,8 @@ export async function handleAgentTool(request, {db, secret, readBody, now = Date
     const out = await withWorld(db, world => {
       const person = world.people[claims.owner];
       if (!person) fail('账号不存在', 404);
+      // 群范围的工具走单独一条路：不拿本人的记录，回执也记在群自己的记录里。
+      if (claims.scope === 'group') return groupTool(name, world, claims, args, toolUseId, now);
       const key = `${claims.runId}:${toolUseId}`;
       const done = person.toolReceipts?.find(receipt => receipt.key === key);
       if (done) return {ok: done.ok, text: done.text};
@@ -87,7 +87,7 @@ export async function handleAgentTool(request, {db, secret, readBody, now = Date
         ok = false;
         text = error.message;
       }
-      if (!READ_ONLY.has(name)) person.toolReceipts = [...(person.toolReceipts || []), {key, ok, text, at: now}].slice(-RECEIPTS);
+      person.toolReceipts = [...(person.toolReceipts || []), {key, ok, text, at: now}].slice(-RECEIPTS);
       return {ok, text};
     });
     return json(out);

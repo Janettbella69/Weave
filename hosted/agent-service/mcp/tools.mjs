@@ -6,19 +6,14 @@ import {tool, createSdkMcpServer} from '@anthropic-ai/claude-agent-sdk';
 import {z} from 'zod';
 
 const writes = {readOnlyHint: false, destructiveHint: false, openWorldHint: false};
-const reads = {readOnlyHint: true, openWorldHint: false};
 
-// 说明文字：log_completion 是文档原文，其余四条是草稿，待确认。
+// 只有会写东西的工具。读数据不封成工具，走叫醒前的快照 weave/weave.db（教材 p.16）。
+// 说明文字：log_completion 是文档原文，其余两条是草稿，待确认。
 export const TOOL_DEFS = {
   send_message: {
     description: '说一句话给这一轮的对象。不是有人直接找你的那一轮，只有调用它才有人看得到。收件人由系统决定。',
     shape: {text: z.string().min(1).max(700)},
     annotations: writes,
-  },
-  list_habits: {
-    description: '读这个人的习惯：名字、身份句、触发、最小动作。',
-    shape: {},
-    annotations: reads,
   },
   save_habit: {
     description: '新建或修改一个习惯的身份句、触发和最小动作。改已有的要带 habit_id。',
@@ -39,15 +34,6 @@ export const TOOL_DEFS = {
       note: z.string().max(500).optional(),
     },
     annotations: writes,
-  },
-  query_completions: {
-    description: '查这个人在一段日期内的完成记录，返回 JSON，里面带本人当地的今天。',
-    shape: {
-      from: z.string().describe('YYYY-MM-DD'),
-      to: z.string().describe('YYYY-MM-DD'),
-      habit_id: z.string().optional(),
-    },
-    annotations: reads,
   },
 };
 

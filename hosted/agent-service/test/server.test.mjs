@@ -6,24 +6,36 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
 import {scopeDirs} from '../workspace.mjs';
-import {isMain, steps} from './helpers/fake-model.mjs';
+import {isMain, lastToolResults, steps} from './helpers/fake-model.mjs';
 import {startFakeModel} from './helpers/fake-model.mjs';
 
 const TOKEN = 's'.repeat(40);
 let fake, weave, service, dataDir;
 
+const SNAPSHOT = {
+  version: 1, today: '2026-11-02', timezone: 'Asia/Shanghai',
+  tables: {habits: [{habit_id: 'walk', name: '走路', identity: '', trigger: '起床后', minimum_action: '穿上鞋', created_at: null, updated_at: null}], completions: []},
+  files: {'notion/目标.md': '每天走路'},
+};
+
 before(async () => {
   fake = await startFakeModel();
-  const seen = [];
+  const seen = [], snapshots = [];
   const server = http.createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
+    if (req.method === 'GET' && req.url === '/api/internal/agent/snapshot') {
+      snapshots.push({headers: req.headers});
+      const broken = req.headers.authorization === 'Bearer cap-broken';
+      res.writeHead(broken ? 500 : 200, {'Content-Type': 'application/json'});
+      return res.end(broken ? '{"error":"快照暂时取不到"}' : JSON.stringify(SNAPSHOT));
+    }
     seen.push({path: req.url, headers: req.headers, body: JSON.parse(raw)});
     res.writeHead(200, {'Content-Type': 'application/json'});
     res.end('{"ok":true,"text":"已记录"}');
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  weave = {url: `http://127.0.0.1:${server.address().port}`, seen, close: () => { server.closeAllConnections(); return new Promise(r => server.close(r)); }};
+  weave = {url: `http://127.0.0.1:${server.address().port}`, seen, snapshots, close: () => { server.closeAllConnections(); return new Promise(r => server.close(r)); }};
   dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-service-')));
   service = await createAgentService({
     token: TOKEN, dataDir, isolation: 'local', sandbox: false, weaveUrl: weave.url,
@@ -98,6 +110,37 @@ test('这一轮出错（熔断）就不接着用这段会话', async () => {
   const next = await (await post('/wake', wakeBody({id: 'u:erin'}))).json();
   assert.notEqual(next.sessionId, failed.sessionId);
   assert.equal(next.reply, '重新开始');
+});
+
+test('叫醒前快照已经在工作目录里：Agent 第一步就能用 Bash 查到 weave.db 里的习惯和 Notion 文件', async () => {
+  fresh(steps([
+    {tool: 'Bash', input: {command: `python3 -c "import sqlite3;print(sqlite3.connect('weave/weave.db').execute('select name, trigger from habits').fetchall())"; cat weave/notion/目标.md`, description: '查习惯'}},
+    {text: '查到了'},
+  ]));
+  const out = await (await post('/wake', wakeBody({id: 'u:gina'}))).json();
+  assert.equal(out.outcome, 'success', JSON.stringify(out));
+  const results = modelCalls().flatMap(c => lastToolResults(c.body));
+  assert.ok(results.some(x => x.includes("('走路', '起床后')") && x.includes('每天走路')), results.join(' | '));
+  assert.equal(weave.snapshots.at(-1).headers.authorization, 'Bearer cap-abc');
+});
+
+test('快照接口 500 时 /wake 回 503，CLI 没启动', async () => {
+  fresh(steps([{text: '不该出现'}]));
+  const r = await post('/wake', wakeBody({id: 'u:hank', capability: 'cap-broken'}));
+  assert.equal(r.status, 503);
+  assert.match((await r.json()).error, /快照/);
+  assert.equal(fake.captured.length, 0);
+});
+
+test('POST /memory 返回 MEMORY.md 原文；没有令牌 401；group 范围、缺 id 是 400；没醒过的人是空字符串', async () => {
+  const dirs = scopeDirs(dataDir, 'owner', 'u:ivy');
+  mkdirSync(dirs.workspace, {recursive: true});
+  writeFileSync(join(dirs.workspace, 'MEMORY.md'), '# 目标\n每天走 20 分钟\n');
+  assert.deepEqual(await (await post('/memory', {scope: 'owner', id: 'u:ivy'})).json(), {text: '# 目标\n每天走 20 分钟\n'});
+  assert.equal((await post('/memory', {scope: 'owner', id: 'u:ivy'}, null)).status, 401);
+  assert.equal((await post('/memory', {scope: 'group', id: 'g:1'})).status, 400);
+  assert.equal((await post('/memory', {scope: 'owner'})).status, 400);
+  assert.deepEqual(await (await post('/memory', {scope: 'owner', id: 'u:nobody'})).json(), {text: ''});
 });
 
 test('MEMORY.md 里的内容进了这一轮的系统提示', async () => {

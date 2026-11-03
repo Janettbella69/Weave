@@ -47,11 +47,15 @@ async function chat(name, text) {
 }
 const today = () => new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai'}).format(new Date());
 
-test('网页聊天端到端：「今天走了 20 分钟」→ Agent 调 list_habits、save_habit、log_completion → 回复进 messages，完成记录在 D1 里', async () => {
+// The agent reads its data with SQL on the pre-wake snapshot (textbook p.16), like a person would.
+const sql = query => ({tool: 'Bash', input: {command: `python3 -c "import sqlite3,json;print(json.dumps(sqlite3.connect('weave/weave.db').execute('${query}').fetchall()))"`, description: 'sql'}});
+
+test('网页聊天端到端：「今天走了 20 分钟」→ Agent 用 SQL 查 weave.db、save_habit、log_completion，再查一次看得到今天这条 → 回复进 messages，完成记录在 D1 里', async () => {
   fake.script(steps([
-    {tool: 'mcp__weave__list_habits', input: {}},
+    sql('select habit_id, name from habits'),
     {tool: 'mcp__weave__save_habit', input: {name: '走路', minimum_action: '走到楼下'}},
     body => ({tool: 'mcp__weave__log_completion', input: {habit_id: JSON.parse(lastToolResults(body)[0]).habit.habit_id, date: today()}}),
+    sql('select date from completions'),
     {text: '记好了，今天走了 20 分钟。'},
   ]));
   const r = await chat('Alice', '今天走了 20 分钟');
@@ -64,11 +68,13 @@ test('网页聊天端到端：「今天走了 20 分钟」→ Agent 调 list_hab
   assert.deepEqual(person.messages.slice(-2).map(m => [m.role, m.text]), [['user', '今天走了 20 分钟'], ['assistant', '记好了，今天走了 20 分钟。']]);
   const results = fake.captured.filter(c => isMain(c.body)).flatMap(c => lastToolResults(c.body));
   assert.ok(results.some(x => x.includes('"duplicate":false')), results.join(' | '));
+  assert.equal(results[0].trim(), '[]', '第一次查的时候还没有习惯');
+  assert.ok(results.some(x => x.includes(`[["${today()}"]]`)), '写完以后同一轮再查，本地快照里就有今天这条：' + results.join(' | '));
 });
 
 test('同一天第二条消息接上同一段会话，Agent 看得到上一条', async () => {
   fake.captured.length = 0;
-  fake.script(steps([{text: '第一条'}, {text: '第一条'}, {text: '第一条'}, {text: '第一条'}, {text: '你刚才说今天走了 20 分钟'}]));
+  fake.script(steps([{text: '第一条'}, {text: '第一条'}, {text: '第一条'}, {text: '第一条'}, {text: '第一条'}, {text: '你刚才说今天走了 20 分钟'}]));
   const r = await chat('Alice', '我刚才说了什么？');
   assert.equal(r.data.reply, '你刚才说今天走了 20 分钟');
   const lastCall = fake.captured.filter(c => isMain(c.body)).at(-1);

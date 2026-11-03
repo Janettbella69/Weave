@@ -1,13 +1,13 @@
 // Agent 服务（docs/ARCHITECTURE.md 第 1、11 节）：全仓库唯一调用 query() 的地方。
 //   POST /wake    叫醒一轮。Weave 服务决定该不该叫醒，醒了做什么由 Agent 自己决定。
 //   POST /forget  注销时删掉这个人的工作目录和会话记录。
+//   POST /memory  读本人的 MEMORY.md，给网页看。
 //   GET  /health
 //   POST /query   旧路，第 2 步删（runtime.mjs）。
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
 import http from 'node:http';
 import {timingSafeEqual, createHash, randomUUID} from 'node:crypto';
 import {mkdir, chmod, rm} from 'node:fs/promises';
-import {execFile} from 'node:child_process';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {query} from '@anthropic-ai/claude-agent-sdk';
@@ -18,10 +18,11 @@ import {renderTrigger} from './prompts.mjs';
 import {createLedger} from './ledger.mjs';
 import {createModelProxy} from './model-proxy.mjs';
 import {toolBackend} from './mcp/rpc.mjs';
-import {isolationFor} from './sandbox.mjs';
+import {isolationFor, removeContainer} from './sandbox.mjs';
 import {wake} from './runner.mjs';
 import {createRunQueue} from './queue.mjs';
 import * as workspace from './workspace.mjs';
+import {fetchSnapshot, writeSnapshot, prepareMountpoint, mirroringRpc, SNAPSHOT_DIR} from './snapshot.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('./plugin', import.meta.url));
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -102,15 +103,27 @@ export async function createAgentService({
     return queue.run(`${scope.kind}:${input.id}`, async () => {
       const dirs = workspace.scopeDirs(dataDir, scope.kind, input.id);
       await workspace.prepare(dirs);
+      const name = 'weave-run-' + randomUUID().replaceAll('-', '').slice(0, 12);
+      const runIsolation = isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory});
+      // 叫醒前把数据写成快照（教材 p.16、p.20）。docker 下快照在工作目录外，只读挂到 /workspace/weave，
+      // Agent 改不到，写入后的同步也只碰宿主自己的文件。取不到就不醒：回 503，dispatcher 当成「没有处理」。
+      let dbPath;
+      try {
+        const snapshot = await fetchSnapshot({weaveUrl, capability: input.capability, fetcher});
+        if (isolation === 'docker') await prepareMountpoint(join(dirs.workspace, SNAPSHOT_DIR), dirs.root);
+        ({dbPath} = await writeSnapshot(runIsolation.snapshotDir, snapshot, Date.now(), {trashDir: dirs.root}));
+      } catch (error) {
+        console.error('Agent service: snapshot unavailable:', error instanceof Error ? error.message : 'unknown');
+        fail(503, '取不到 Weave 的数据快照，这一轮没有叫醒');
+      }
       const memory = await workspace.readMemory(dirs);
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
       const run = proxy.openRun({account: input.id, provider: provider.name, model: input.model, userKey: input.userKey});
-      const name = 'weave-run-' + randomUUID().replaceAll('-', '').slice(0, 12);
       try {
         const result = await wake({
           scope, trigger: input.trigger, memory, provider, model: input.model, runToken: run.token, sessionId, queryFn,
-          isolation: isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory}),
-          rpc: toolBackend({weaveUrl, capability: input.capability, fetcher}),
+          isolation: runIsolation,
+          rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
@@ -118,9 +131,18 @@ export async function createAgentService({
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
       } finally {
         run.close();
-        if (isolation === 'docker') execFile('docker', ['rm', '-f', name], () => {});
+        // 等容器真的没了再放下一轮进来（队列在这个函数返回后才放行）。
+        if (isolation === 'docker') await removeContainer(name);
       }
     });
+  }
+
+  // 本人在网页上看 Agent 记了什么（docs/ARCHITECTURE.md 第 10 节：MEMORY.md 本人可看）。只读，只给 owner。
+  async function handleMemory(input) {
+    const scope = checkScope(input);
+    if (scope.kind !== 'owner') fail(400, '范围无效');
+    checkId(input.id);
+    return {text: await workspace.readMemory(workspace.scopeDirs(dataDir, 'owner', input.id))};
   }
 
   async function handleForget(input) {
@@ -134,7 +156,7 @@ export async function createAgentService({
     const reply = (status, data) => { res.writeHead(status, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}); res.end(JSON.stringify(data)); };
     const path = new URL(req.url, 'http://agent').pathname;
     if (path === '/health' && req.method === 'GET') return reply(200, {ok: true});
-    if (req.method !== 'POST' || !['/wake', '/forget', '/query'].includes(path)) return reply(404, {error: '未找到'});
+    if (req.method !== 'POST' || !['/wake', '/forget', '/memory', '/query'].includes(path)) return reply(404, {error: '未找到'});
     if (!timingSafeEqual(digest(req.headers.authorization || ''), digest('Bearer ' + token))) return reply(401, {error: '未授权'});
     if (path === '/query') {
       if (legacyActive >= 4) return reply(429, {error: 'Agent 服务繁忙'});
@@ -145,7 +167,8 @@ export async function createAgentService({
     }
     try {
       const input = await readJson(req, 64 * 1024);
-      return reply(200, path === '/wake' ? await handleWake(input) : await handleForget(input));
+      const handlers = {'/wake': handleWake, '/forget': handleForget, '/memory': handleMemory};
+      return reply(200, await handlers[path](input));
     } catch (error) {
       if (error.status) return reply(error.status, {error: error.message});
       console.error('Agent service error:', error instanceof Error ? error.message : 'unknown');
