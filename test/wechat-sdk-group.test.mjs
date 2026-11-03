@@ -203,3 +203,17 @@ test('deleting the account also deletes the Agent workspaces of the groups it en
   assert.ok(h.calls.some(c => c.path === '/forget' && c.body.scope === 'group' && c.body.id === groupId));
   assert.ok(h.calls.some(c => c.path === '/forget' && c.body.scope === 'owner' && c.body.id === h.id));
 });
+
+test('群里叫醒带的日期和时间按北京时间，不跟开启者的时区走', async () => {
+  const h = await setup({agent: async () => reply('好')});
+  const store = new Store(h.db), world = await store.load();
+  world.people[h.id].profile.timezone = 'America/Los_Angeles';
+  await store.save(world);
+  await h.enableGroup();
+  await ask(h);
+  assert.equal((await h.tick()).data.processed, 1);
+  const {body} = h.wakes()[0];
+  // 2030-01-01T00:00Z：洛杉矶还是 2029-12-31 16:00，北京已经是 2030-01-01 08:00。
+  assert.equal(body.localDate, '2030-01-01');
+  assert.equal(body.trigger.at, '2030-01-01T08:00:00+08:00');
+});

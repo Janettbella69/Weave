@@ -13,6 +13,8 @@ export function localClock(person,now){
   const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:person.profile.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(now)).map(p=>[p.type,p.value]));
   return {day:`${parts.year}-${parts.month}-${parts.day}`,minute:Number(parts.hour)*60+Number(parts.minute)};
 }
+// 打卡群里的「今天」和「现在」按北京时间算（2026-11-02 定：用户多在中国），不用开启者自己的时区。
+export const GROUP_TIMEZONE='Asia/Shanghai';
 const minutes=value=>Number(value.slice(0,2))*60+Number(value.slice(3));
 export function activeNow(person,now){const p=proactiveState(person),current=localClock(person,now).minute,start=minutes(p.activeStart),end=minutes(p.activeEnd);return start<end?current>=start&&current<end:current>=start||current<end;}
 function nextActive(person,now){for(let offset=0;offset<1500;offset+=15)if(activeNow(person,now+offset*60000))return now+offset*60000;return now+86400000;}
