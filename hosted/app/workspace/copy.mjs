@@ -44,6 +44,8 @@ export const COPY = freeze({
   // 草稿文案，待确认。(A-4: the board says 「昨天没走，今天走一下……」, which only fits walking)
   missedYesterday: '昨天没做，今天做一下就不算连着错过。',
   doneNote: n => '记下了，这周第 ' + n + ' 天。',
+  // A tick box's accessible name (the boards' aria-label): 做到了：饭后走 10 分钟
+  checkLabel: title => '做到了：' + title,
   // The two fixed parts of the line under a habit: 为了「目标名」 · 什么时候 · 最小一步：… (spec section 3.2, the boards)
   forGoal: title => '为了「' + title + '」',
   minimumStep: text => '最小一步：' + text,
@@ -53,6 +55,9 @@ export const COPY = freeze({
   todoEmpty: '还没有每天要做的事。去「目标」定一个，或者在聊天里跟 Weave 说说你想养成什么。',
   // 草稿文案，待确认。(A-4)
   checkFailed: '没记上，再点一次试试。',
+  // After the time of a reminder in 之后: 「明天 20:00 · 到时候 Weave 会提醒你」, as on the phone board (the wide board puts
+  // 「你在聊天里说的，」 before it).
+  remindNote: '到时候 Weave 会提醒你',
 
   // Goals (目标)
   tracking: '正在追踪',
@@ -62,6 +67,8 @@ export const COPY = freeze({
   // 草稿文案，待确认。(A-4)
   ungrouped: '还没归到目标的习惯',
   weekCount: n => '这周 ' + n + ' 天',
+  // A habit on its goal's card (the boards): 每天：饭后走 10 分钟
+  everyDay: name => '每天：' + name,
   last7: '最近 7 天',
   // The boards write 「从 10 月 12 日开始」, with no space before 开始.
   startedOn: (category, date) => category + ' · 从 ' + date + '开始',
@@ -70,6 +77,9 @@ export const COPY = freeze({
   latest: (date, source, note) => '最近：' + date + '，' + (source === 'web' ? '你在网页上记下' : 'Weave 帮你记下') + '「' + note + '」',
   goalIntro: category => '好，聊聊「' + category + '」。你想做到什么？说说现在的情况就行，我帮你拆成每天的一小步。',
   goalPlaceholder: '比如：想睡得早一点',
+  // The little chat for a new goal (the boards): its title, 新目标 · 健康, and its box's label, read out but not shown
+  newGoal: category => '新目标 · ' + category,
+  goalLabel: '告诉 Weave 你的目标',
   // 草稿文案，待确认。New: the spec only says the category goes along with the person's words (section 3.3).
   goalStarter: (category, text) => '我想定一个「' + category + '」方面的目标：' + text,
   changeCategory: '换一个',

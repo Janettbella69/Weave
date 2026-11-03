@@ -11,6 +11,8 @@ import Avatar from './ui/Avatar';
 import ViewLink from './ui/ViewLink';
 import ChatPage from './pages/ChatPage';
 import FirstRun from './pages/FirstRun';
+import TodoPage from './pages/TodoPage';
+import GoalsPage from './pages/GoalsPage';
 
 // The workspace shell: it loads /api/status and keeps it fresh, remembers which page is open, and draws the navigation
 // around that page. Everything a page shows is the page's own (one component per page).
@@ -41,7 +43,7 @@ const api=(path,data)=>apiRequest(path,data,{onUnauthorized});
 // The settings page also gets `notionReturn`: what a return from Notion left for it to show (see the first effect).
 // A page renders inside the shell's <main> (which scrolls), so it brings no <main> of its own.
 // A view whose page is not written yet has an empty body. Each page adds one line here.
-const PAGES={chat:ChatPage};
+const PAGES={chat:ChatPage,todo:TodoPage,goals:GoalsPage};
 // The chat of someone who has no habits and has never written anything opens on the first-run screen, until a first
 // message is on its way: then the chat shows it, with the thinking bubble, at once.
 const FIRST_RUN=FirstRun;

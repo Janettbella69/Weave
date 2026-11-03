@@ -51,6 +51,28 @@ test('a message sent from the first run or a new goal goes through the chat\'s o
   assert.match(workspace,/const isFirstRun=\(state,pendings\)=>state\.habits\.length===0&&state\.messages\.length===0&&pendings\.length===0;/,'the first run gives way to the chat while a message is on its way');
 });
 
+test('a tick that did not go through says the agreed sentence, never the server\'s words',async()=>{
+  // The habit endpoints' errors are written for the model (they name the database); spec A-4 has the page's sentence.
+  const page=await read('app/workspace/pages/TodoPage.jsx');
+  assert.ok(page.includes("'habits/check'")&&page.includes("'habits/uncheck'"));
+  assert.match(page,/retryOnConflict\(/,'a clash with Weave writing at the same moment is tried once more');
+  assert.match(page,/api\(row\.done \? 'habits\/uncheck' : 'habits\/check'[^\n]*\), COPY\.checkFailed\);/,'the habit tick hands COPY.checkFailed over as its failure text');
+  assert.match(page,/throw failure \? new Error\(failure\) : error;/);
+});
+
+test('the to-do and goals pages count days in the account\'s zone',async()=>{
+  const todo=await read('app/workspace/pages/TodoPage.jsx'),goals=await read('app/workspace/pages/GoalsPage.jsx');
+  for(const page of [todo,goals])assert.match(page,/const tz = state\.profile\.timezone/);
+  assert.match(todo,/todoModel\(\{[^}]*\btz\b[^}]*\}\)/);
+  assert.match(goals,/goalsModel\(\{[^}]*\btz\b[^}]*\}\)/);
+});
+
+test('a new goal is talked over in the chat, with its category',async()=>{
+  const goals=await read('app/workspace/pages/GoalsPage.jsx');
+  assert.match(goals,/sendChat\(props,\s*COPY\.goalStarter\(/);
+  assert.match(goals,/navigate\('chat'\)/);
+});
+
 test('a 401 is not sent to the guest URL when the site is behind the access password',async()=>{
   const workspace=await read('app/workspace/Workspace.jsx');
   assert.ok(workspace.includes("unauthorizedAction(response.headers)==='guest'"));

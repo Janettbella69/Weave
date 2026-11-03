@@ -17,10 +17,10 @@ const TEXT = {
   conversation: '和 Weave 的对话', messageLabel: '发消息给 Weave',
   // to-do
   todayLabel: '今天', later: '之后', missedYesterday: '昨天没做，今天做一下就不算连着错过。', addHint: '想加别的事？', addLink: '在聊天里跟 Weave 说一声',
-  todoEmpty: '还没有每天要做的事。去「目标」定一个，或者在聊天里跟 Weave 说说你想养成什么。', checkFailed: '没记上，再点一次试试。',
+  todoEmpty: '还没有每天要做的事。去「目标」定一个，或者在聊天里跟 Weave 说说你想养成什么。', checkFailed: '没记上，再点一次试试。', remindNote: '到时候 Weave 会提醒你',
   // goals
   tracking: '正在追踪', create: '创建一个目标', goalsEmpty: '还没有在追踪的目标。从下面选一类开始。', ungrouped: '还没归到目标的习惯', last7: '最近 7 天',
-  goalPlaceholder: '比如：想睡得早一点', changeCategory: '换一个',
+  goalPlaceholder: '比如：想睡得早一点', changeCategory: '换一个', goalLabel: '告诉 Weave 你的目标',
   // records
   recordsEmpty: '还没有记录。在待办里打勾，或者跟 Weave 说一声，这里就会有。', earliest: '更早的记录先看不了。', longest: '最长一次连续', doubleMiss: '连着错过两天',
   recent: '最近记下的', sourceWeb: '你在网页上记的', sourceAgent: 'Weave 帮你记的', done: '做到了', missed: '没做', notStarted: '还没开始',
@@ -44,9 +44,12 @@ const CALLS = [
   ['progress', [1, 2], '今天 1 / 2'],
   ['progress', [0, 0], '今天 0 / 0'],
   ['doneNote', [5], '记下了，这周第 5 天。'],
+  ['checkLabel', ['饭后走 10 分钟'], '做到了：饭后走 10 分钟'],
   ['forGoal', ['每天动一动'], '为了「每天动一动」'],
   ['minimumStep', ['走到楼下'], '最小一步：走到楼下'],
   ['weekCount', [4], '这周 4 天'],
+  ['everyDay', ['饭后走 10 分钟'], '每天：饭后走 10 分钟'],
+  ['newGoal', ['健康'], '新目标 · 健康'],
   ['startedOn', ['健康', '10 月 12 日'], '健康 · 从 10 月 12 日开始'],
   ['latest', ['11 月 1 日', 'web', '饭后绕小区走了一圈，大概 12 分钟'], '最近：11 月 1 日，你在网页上记下「饭后绕小区走了一圈，大概 12 分钟」'],
   ['latest', ['10 月 31 日', 'agent', '睡前读了 5 页'], '最近：10 月 31 日，Weave 帮你记下「睡前读了 5 页」'],

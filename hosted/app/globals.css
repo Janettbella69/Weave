@@ -321,6 +321,127 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-plan,.wv-own{padding:18px 20px;border-radius:20px}
 }
 
+/* A page with a title (待办, 目标): the column, the title row, the sections */
+.wv-page{padding:32px 40px 48px}
+.wv-page-column{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+.wv-page-column.is-goals{max-width:760px;gap:32px}
+.wv-page-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px}
+.wv-page-titles{display:flex;flex-direction:column;gap:4px}
+.wv-page-date{font-size:14px;color:var(--wv-secondary)}
+.wv-page-title{font-size:28px}
+.wv-section{display:flex;flex-direction:column;gap:10px}
+.wv-section h2{margin-bottom:2px;font-size:19px}
+.wv-empty{font-size:15px;line-height:1.6;color:var(--wv-secondary)}
+.wv-hint{font-size:14px;color:var(--wv-secondary)}
+
+/* 待办 (pages/TodoPage.jsx): a row per habit or reminder, with its tick box */
+.wv-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.wv-row{display:flex;align-items:flex-start;gap:6px;padding:12px 18px 14px 8px;border-radius:20px;background:var(--wv-block)}
+.wv-tick{flex:none;display:flex;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:0;border-radius:12px;background:transparent}
+.wv-tick:disabled{cursor:default}
+.wv-tick-box{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:2px solid var(--wv-missed);border-radius:7px;background:#FFFFFF;color:#FFFFFF}
+.wv-tick[aria-pressed=true] .wv-tick-box{border-color:var(--wv-link);background:var(--wv-link)}
+.wv-row-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;padding-top:10px}
+.wv-row-title{font-size:17px;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
+.wv-row.is-done .wv-row-title{color:var(--wv-secondary);text-decoration:line-through}
+.wv-row-meta,.wv-row-note{font-size:14px;line-height:1.6;color:var(--wv-secondary);overflow-wrap:anywhere}
+.wv-row-note{color:var(--wv-on-blue)}
+
+/* 目标 (pages/GoalsPage.jsx): the goal cards, the categories, and the little chat for a new goal */
+.wv-section.is-tracking{gap:14px}
+.wv-section.is-tracking h2{margin-bottom:0}
+.wv-cards{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.wv-card{display:flex;flex-direction:column;gap:14px;padding:20px 24px;border-radius:24px;background:var(--wv-block)}
+.wv-card-head{display:flex;align-items:center;gap:14px}
+.wv-card-icon{flex:none;display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:14px;background:#FFFFFF;color:var(--wv-ink)}
+.wv-card-titles{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.wv-card-titles h3{font-size:17px;overflow-wrap:anywhere}
+.wv-card-meta{font-size:13px;color:var(--wv-secondary);overflow-wrap:anywhere}
+.wv-card-meta.is-narrow{display:none}
+.wv-chip.is-small{flex:none;padding:5px 12px;font-size:13px}
+.wv-habits{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.wv-habit{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:16px;background:#FFFFFF}
+.wv-habit-name{min-width:0;font-size:15px;overflow-wrap:anywhere}
+.wv-dots{display:flex;align-items:center;gap:6px}
+.wv-dots-label{margin-right:4px;font-size:12px;color:var(--wv-small)}
+.wv-dot{flex:none;display:block;width:14px;height:14px;border-radius:999px}
+.wv-dot.is-done{background:var(--wv-link)}
+.wv-dot.is-missed{border:2px solid var(--wv-missed);background:#FFFFFF}
+.wv-dot.is-today{border:2px dashed var(--wv-link);background:#FFFFFF}
+/* Before the habit was added: the 「还没开始」 colours of the records calendar */
+.wv-dot.is-before{border:1px solid #D6D6D6;background:var(--wv-pill)}
+.wv-card-latest{font-size:14px;line-height:1.6;color:var(--wv-secondary);overflow-wrap:anywhere}
+.wv-section.is-create{gap:6px}
+.wv-section.is-create h2{margin-bottom:6px}
+.wv-categories{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.wv-category{width:100%;min-height:60px;display:flex;align-items:center;gap:18px;padding:0 8px;border:0;border-radius:16px;background:transparent;color:var(--wv-ink);font-size:17px;line-height:1.3;text-align:left}
+.wv-category:hover{background:var(--wv-block)}
+.wv-category-icon{flex:none;display:flex;align-items:center;justify-content:center;width:28px;height:28px;color:#5F5F5F}
+.wv-category-label{flex:1}
+.wv-category-chevron{flex:none;color:#9A9A9A}
+.wv-goal-talk{display:flex;flex-direction:column;border:1px solid var(--wv-line);border-radius:24px;background:#FFFFFF}
+.wv-goal-talk-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 10px 6px 20px;border-bottom:1px solid var(--wv-line)}
+.wv-goal-talk-title{font-size:15px;font-weight:600}
+.wv-text-button{flex:none;min-height:44px;padding:0 14px;border:0;border-radius:999px;background:transparent;color:var(--wv-link);font-size:14px}
+.wv-text-button:hover{color:var(--wv-on-blue)}
+.wv-goal-talk-body{display:flex;flex-direction:column;gap:12px;padding:20px}
+.wv-goal-talk .wv-bubble{max-width:85%;font-size:15px}
+.wv-goal-talk-compose{padding:4px 16px 16px}
+.wv-goal-talk .wv-composer-box{padding:4px 4px 4px 18px;border-radius:27px}
+.wv-goal-talk .wv-composer-box textarea{min-height:44px;padding:11px 0;font-size:15px}
+.wv-goal-talk .wv-send{width:44px;height:44px}
+.wv-goal-talk .wv-send svg{width:20px;height:20px}
+
+@media(max-width:719.98px){
+  .wv-page{padding:18px 16px 24px}
+  .wv-page-column{gap:20px}
+  .wv-page-column.is-goals{gap:22px}
+  /* The date is in the top bar on a phone */
+  .wv-page-head{flex-wrap:nowrap;align-items:center;gap:12px}
+  .wv-page-date{display:none}
+  .wv-page-title{font-size:24px}
+  .wv-page-head .wv-chip{padding:5px 12px;font-size:13px}
+  .wv-section{gap:8px}
+  .wv-section h2{margin-bottom:0;font-size:17px}
+  .wv-hint{font-size:13px}
+  .wv-rows{gap:8px}
+  .wv-row{gap:4px;padding:10px 14px 12px 4px;border-radius:18px}
+  .wv-row-text{gap:3px}
+  .wv-row-title{font-size:16px}
+  .wv-row-meta,.wv-row-note{font-size:13px}
+  .wv-section.is-tracking{gap:10px}
+  .wv-cards{gap:10px}
+  .wv-card{gap:12px;padding:16px;border-radius:20px}
+  .wv-card-head{gap:12px}
+  .wv-card-icon{width:40px;height:40px;border-radius:12px}
+  .wv-card-icon svg{width:20px;height:20px}
+  .wv-card-titles h3{font-size:16px}
+  .wv-card-meta{font-size:12px}
+  .wv-card-meta.is-wide{display:none}
+  .wv-card-meta.is-narrow{display:block}
+  .wv-chip.is-small{padding:4px 10px;font-size:12px}
+  .wv-habit{padding:10px 12px}
+  .wv-habit-name{font-size:14px}
+  /* A goal with one habit: its name is under the title, and the dots stand alone (v3-GoalsMobile) */
+  .wv-habits.is-single .wv-habit{padding:0;background:none}
+  .wv-habits.is-single .wv-habit-name{display:none}
+  .wv-dots-label{color:var(--wv-secondary)}
+  .wv-card-latest{font-size:13px}
+  .wv-section.is-create{gap:4px}
+  .wv-section.is-create h2{margin-bottom:4px}
+  .wv-category{min-height:54px;gap:16px;padding:0 4px;border-radius:12px;font-size:16px}
+  .wv-category-icon{width:26px;height:26px}
+  .wv-category-icon svg{width:24px;height:24px}
+  .wv-category-chevron{width:16px;height:16px}
+  .wv-goal-talk{border-radius:20px}
+  .wv-goal-talk-head{gap:8px;padding:4px 8px 4px 16px}
+  .wv-text-button{padding:0 12px}
+  .wv-goal-talk-body{padding:14px 14px 0}
+  .wv-goal-talk .wv-bubble{max-width:90%}
+  .wv-goal-talk-compose{padding:12px 14px 14px}
+  .wv-goal-talk .wv-composer-box{padding:2px 2px 2px 16px;border-radius:25px;box-shadow:none}
+}
+
 @media(prefers-reduced-motion:reduce){
   *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
 import {todoModel} from '../hosted/app/workspace/todo.mjs';
+import {habitKey,reminderKey,withChecks,settleChecks} from '../hosted/app/workspace/todo-checks.mjs';
 import {CATEGORY_LABEL,goalsModel} from '../hosted/app/workspace/goals-view.mjs';
 import {monthModel,recentNotes,monthBounds} from '../hosted/app/workspace/records.mjs';
 import {withSeparators,isProactive,proactiveLabel} from '../hosted/app/workspace/chat-view.mjs';
@@ -186,6 +187,50 @@ test('todoModel: later is the one-off reminders still to come, soonest first',()
 test('todoModel: the answer of an older server, with no lists at all, is an empty page and not an error',()=>{
   assert.deepEqual(todoModel({today:'',now:NOW}),{today:[],later:[],doneCount:0,total:0});
   assert.deepEqual(todoModel({goals:[],habits:[habit('h:a','a')],completions:[],reminders:[],today:'',now:NOW}).today.map(r=>[r.done,r.missedYesterday,r.weekCount]),[[false,false,0]],'without today there is nothing to be done or missed');
+});
+
+// ---- 待办's tick boxes (todo-checks.mjs) ----
+
+// Monday 2026-11-02: the walk is not done (and was missed yesterday), the reading is done, a call is still to come.
+const tickModel=(extra={})=>todoModel({goals:[],habits:[habit('h:walk','饭后走 10 分钟'),habit('h:read','睡前读 1 页')],completions:[done('h:read',TODAY)],
+  reminders:[reminder('r:call','给妈妈打个电话','2026-11-03T12:00:00.000Z')],today:TODAY,now:NOW,tz:SH,...extra});
+const press=(value,extra={})=>({value,day:TODAY,finished:false,seen:0,...extra});
+const rowOf=(model,id)=>model.today.find(row=>row.habitId===id);
+
+test('withChecks: a press shows at once, in the box, the progress and the week count',()=>{
+  const model=tickModel();
+  assert.deepEqual([rowOf(model,'h:walk').done,rowOf(model,'h:walk').missedYesterday,rowOf(model,'h:walk').weekCount,model.doneCount],[false,true,0,1],'the model as the server has it');
+  let shown=withChecks(model,{[habitKey('h:walk')]:press(true)},TODAY);
+  assert.deepEqual([rowOf(shown,'h:walk').done,rowOf(shown,'h:walk').missedYesterday,rowOf(shown,'h:walk').weekCount],[true,false,1],'ticked: done, this week\'s first day, no missed note');
+  assert.deepEqual([shown.doneCount,shown.total],[2,2]);
+  shown=withChecks(model,{[habitKey('h:read')]:press(false)},TODAY);
+  assert.deepEqual([rowOf(shown,'h:read').done,rowOf(shown,'h:read').weekCount,shown.doneCount],[false,0,0],'unticked: the day comes off the week');
+  assert.deepEqual(withChecks(model,{[habitKey('h:read')]:press(true)},TODAY).today,model.today,'a press the server already agrees with changes nothing');
+  assert.equal(rowOf(withChecks(model,{[habitKey('h:walk')]:press(true,{day:'2026-11-01'})},TODAY),'h:walk').done,false,'a press made on another day is not today\'s');
+  assert.deepEqual(withChecks(model,{[reminderKey('r:call')]:press(true)},TODAY).later.map(item=>[item.reminderId,item.done]),[['r:call',true]],'a ticked reminder');
+  assert.deepEqual(withChecks(model,{},TODAY).later.map(item=>item.done),[false]);
+  assert.equal(withChecks(model,{},TODAY).doneCount,1);
+});
+
+test('settleChecks: a press stays until the server shows the same, or until the second answer after it came back',()=>{
+  const model=tickModel(),agreeing=tickModel({completions:[done('h:read',TODAY),done('h:walk',TODAY)]});
+  const waiting={[habitKey('h:walk')]:press(true)};
+  assert.equal(settleChecks(waiting,agreeing,TODAY),waiting,'on its way: kept even when an answer agrees, and the same object comes back');
+  assert.deepEqual(settleChecks({[habitKey('h:walk')]:press(true,{finished:true})},agreeing,TODAY),{},'back, and the server shows the same: the server\'s copy takes over');
+  // Back, but the answer still says otherwise: it may have been asked for before the change, so the press stays once.
+  // The second answer was asked for after it, so from then on the server's word stands, whatever it says.
+  let presses=settleChecks({[habitKey('h:walk')]:press(true,{finished:true})},model,TODAY);
+  assert.deepEqual(presses,{[habitKey('h:walk')]:press(true,{finished:true,seen:1})});
+  presses=settleChecks(presses,model,TODAY);
+  assert.deepEqual(presses,{});
+  assert.deepEqual(settleChecks({[habitKey('h:gone')]:press(true),[reminderKey('r:gone')]:press(true,{finished:true})},model,TODAY),{},'nothing kept for a row that is no longer listed');
+  assert.deepEqual(settleChecks({[habitKey('h:walk')]:press(true,{day:'2026-11-01'})},model,TODAY),{},'nor for a press of another day');
+  // A cancelled reminder leaves the list once the server has it; until then it stays ticked.
+  const cancelled={[reminderKey('r:call')]:press(true,{finished:true})};
+  assert.equal(settleChecks(cancelled,model,TODAY)[reminderKey('r:call')].seen,1);
+  assert.deepEqual(settleChecks(cancelled,tickModel({reminders:[]}),TODAY),{});
+  const none={};
+  assert.equal(settleChecks(none,model,TODAY),none,'nothing to settle: the same object');
 });
 
 // ---- 目标 ----
