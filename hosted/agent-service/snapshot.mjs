@@ -1,7 +1,7 @@
 // 叫醒前的数据快照（docs/ARCHITECTURE.md 第 10 节）。教材 p.16「查数留SQL,不要封成MCP」；
 // p.20 代码合法的位置之一「Agent启动之前 预处理。不在循环中间,不影响灵活性」。
 // Weave 服务按这一轮的通行证给一份 JSON，这里写成一个快照目录：
-//   weave.db  SQLite：meta，加上快照里给了的表（habits、completions、group_messages）
+//   weave.db  SQLite：meta，加上快照里给了的表（habits、completions、goals、reminders、group_messages）
 //   其他文件  比如 notion/*.md
 // docker：快照目录在工作目录外（scopeDirs 的 snapshot），只读挂到容器的 /workspace/weave。
 //   Agent 改不到它，写入后的同步也只碰宿主自己的文件（审查发现：同步若打开 Agent 改得到的
@@ -22,12 +22,22 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 // 已知的表和列。别的表名让整份快照无效：说明两边的格式对不上了，宁可这一轮不醒。
 export const TABLES = Object.freeze({
   habits: {
-    columns: ['habit_id', 'name', 'identity', 'trigger', 'minimum_action', 'created_at', 'updated_at'],
-    ddl: 'habit_id TEXT PRIMARY KEY, name TEXT, identity TEXT, trigger TEXT, minimum_action TEXT, created_at TEXT, updated_at TEXT',
+    columns: ['habit_id', 'name', 'identity', 'trigger', 'minimum_action', 'created_at', 'updated_at', 'goal_id'],
+    ddl: 'habit_id TEXT PRIMARY KEY, name TEXT, identity TEXT, trigger TEXT, minimum_action TEXT, created_at TEXT, updated_at TEXT, goal_id TEXT',
   },
   completions: {
     columns: ['habit_id', 'date', 'note', 'source', 'created_at'],
     ddl: 'habit_id TEXT NOT NULL, date TEXT NOT NULL, note TEXT, source TEXT, created_at TEXT, PRIMARY KEY (habit_id, date)',
+  },
+  // 全部目标，包括归档的（archived 是 0 / 1）。
+  goals: {
+    columns: ['goal_id', 'title', 'category', 'archived', 'created_at'],
+    ddl: 'goal_id TEXT PRIMARY KEY, title TEXT, category TEXT, archived INTEGER, created_at TEXT',
+  },
+  // 全部提醒，不分状态（scheduled、delivered、cancelled）。
+  reminders: {
+    columns: ['reminder_id', 'text', 'due_at', 'status'],
+    ddl: 'reminder_id TEXT PRIMARY KEY, text TEXT, due_at TEXT, status TEXT',
   },
   group_messages: {
     columns: ['seq', 'member', 'text', 'at'],
@@ -149,21 +159,30 @@ export function applyWrite(dbPath, toolName, resultText) {
     const at = new Date().toISOString();
     if (toolName === 'save_habit') {
       const h = data.habit;
-      db.prepare(`INSERT INTO habits (habit_id, name, identity, trigger, minimum_action, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      db.prepare(`INSERT INTO habits (habit_id, name, identity, trigger, minimum_action, created_at, updated_at, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(habit_id) DO UPDATE SET name = excluded.name, identity = excluded.identity, trigger = excluded.trigger,
-        minimum_action = excluded.minimum_action, updated_at = excluded.updated_at`)
-        .run(h.habit_id, h.name, h.identity ?? '', h.trigger ?? '', h.minimum_action ?? '', at, at);
+        minimum_action = excluded.minimum_action, updated_at = excluded.updated_at, goal_id = excluded.goal_id`)
+        .run(h.habit_id, h.name, h.identity ?? '', h.trigger ?? '', h.minimum_action ?? '', at, at, h.goal_id ?? null);
     } else if (toolName === 'log_completion') {
       const c = data.completion;
       db.prepare('INSERT OR IGNORE INTO completions (habit_id, date, note, source, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(c.habit_id, c.date, c.note ?? '', 'agent', at);
+    } else if (toolName === 'save_goal') {
+      const g = data.goal;
+      db.prepare(`INSERT INTO goals (goal_id, title, category, archived, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(goal_id) DO UPDATE SET title = excluded.title, category = excluded.category, archived = excluded.archived`)
+        .run(g.goal_id, g.title, g.category, g.archived ? 1 : 0, at);
+    } else if (toolName === 'set_reminder') {
+      const r = data.reminder;
+      db.prepare('INSERT OR REPLACE INTO reminders (reminder_id, text, due_at, status) VALUES (?, ?, ?, ?)')
+        .run(r.reminder_id, r.text, r.due_at, r.status);
     }
   } finally {
     db.close();
   }
 }
 
-const MIRRORED = new Set(['save_habit', 'log_completion']);
+const MIRRORED = new Set(['save_habit', 'log_completion', 'save_goal', 'set_reminder']);
 
 export function mirroringRpc(rpc, dbPath) {
   return async (name, args, toolUseId) => {

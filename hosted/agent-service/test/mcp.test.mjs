@@ -4,6 +4,13 @@ import http from 'node:http';
 import {z} from 'zod';
 import {toolBackend, UNCERTAIN} from '../mcp/rpc.mjs';
 import {TOOL_DEFS, makeHandler, weaveServer} from '../mcp/tools.mjs';
+// The image of this service has no hosted/lib, so tools.mjs keeps its own copy of the category list; this test keeps the two equal.
+import {GOAL_CATEGORIES} from '../../lib/weave/habits.mjs';
+
+// The three model-facing texts, copied from the spec's Appendix A (A-1, A-2, A-3), drafts pending confirmation.
+const SAVE_GOAL_TEXT = '保存或修改对方的一个目标，比如「每天动一动」。新建时不带 goal_id；修改时带上 goal_id，只改给了的字段；archived 设为 true 表示对方不再追踪这个目标。先在聊天里把目标和每天要做的小事说给对方听，对方同意了再调用。category 从这七个里选：health、relationships、finance、career、interests、productivity、other。';
+const GOAL_ID_TEXT = '这个习惯属于哪个目标。填 weave/weave.db 里 goals 表的 goal_id；不属于任何目标就不填。';
+const SET_REMINDER_TEXT = '在某个时间提醒对方一次，比如「明天晚上 8 点提醒我给妈妈打电话」。due_at 用 ISO 时间，按对方的当地时间换算，必须在将来。先跟对方说清楚什么时候提醒、提醒什么，对方没反对再调用。到点后，提醒会出现在对方的聊天里；对方接了微信的话也会发到微信。';
 
 async function weaveStub(respond) {
   const seen = [];
@@ -22,6 +29,7 @@ test('weaveServer 只接受工具表里的名字，不认识的名字直接报�
   const server = weaveServer(['send_message', 'log_completion'], rpc);
   assert.equal(server.type, 'sdk');
   assert.equal(server.name, 'weave');
+  assert.equal(weaveServer(['send_message', 'save_habit', 'log_completion', 'save_goal', 'set_reminder'], rpc).type, 'sdk');
   assert.throws(() => weaveServer(['send_message', 'read_everything'], rpc), /read_everything/);
   assert.throws(() => weaveServer(['__proto__'], rpc));
 });
@@ -102,10 +110,63 @@ test('send_message 不能选收件人，文字 1–700 字；save_habit 名字�
   assert.equal(save.safeParse({name: 'x'.repeat(31)}).success, false);
 });
 
-test('只剩三个会写东西的工具（读数据走快照），都不碰外部世界', () => {
-  assert.deepEqual(Object.keys(TOOL_DEFS).sort(), ['log_completion', 'save_habit', 'send_message']);
+test('save_goal 的说明是附录 A-1 原文；参数都可选，名字 1–30 字，类别只能是七个之一', () => {
+  const def = TOOL_DEFS.save_goal;
+  assert.equal(def.description, SAVE_GOAL_TEXT);
+  assert.deepEqual(Object.keys(def.shape), ['goal_id', 'title', 'category', 'archived']);
+  const schema = z.object(def.shape);
+  assert.equal(schema.safeParse({}).success, true, '新建还是修改、缺什么，由后端按规则说');
+  assert.equal(schema.safeParse({title: '每天动一动', category: 'health'}).success, true);
+  assert.equal(schema.safeParse({goal_id: 'g:1', archived: true}).success, true);
+  assert.equal(schema.safeParse({title: 'x'.repeat(30)}).success, true);
+  assert.equal(schema.safeParse({title: 'x'.repeat(31)}).success, false);
+  assert.equal(schema.safeParse({title: ''}).success, false);
+  for (const category of GOAL_CATEGORIES) assert.equal(schema.safeParse({category}).success, true, category);
+  assert.equal(schema.safeParse({category: 'fitness'}).success, false);
+  assert.equal(schema.safeParse({archived: 'true'}).success, false);
+});
+
+test('save_goal 的 category 选项和 Weave 后端的 GOAL_CATEGORIES 一模一样，顺序也一样', () => {
+  const json = z.toJSONSchema(z.object(TOOL_DEFS.save_goal.shape));
+  assert.deepEqual(json.properties.category.enum, GOAL_CATEGORIES);
+  assert.deepEqual(json.required ?? [], [], '四个参数都不是必填');
+});
+
+test('save_habit 多一个可选的 goal_id，说明是附录 A-2 原文；原来的参数不变', () => {
+  assert.deepEqual(Object.keys(TOOL_DEFS.save_habit.shape), ['habit_id', 'name', 'identity', 'trigger', 'minimum_action', 'goal_id']);
+  const json = z.toJSONSchema(z.object(TOOL_DEFS.save_habit.shape));
+  assert.equal(json.properties.goal_id.description, GOAL_ID_TEXT);
+  assert.deepEqual(json.required, ['name']);
+  assert.equal(z.object(TOOL_DEFS.save_habit.shape).safeParse({name: '走路', goal_id: 'g:1'}).success, true);
+});
+
+test('set_reminder 的说明是附录 A-3 原文；文字 1–500 字，due_at 必填', () => {
+  const def = TOOL_DEFS.set_reminder;
+  assert.equal(def.description, SET_REMINDER_TEXT);
+  assert.deepEqual(Object.keys(def.shape), ['text', 'due_at']);
+  const schema = z.object(def.shape), due_at = '2026-11-04T20:00:00+08:00';
+  assert.equal(schema.safeParse({text: '给妈妈打电话', due_at}).success, true);
+  assert.equal(schema.safeParse({text: 'x'.repeat(500), due_at}).success, true);
+  assert.equal(schema.safeParse({text: 'x'.repeat(501), due_at}).success, false);
+  assert.equal(schema.safeParse({text: '', due_at}).success, false);
+  assert.equal(schema.safeParse({text: '喝水'}).success, false);
+  assert.equal(schema.safeParse({due_at}).success, false);
+});
+
+test('makeHandler 对 save_goal、set_reminder 一样原样转给 rpc', async () => {
+  const calls = [];
+  const rpc = async (...args) => { calls.push(args); return {ok: true, text: '{"goal":{}}'}; };
+  const extra = {_meta: {'claudecode/toolUseId': 'toolu_7'}};
+  assert.deepEqual(await makeHandler('save_goal', rpc)({title: '每天动一动', category: 'health'}, extra), {isError: false, content: [{type: 'text', text: '{"goal":{}}'}]});
+  await makeHandler('set_reminder', rpc)({text: '喝水', due_at: '2026-11-04T20:00:00+08:00'}, extra);
+  assert.deepEqual(calls, [['save_goal', {title: '每天动一动', category: 'health'}, 'toolu_7'], ['set_reminder', {text: '喝水', due_at: '2026-11-04T20:00:00+08:00'}, 'toolu_7']]);
+});
+
+test('只有五个会写东西的工具（读数据走快照），都不碰外部世界，都不是只读', () => {
+  assert.deepEqual(Object.keys(TOOL_DEFS).sort(), ['log_completion', 'save_goal', 'save_habit', 'send_message', 'set_reminder']);
   for (const [name, def] of Object.entries(TOOL_DEFS)) {
     assert.equal(def.annotations.openWorldHint, false, name);
     assert.equal(def.annotations.readOnlyHint, false, name);
+    assert.equal(def.annotations.destructiveHint, false, name);
   }
 });

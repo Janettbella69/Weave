@@ -186,9 +186,10 @@ export function weaveServer(scope, capability) {
 | 工具 | 干什么 | 后端的硬规则 | 本人 | 群 | 研究 |
 | --- | --- | --- | --- | --- | --- |
 | `send_message` | 开口说话 | 收件人由这一轮决定，**模型选不了**；每日上限、安静时段、相同内容冷却 | ✓ | ✓ | ✓ |
-| `save_habit` | 写身份句、触发、最小动作 | 只改自己的 | ✓ | | |
+| `save_habit` | 写身份句、触发、最小动作；可以挂在一个目标下（`goal_id`） | 只改自己的；`goal_id` 必须是自己还在追踪的目标 | ✓ | | |
+| `save_goal` | 新建或修改一个目标，`archived: true` 表示不再追踪 | 只改自己的；名字 1–30 字，类别七选一，最多 10 个在追踪的目标 | ✓ | | |
 | `log_completion` | 记一次完成 | 不记未来日期；同习惯同日去重 | ✓ | | |
-| `set_reminder` | 到点原样发一句 | 不叫醒模型、不花钱；时间必须在未来 | ✓ | | |
+| `set_reminder` | 在某个时间原样提醒一次（只响一次；每天 / 每周 / 每月是第二块，加在它上面） | 调现有的 `addReminder`：1–500 字，时间必须是带时区、在将来的 ISO 时间；到点后不叫醒模型、不花钱：网页每次请求时把到点的提醒写进聊天和通知，服务器配了微信、桥接在跑时 `scheduler.mjs` 排进微信 | ✓ | | |
 | `schedule_wake` | 到点叫醒自己 | 每日上限 | ✓ | ✓ | |
 | `list_schedule` / `cancel_schedule` | 查和取消上面两种 | 只看自己的 | ✓ | ✓ | |
 | `list_friends` | 读朋友 | 只有名字和编号 | ✓ | | |
@@ -198,7 +199,7 @@ export function weaveServer(scope, capability) {
 | `propose_plan` | 存一份计划 | 本人确认后才同步 Notion | ✓ | | |
 | `request_deep_research` | 排一次研究（第 8 节） | 每日上限 | ✓ | | |
 
-**Weave 自己的数据不做只读工具。** 教材 p.16「查数留SQL,不要封成MCP 一台电脑:代码能交叉编排,接口不能」。每次叫醒前，Agent 服务把习惯、完成记录（群里是群消息）写成快照，容器里看到的是只读的 `weave/weave.db`，Agent 自己写 SQL 查（第 10 节）。原来的 `list_habits`、`query_completions`、`read_group_messages` 都已去掉。表里还没实现的 `list_schedule`、`list_friends`、`list_activities`，做的时候也先按这一条考虑放进快照。
+**Weave 自己的数据不做只读工具。** 教材 p.16「查数留SQL,不要封成MCP 一台电脑:代码能交叉编排,接口不能」。每次叫醒前，Agent 服务把习惯、完成记录、目标、提醒（群里是群消息）写成快照，容器里看到的是只读的 `weave/weave.db`，Agent 自己写 SQL 查（第 10 节）。原来的 `list_habits`、`query_completions`、`read_group_messages` 都已去掉。表里还没实现的 `list_schedule`、`list_friends`、`list_activities`，做的时候也先按这一条考虑放进快照。
 
 授权共享时间、确认活动、确认计划这些事，**Agent 没有工具可调**。它们只能由本人在已登录的网页上操作，现有接口不变。Agent 被骗也做不了。
 
@@ -429,19 +430,19 @@ env: {
 
 | 放哪 | 放什么 | 谁能改 |
 | --- | --- | --- |
-| D1 | 习惯、完成记录、提醒、朋友、授权、日程 | 写：只经 MCP 工具，规则在工具后端。读：叫醒前导出成快照。这些要准确，要在网页上显示 |
+| D1 | 目标、习惯、完成记录、提醒、朋友、授权、日程 | 写：只经 MCP 工具，规则在工具后端。读：叫醒前导出成快照。这些要准确，要在网页上显示 |
 | 快照目录（容器里是 `weave/`） | 叫醒前的数据快照：`weave.db`（SQLite），以后可能有别的文件 | 只有 Agent 服务写：每次叫醒前整个换掉，写工具成功后同步。docker 下放在工作目录外、只读挂进容器，Agent 改不了 |
 | 工作目录 `MEMORY.md` | 这个人的目标、什么有效、什么没用 | Agent 用 Edit 改；本人可看（`GET /api/agent-memory`），可改、可删还没做 |
 | 工作目录其他文件 | 笔记、脚本、图表 | Agent |
 | 配置目录 | SDK 的会话记录 | SDK |
 
 - **叫醒前的快照**（教材 p.16「查数留SQL,不要封成MCP」；p.20「Agent启动之前 预处理。不在循环中间,不影响灵活性」）：
-  - Agent 服务拿这一轮的通行证 `GET /api/internal/agent/snapshot`，返回 `{version: 1, today, timezone, tables, files}`。owner 范围给 `habits`、`completions`，group 范围不给任何人的私人资料（群消息 `group_messages` 由微信那边填）。
+  - Agent 服务拿这一轮的通行证 `GET /api/internal/agent/snapshot`，返回 `{version: 1, today, timezone, tables, files}`。owner 范围给 `habits`（最后一列是 `goal_id`，没挂目标的是空）、`completions`、`goals`（全部目标，归档的也给，`archived` 是 0 / 1）、`reminders`（全部提醒，不分 `scheduled`、`delivered`、`cancelled`），group 范围不给任何人的私人资料（群消息 `group_messages` 由微信那边填）。
   - 写在哪：docker 下写到每个人根目录下的 `snapshot/`（工作目录外），只读挂到容器的 `/workspace/weave`；本机开发（local）直接写在工作目录的 `weave/`。旧的整个 rename 到工作目录外再删，不原地递归删（不跟随链接，目录链再深也挪得走）。
-  - 写成 `weave.db`：`meta(key, value)` 加上给了的表。表和列写死在 `hosted/agent-service/snapshot.mjs` 的 `TABLES`，出现不认识的表名，整份快照无效。
+  - 写成 `weave.db`：`meta(key, value)` 加上给了的表。表和列写死在 `hosted/agent-service/snapshot.mjs` 的 `TABLES`，出现不认识的表名，整份快照无效，所以 Weave 这边（`hosted/lib/weave/agent-snapshot.mjs`）加表或加列，Agent 服务这边必须同时改，否则每次叫醒都回 503。新列只往后加，`weekly-review` 的 `stats.py` 按列名读，不受影响。
   - `files` 写成 `weave/<路径>`，目前没人用（Notion 定为 MCP 工具，按需读）。路径每段最多 200 字节，不能是 `.`、`..`，不含 `\`；最多 200 个文件、单个 1 MB、合计 5 MB。不合规的跳过并记日志。
   - 取不到或格式不对就不叫醒，`/wake` 回 503，dispatcher 当成「没有处理」。
-  - `save_habit`、`log_completion` 成功后，Agent 服务把结果同步进快照的 `weave.db`，同一轮里再查就看得到（我的看法：这是 p.20 说的副作用，放在工具外壳里，不进循环）。同步只碰宿主自己的那份：如果宿主去打开 Agent 改得到的文件，Agent 埋一个触发器就能卡住整个服务（审查发现，所以 docker 下快照只读挂载）。
+  - `save_habit`、`log_completion`、`save_goal`、`set_reminder` 成功后，Agent 服务把结果同步进快照的 `weave.db`，同一轮里再查就看得到（我的看法：这是 p.20 说的副作用，放在工具外壳里，不进循环）。同步只碰宿主自己的那份：如果宿主去打开 Agent 改得到的文件，Agent 埋一个触发器就能卡住整个服务（审查发现，所以 docker 下快照只读挂载）。
 - `settingSources: []` 时 `CLAUDE.md` 不加载（实测），所以 Agent 服务读 `MEMORY.md` 放进系统提示。
 - **会话：** 同一个人同一个当地日期 `resume` 同一段（实测能接上），第二天开新的，靠 `MEMORY.md` 带过去。这样上下文不会无限变长。
 - **打卡群：** 有自己的空间，14 天清理，关闭即删，沿用 [`WECHAT.md`](WECHAT.md) 现有规则。
@@ -484,7 +485,7 @@ hosted/lib/weave/
   agent-tools.mjs   # 工具后端：规则和数据
   capability.mjs    # 每次唤醒的通行证
   dispatcher.mjs    # 谁该醒
-  habits.mjs        # 习惯和完成记录
+  habits.mjs        # 目标、习惯和完成记录
 ```
 
 ## 12. 费用和容量

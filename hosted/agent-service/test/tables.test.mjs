@@ -4,7 +4,7 @@ import {scopeFor} from '../scopes.mjs';
 import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
 import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['save_habit', 'log_completion'];
+const PRIVATE_TOOLS = ['save_habit', 'log_completion', 'save_goal', 'set_reminder'];
 
 test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
   const s = scopeFor('owner');
@@ -127,5 +127,12 @@ test('系统提示告诉 Agent：数据在 weave/weave.db，自己写 SQL 查；
 });
 
 test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL）', () => {
-  assert.deepEqual([...scopeFor('owner').tools].sort(), ['log_completion', 'save_habit', 'send_message']);
+  assert.deepEqual([...scopeFor('owner').tools].sort(), ['log_completion', 'save_goal', 'save_habit', 'send_message', 'set_reminder']);
+});
+
+test('save_goal、set_reminder 只给 owner 范围：群里不存在这两个工具', () => {
+  for (const t of ['save_goal', 'set_reminder']) {
+    assert.ok(scopeFor('owner').tools.includes(t), t);
+    assert.ok(!scopeFor('group').tools.includes(t), t);
+  }
 });
