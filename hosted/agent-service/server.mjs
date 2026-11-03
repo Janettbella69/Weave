@@ -21,12 +21,15 @@ import {toolBackend} from './mcp/rpc.mjs';
 import {isolationFor, removeContainer} from './sandbox.mjs';
 import {wake} from './runner.mjs';
 import {createRunQueue} from './queue.mjs';
+import {checkImage, IMAGE_MAX_BASE64} from './images.mjs';
 import * as workspace from './workspace.mjs';
 import {fetchSnapshot, writeSnapshot, prepareMountpoint, mirroringRpc, SNAPSHOT_DIR} from './snapshot.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('./plugin', import.meta.url));
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digest = value => createHash('sha256').update(value).digest();
+// /wake 可能带一张照片（base64，微信看图），所以只给它多留出一张照片的大小；别的接口还是 64 KiB。
+const JSON_LIMIT = 64 * 1024, WAKE_LIMIT = JSON_LIMIT + IMAGE_MAX_BASE64;
 const fail = (status, message) => { throw Object.assign(Error(message), {status}); };
 
 async function readJson(req, limit) {
@@ -63,7 +66,13 @@ function checkWake(input) {
   try { provider = providerFor(input.provider); } catch { fail(400, '模型提供方无效'); }
   if (!modelAllowed(provider, input.model)) fail(400, '模型无效');
   if (input.userKey !== undefined && (typeof input.userKey !== 'string' || input.userKey.length < 12 || input.userKey.length > 512 || /\s/.test(input.userKey))) fail(400, 'Key 无效');
-  return {scope, provider};
+  let image;
+  if (input.image !== undefined) {
+    // 只有能看图的模型收照片：DeepSeek 只有 deepseek-flash 能看，v4-pro 会把照片换成「[Unsupported Image]」（DeepSeek 文档）。
+    if (!provider.vision) fail(400, '这个模型提供方不能看图');
+    try { image = checkImage(input.image); } catch { fail(400, '照片无效'); }
+  }
+  return {scope, provider, image};
 }
 
 export async function createAgentService({
@@ -96,7 +105,9 @@ export async function createAgentService({
   let legacyActive = 0;
 
   async function handleWake(input) {
-    const {scope, provider} = checkWake(input);
+    const {scope, provider, image} = checkWake(input);
+    // 带照片的一轮一律用能看图的模型，不管这个人选的是哪个。
+    const model = image ? provider.vision : input.model;
     if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
     if (isolation === 'docker' && uid === 0) fail(503, '请用非 root 用户运行 Agent 服务');
     if (!input.userKey && !keys[provider.name]) fail(503, `没有 ${provider.name} 的模型 Key`);
@@ -118,15 +129,17 @@ export async function createAgentService({
       }
       const memory = await workspace.readMemory(dirs);
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
-      const run = proxy.openRun({account: input.id, provider: provider.name, model: input.model, userKey: input.userKey});
+      const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, provider, model: input.model, runToken: run.token, sessionId, queryFn,
+          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, image, queryFn,
           isolation: runIsolation,
           rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
-        if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
+        // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
+        if (image) { /* sessions.json stays as it was */ }
+        else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
         else await workspace.clearSession(dirs);
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
       } finally {
@@ -166,7 +179,7 @@ export async function createAgentService({
       finally { legacyActive--; }
     }
     try {
-      const input = await readJson(req, 64 * 1024);
+      const input = await readJson(req, path === '/wake' ? WAKE_LIMIT : JSON_LIMIT);
       const handlers = {'/wake': handleWake, '/forget': handleForget, '/memory': handleMemory};
       return reply(200, await handlers[path](input));
     } catch (error) {
