@@ -277,7 +277,12 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'bash ~/weave/deploy
 ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'bash ~/weave/deploy/tencent/wechat/wx.sh --json --account weave account settings --auto-download-max-mb 0'
 ```
 
-**看图（PR #33 合并以后，默认关）：** 它只读守护进程已经存好的副本：先找标准图，没有才用缩略图（PR #33 的 `bridge.mjs`）。自动下载调成 0 以后标准图不会自动存，所以多半只剩缩略图（没在真机上试过）。照片只在桥接的内存里放 60 秒，最多 2 MiB，不写磁盘。要在服务器上打开：在 `bridge.env` 里加一行 `WEAVE_WECHAT_IMAGES=1`，再重跑 login.sh（会换一把带 media 权限的密钥）；网站的 `web.env` 也要加 `WEAVE_WECHAT_IMAGES=1` 再部署（见 `docs/WECHAT.md`）。不打开就什么都不变。
+**看图（PR #33，默认关）：** 它只读守护进程已经存好的副本：先找标准图，没有才用缩略图（`bridge.mjs`）。自动下载调成 0 以后标准图不会自动存，所以多半只剩缩略图（没在真机上试过）。照片只在桥接的内存里放 60 秒，不写磁盘（实际上限约 1 MB，见 `docs/WECHAT.md`）。Mac 那套的 `images.sh` 在服务器上不用，改成这样：
+
+- 打开（先开桥接，再开网站）：在 `bridge.env` 里加一行 `WEAVE_WECHAT_IMAGES=1`，重跑 login.sh（会换一把带 media 权限的密钥）；再在网站的 `web.env` 里加 `WEAVE_WECHAT_IMAGES=1`，重新部署。
+- 关掉（先关网站，再关桥接）：删掉 `web.env` 里那一行、重新部署；再删掉 `bridge.env` 里那一行，重跑 login.sh（换回只能读和发的密钥）。
+
+要先确认的新文字和打开以后的真机检查，照 `docs/WECHAT.md`「看图（默认关闭）」。不打开就什么都不变。
 
 **换网站的桥接令牌：** 在服务器上生成新的（不显示，网站会重新部署），再重跑 login.sh：
 
