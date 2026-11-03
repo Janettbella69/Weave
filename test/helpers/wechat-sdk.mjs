@@ -16,7 +16,8 @@ export const start = Date.parse('2030-01-01T00:00:00Z');
 export const ok = data => Response.json(data);
 export const reply = text => ok({outcome: 'success', reply: text, sessionId: 's-1', tools: []});
 
-export async function setup({runtime = 'sdk', agent = async () => reply('收到')} = {}) {
+// images: the server's WEAVE_WECHAT_IMAGES switch (docs/superpowers/specs/2026-11-03-wechat-images-design.md); off by default.
+export async function setup({runtime = 'sdk', agent = async () => reply('收到'), images = false} = {}) {
   const db = new D1(), store = new Store(db), world = await store.load(), id = 'u:' + await hash('alice');
   ensurePerson(world, {userId: id, displayName: 'Alice'});
   await store.save(world);
@@ -29,12 +30,17 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
     calls.push(call);
     return state.agent(call);
   };
-  const options = () => ({db, secret, wechat: {token: bridgeToken}, agentServiceUrl: SERVICE, agentServiceToken: SERVICE_TOKEN, agentRuntime: runtime, fetcher, now});
+  const options = () => ({db, secret, wechat: {token: bridgeToken, ...(images ? {images: true} : {})}, agentServiceUrl: SERVICE, agentServiceToken: SERVICE_TOKEN, agentRuntime: runtime, fetcher, now});
   const call = async (identity, path, data, headers = {}) => {
     const r = await handleAPI(new Request('https://weave.example/api/' + path, {method: data === undefined ? 'GET' : 'POST', headers: data ? {Origin: 'https://weave.example', 'Content-Type': 'application/json', ...headers} : headers, body: data ? JSON.stringify(data) : undefined}), {...options(), identity: identity ? {userId: identity, displayName: identity, email: identity + '@example.test'} : null});
     return {status: r.status, data: await r.json()};
   };
   const bridge = (path, data) => call(null, 'internal/wechat/' + path, data, {Authorization: 'Bearer ' + bridgeToken});
+  // The bridge handing over a photo: the bytes as the body, the message it belongs to and who sent it in headers.
+  const photo = async (forId, bytes, {type = 'image/jpeg', thread = 'wxid-alice', sender = thread} = {}) => {
+    const r = await handleAPI(new Request('https://weave.example/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': type, Authorization: 'Bearer ' + bridgeToken, 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: bytes}), {...options(), identity: null});
+    return {status: r.status, data: await r.json()};
+  };
   // What the Agent service's MCP shells do: call the tool backend with the capability from /wake.
   const tool = async (name, args, capability, toolUseId = 'toolu_1') => {
     const r = await handleAPI(new Request('https://weave.example/api/internal/agent/tools/' + name, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + capability}, body: JSON.stringify({args, toolUseId})}), {db, secret, now});
@@ -45,11 +51,12 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
   const bind = async () => bridge('events', message((await call('alice', 'wechat/bind', {})).data.instruction));
   const enableGroup = async () => { await bind(); await bridge('events', group('wxid-alice', '@助理 开启打卡群', true)); await bridge('claim', {}); };
   return {
-    db, id, call, bridge, tool, message, group, bind, enableGroup, calls, options,
+    db, id, call, bridge, photo, tool, message, group, bind, enableGroup, calls, options,
     tick: () => bridge('tick', {}),
     wakes: () => calls.filter(c => c.path === '/wake'),
     read: () => new Store(db).load(),
     agent: fn => { state.agent = fn; },
+    images: on => { images = on; },
     setNow(value) { now = value; },
     get now() { return now; },
   };

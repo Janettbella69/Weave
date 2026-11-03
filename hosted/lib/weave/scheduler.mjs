@@ -5,6 +5,7 @@ import {agentServiceConfig} from './dispatcher.mjs';
 import {chatFor,groupChatFor} from './api.mjs';
 import {modelBudgetConfig} from './budget.mjs';
 import {notionOAuthConfig} from './notion.mjs';
+import {sweepPhotos} from './wechat-photos.mjs';
 
 function queueReminderMessages(world,now,enabled){
   if(!enabled)return 0;
@@ -37,6 +38,8 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
 
 export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now()}){
   if(!db)throw Error('Reminder database is unavailable');
+  // 微信看图暂存的照片，到期没用掉的删掉（最多 10 分钟）。开关关了以后也照样清，表不存在时什么都不做。
+  await sweepPhotos(db,now);
   if(agentRuntime==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now});
   const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now,apiProxy:notionOAuthConfig(env).apiProxyUrl||''};
   for(let attempt=0;attempt<3;attempt++)try{

@@ -73,7 +73,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
     const tick=()=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now});
-    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
+    // 看图只在 Agent SDK 路线上有（照片要经 Agent 服务交给模型）。
+    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now,images:wechat?.images===true&&agentRuntime==='sdk'});
     // Any other internal path is not a route: answer before reading identity or touching the world.
     if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
     // The browser comes back from Notion here (no login; the one-time state binds it to the account that clicked connect).
