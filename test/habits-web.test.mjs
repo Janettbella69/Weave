@@ -17,6 +17,8 @@ const HABIT_NOT_FOUND = '没有这个习惯。先查 weave/weave.db 的 habits �
 // Every top-level key of GET /api/status before the web check-in work, and the four it adds.
 const OLD_STATUS_KEYS = ['profile', 'personId', 'people', 'messages', 'plans', 'checkins', 'calendar', 'reminders', 'notifications', 'negotiations', 'settings', 'invites', 'agentRuntime'];
 const NEW_STATUS_KEYS = ['goals', 'habits', 'completions', 'today'];
+// 第二块（主动服务）：排期和档位。
+const PROACTIVE_STATUS_KEYS = ['schedules', 'proactive', 'activity'];
 
 async function setup() {
   const db = new D1();
@@ -54,7 +56,7 @@ test("status of a fresh person: empty goals, habits and completions, and today i
   // On the real clock it is still a plain YYYY-MM-DD date.
   assert.match((await s.status('Alice', {now: Date.now()})).today, /^\d{4}-\d{2}-\d{2}$/);
   // Nothing that was in the status before is gone or renamed.
-  assert.deepEqual(Object.keys(status).sort(), [...OLD_STATUS_KEYS, ...NEW_STATUS_KEYS].sort());
+  assert.deepEqual(Object.keys(status).sort(), [...OLD_STATUS_KEYS, ...NEW_STATUS_KEYS, ...PROACTIVE_STATUS_KEYS].sort());
 });
 
 test('habits/check logs today as a web completion, a second check is a duplicate, and uncheck takes it away', async () => {

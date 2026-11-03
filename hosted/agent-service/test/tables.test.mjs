@@ -4,7 +4,7 @@ import {scopeFor} from '../scopes.mjs';
 import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
 import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['save_habit', 'log_completion', 'save_goal', 'set_reminder'];
+const PRIVATE_TOOLS = ['save_habit', 'log_completion', 'save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity'];
 
 test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
   const s = scopeFor('owner');
@@ -12,7 +12,7 @@ test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络�
   for (const t of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch']) assert.ok(s.builtins.includes(t), t);
   for (const t of ['WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.deepEqual([...s.skills], ['weave:weekly-review']);
+  assert.deepEqual([...s.skills], ['weave:weekly-review', 'weave:proactive-judgment']);
   assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
   assert.equal(s.circuitBreakerUsd, 2);
 });
@@ -126,13 +126,14 @@ test('系统提示告诉 Agent：数据在 weave/weave.db，自己写 SQL 查；
   }
 });
 
-test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL）', () => {
-  assert.deepEqual([...scopeFor('owner').tools].sort(), ['log_completion', 'save_goal', 'save_habit', 'send_message', 'set_reminder']);
+test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL），排过的跟进也是，没有 list_schedule', () => {
+  assert.deepEqual([...scopeFor('owner').tools].sort(), ['cancel_schedule', 'log_completion', 'save_goal', 'save_habit', 'schedule_wake', 'send_message', 'set_proactivity', 'set_reminder']);
 });
 
-test('save_goal、set_reminder 只给 owner 范围：群里不存在这两个工具', () => {
-  for (const t of ['save_goal', 'set_reminder']) {
+test('save_goal、set_reminder 和第二块的三个工具只给 owner 范围：群里不存在，群里也没有 Skill', () => {
+  for (const t of ['save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity']) {
     assert.ok(scopeFor('owner').tools.includes(t), t);
     assert.ok(!scopeFor('group').tools.includes(t), t);
   }
+  assert.deepEqual([...scopeFor('group').skills], []);
 });

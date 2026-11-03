@@ -85,6 +85,12 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
 
+## 主动提醒和 Jev
+
+主动提醒不用额外配置：部署以后，Agent 服务每分钟敲一次网站的 `/api/internal/tick`，到点的提醒、跟进和定期看看都由它触发，不再依赖 Mac。想关掉：`agent.env` 里加一行 `AGENT_TICK_SECONDS=0`，再部署一次。看它在不在跑：`docker logs weave-agent-1 | tail`，启动那一行写着 `tick: every 60s`，后台叫醒时会有 `tick started 1 background wake(s)`。
+
+Jev（TypeSafe 的判断模型）在后台叫醒 Weave 之前判断「现在值不值得主动找你」，可选。在 console.typesafe.ai 拿到 Key 以后，登上服务器用 `nano ~/weave/deploy/tencent/web.env` 加一行 `TYPESAFE_API_KEY=你的 Key`，再部署一次。不加就不启用，由 Weave 自己判断。可选的还有 `JEV_THRESHOLD`（0 到 1，默认 0.5，低于它就这次不打扰）和 `JEV_MODEL`（默认钉 `jev-1.14.0`）。Key 是密钥，在服务器上自己改，不要贴进聊天。
+
 ## 以后更新
 
 ```

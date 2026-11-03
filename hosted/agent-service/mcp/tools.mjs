@@ -11,10 +11,17 @@ const writes = {readOnlyHint: false, destructiveHint: false, openWorldHint: fals
 // 所以在这里存一份；test/mcp.test.mjs 保证两边一致。
 const GOAL_CATEGORIES = ['health', 'relationships', 'finance', 'career', 'interests', 'productivity', 'other'];
 
-// 只有会写东西的工具。读数据不封成工具，走叫醒前的快照 weave/weave.db（教材 p.16）。
+// 提醒和跟进能不能重复、档位有哪几档，和设计文档 docs/superpowers/specs/2026-11-03-proactive-wake-design.md 4.8 节一样。
+const REMINDER_REPEATS = ['none', 'daily', 'weekly', 'monthly'];
+const WAKE_REPEATS = ['none', 'daily', 'weekly'];
+const LEVELS = ['off', 'low', 'normal', 'high'];
+
+// 只有会写东西的工具。读数据不封成工具，走叫醒前的快照 weave/weave.db（教材 p.16）；排过的跟进在 schedules 表里。
 // 说明文字：log_completion 是文档原文，send_message 和 save_habit 是草稿，待确认。
-// 草稿文案，待确认：save_goal、set_reminder 和 save_habit 的 goal_id 说明是设计文档
-// docs/superpowers/specs/2026-11-03-frontend-v3-design.md 附录 A-1 至 A-3 的原文。
+// 草稿文案，待确认：save_goal 和 save_habit 的 goal_id 说明是设计文档
+// docs/superpowers/specs/2026-11-03-frontend-v3-design.md 附录 A-1、A-2 的原文；set_reminder 的说明原来是那边的 A-3。
+// 草稿文案，待确认。（第二块）schedule_wake、cancel_schedule、set_proactivity 的说明，set_reminder 改过第一句的说明和
+// 新加的 repeat 说明，是设计文档 docs/superpowers/specs/2026-11-03-proactive-wake-design.md 附录 A 第 2 条的草稿。
 export const TOOL_DEFS = {
   send_message: {
     description: '说一句话给这一轮的对象。不是有人直接找你的那一轮，只有调用它才有人看得到。收件人由系统决定。',
@@ -53,11 +60,32 @@ export const TOOL_DEFS = {
     annotations: writes,
   },
   set_reminder: {
-    description: '在某个时间提醒对方一次，比如「明天晚上 8 点提醒我给妈妈打电话」。due_at 用 ISO 时间，按对方的当地时间换算，必须在将来。先跟对方说清楚什么时候提醒、提醒什么，对方没反对再调用。到点后，提醒会出现在对方的聊天里；对方接了微信的话也会发到微信。',
+    description: '在某个时间提醒对方，比如「明天晚上 8 点提醒我给妈妈打电话」；要每天、每周或每月提醒的，填 repeat。due_at 用 ISO 时间，按对方的当地时间换算，必须在将来。先跟对方说清楚什么时候提醒、提醒什么，对方没反对再调用。到点后，提醒会出现在对方的聊天里；对方接了微信的话也会发到微信。',
     shape: {
       text: z.string().min(1).max(500),
       due_at: z.string(),
+      repeat: z.enum(REMINDER_REPEATS).optional().describe('不填就是只提醒一次。daily、weekly、monthly 是从 due_at 那次开始，每天、每周、每月在同一个当地时间提醒。'),
     },
+    annotations: writes,
+  },
+  // 到点在后台叫醒自己；时间、条数、后台那一轮只能排一次性的，都由工具后端把关（设计文档 4.5）。
+  schedule_wake: {
+    description: '给自己排一次跟进：到 at 那个时间，你会在后台被叫醒，看了情况再决定要不要找对方说一句。note 写给自己看：到时候看什么、为什么，比如「她说 18:00 去走路，看看记了没有，没记就轻轻问一句」。at 用 ISO 时间，按对方的当地时间换算，必须在将来、30 天以内，并且在对方允许打扰的时段里。repeat 不填就是只一次；daily、weekly 是每天、每周同一时间。排过的在 weave/weave.db 的 schedules 表里，用不着了就用 cancel_schedule 取消。',
+    shape: {
+      note: z.string().min(1).max(200),
+      at: z.string(),
+      repeat: z.enum(WAKE_REPEATS).optional(),
+    },
+    annotations: writes,
+  },
+  cancel_schedule: {
+    description: '取消一条还没到点的跟进或提醒。schedule_id 填 weave/weave.db 里 schedules 表的 schedule_id，或者 reminders 表的 reminder_id。',
+    shape: {schedule_id: z.string().min(1).max(200)},
+    annotations: writes,
+  },
+  set_proactivity: {
+    description: '对方说「别主动找我」「少找我一点」「多找我一点」这类话时调用，改 Weave 主动找对方的档位：off 是不主动找（对方让设的提醒照常响），low、normal、high 是越来越多。只在对方亲口说的时候用。',
+    shape: {level: z.enum(LEVELS)},
     annotations: writes,
   },
 };

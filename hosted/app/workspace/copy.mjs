@@ -3,7 +3,8 @@
 // Every sentence comes from the v3 design boards or from the spec (docs/superpowers/specs/2026-11-03-frontend-v3-design.md,
 // section 3 and Appendix A-4), written as it is there. A value is a string, or a function that puts the changing part
 // (a count, a name, a date) into the sentence. Sentences marked 草稿文案 are the new ones the spec lists for the owner
-// to confirm (A-4, and the one first message for a goal); after she has, they do not change. A few in settings, marked,
+// to confirm (A-4, and the one first message for a goal; those marked （第二块） are block two's, from
+// docs/superpowers/specs/2026-11-03-proactive-wake-design.md); after she has, they do not change. A few in settings, marked,
 // are not on the boards: they come word for word from the settings page the v3 one replaces, with the flow they belong
 // to (the Notion page picker, and the question before an account is deleted).
 //
@@ -160,15 +161,92 @@ export const COPY = freeze({
   agentTabs: '助理主页的栏目', // the two tabs' accessible name (the board's aria-label)
   remindersTab: '提醒',
   memoryTab: '记忆',
-  // 草稿文案，待确认。(A-4: the board's first sentence no longer holds now that Weave can remind once)
-  notLive: '主动提醒还没开通。现在 Weave 只会在你交代的时间提醒你一次；开通以后，它会按下面的安排主动来找你。',
+  // On a wide screen the same three tabs sit in a panel beside the chat (block two). Its name, read out for it and for
+  // the avatar in the chat's header that shows or hides it; and the name of its close button.
+  // 草稿文案，待确认。（第二块）
+  agentPanel: 'Weave 的助理主页',
+  // 草稿文案，待确认。（第二块）
+  closePanel: '收起助理主页',
+  // 动态, the first tab (block two): what Weave did on its own lately, a day at a time, newest first.
+  // 草稿文案，待确认。（第二块）
+  activityTab: '动态',
+  // 草稿文案，待确认。（第二块）
+  activityEmpty: 'Weave 还没主动做过什么。',
+  // Over the rows of a day before yesterday: 11 月 1 日, written like the chat's own date line (today and yesterday are 今天 and 昨天, as in the chat).
+  // 草稿文案，待确认。（第二块）
+  activityDay: (month, day) => month + ' 月 ' + day + ' 日',
+  // A row's title, then the grey line under it. A message Weave sent on its own: this, then the message.
+  // 草稿文案，待确认。（第二块）
+  activityMessage: '主动问了你一句',
+  // A reminder that came at its time: the reminder, then this.
+  // 草稿文案，待确认。（第二块）
+  activityReminder: '到点提醒了你',
+  // Weave looked in on its own (定期看看), or came as it had said it would (跟进), and kept quiet: then why.
+  // 草稿文案，待确认。（第二块）
+  activityCheck: '看了看你今天的进展',
+  // 草稿文案，待确认。（第二块）
+  activityFollowup: '按约好的来看看',
+  // 草稿文案，待确认。（第二块）
+  activityQuiet: '没什么要说的，就没打扰你',
+  // 草稿文案，待确认。（第二块）
+  activityJevQuiet: '判断现在不用打扰你',
+  // A day of a habit that Weave recorded from the chat: 帮你记了一次：饭后走走, then this.
+  // 草稿文案，待确认。（第二块）
+  activityCompletion: habit => '帮你记了一次：' + habit,
+  // 草稿文案，待确认。（第二块）
+  activityCompletionDetail: '在聊天里记的',
+  // The reminders tab of block two (docs/superpowers/specs/2026-11-03-proactive-wake-design.md, section 4.9): the dial
+  // at the top, then what is planned. The dial's three buttons are the board's; the sentences marked （第二块） are new.
+  // 草稿文案，待确认。（第二块）
+  proactiveIntro: 'Weave 会按下面的安排来找你；没有值得说的，就不打扰。',
+  // 草稿文案，待确认。（第二块）
+  levelOff: '现在不主动找你。你让 Weave 设的提醒照常响。',
+  // 草稿文案，待确认。（第二块）
+  levelLine: (checks, cap) => `每天看 ${checks} 次你的进展，最多主动说 ${cap} 句。`,
+  // The hours Weave may come run from start to end, so the quiet ones run from end to start: 21:00–09:00 不打扰。
+  // 草稿文案，待确认。（第二块）
+  quietHours: (start, end) => `${end}–${start} 不打扰。`,
+  moreOften: '多找我一点',
+  lessOften: '少找我一点',
+  stopProactive: '别主动找我',
+  // 草稿文案，待确认。（第二块）
+  quietIgnored: '你最近两次没回，Weave 先不主动问了；你说一句话就恢复。',
+  // 草稿文案，待确认。（第二块）
+  quietInactive: '你这周没来，Weave 先不主动问了；你说一句话就恢复。',
   once: '只响一次',
   daily: '每天',
   weekly: '每周',
   monthly: '每月',
   noneScheduled: '暂时没有安排。',
+  // The row of 每天 for Weave's own look at the day; `times` are the check times: 10:00、19:30 · Weave 自己安排的
+  // 草稿文案，待确认。（第二块）
+  checkTitle: '看看你今天的进展',
+  // 草稿文案，待确认。（第二块）
+  checkMeta: times => times.join('、') + ' · Weave 自己安排的',
+  // After the time of one of Weave's follow-ups (跟进); a reminder's row has remindNote there instead.
+  // 草稿文案，待确认。（第二块）
+  wakeMeta: time => time + ' · Weave 会来问问',
+  // When a weekly or monthly row comes round: 每周三 19:30, 每月 3 号 08:00. `weekday` 0 is Sunday, as getUTCDay has it.
+  // 草稿文案，待确认。（第二块）
+  weeklyAt: (weekday, time) => `每周${'日一二三四五六'[weekday]} ${time}`,
+  // 草稿文案，待确认。（第二块）
+  monthlyAt: (day, time) => `每月 ${day} 号 ${time}`,
+  // 草稿文案，待确认。（第二块）
+  pause: '暂停',
+  // 草稿文案，待确认。（第二块）
+  resume: '恢复',
+  // 草稿文案，待确认。（第二块）
+  paused: '已暂停',
+  // The pause and resume buttons' accessible names, as removeReminder is the delete button's: 暂停：每天喝水
+  // 草稿文案，待确认。（第二块）
+  pauseLabel: text => '暂停：' + text,
+  // 草稿文案，待确认。（第二块）
+  resumeLabel: text => '恢复：' + text,
   // A reminder's delete button's accessible name (the board's script): 删除：给妈妈打个电话
   removeReminder: text => '删除：' + text,
+  // Weave's memory is one file in its workspace, and the memory tab shows it as that file, under its own name (the
+  // owner's rule, 11-03: 「记忆以文件的形式」). A file name, not a sentence.
+  memoryFile: 'MEMORY.md',
   // 草稿文案，待确认。(A-4)
   memoryIntro: '这些是 Weave 自己记下的关于你的事。哪条不对，直接在聊天里跟它说。',
   // 草稿文案，待确认。(A-4)

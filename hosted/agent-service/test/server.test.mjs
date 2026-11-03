@@ -5,7 +5,7 @@ import {existsSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync} from 'n
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
-import {scopeDirs} from '../workspace.mjs';
+import {scopeDirs, sessionFor, saveSession} from '../workspace.mjs';
 import {isMain, lastToolResults, steps} from './helpers/fake-model.mjs';
 import {startFakeModel} from './helpers/fake-model.mjs';
 
@@ -70,6 +70,7 @@ test('未知范围、日期格式不对、trigger 缺字段、模型不在表里
     {trigger: {kind: 'message', channel: 'web', direct: true, text: 'no at'}},
     {trigger: {kind: 'message', channel: 'sms', direct: true, at: '2026-11-02T08:00:00+08:00', text: 'x'}},
     {provider: 'openai'}, {model: 'claude-opus-4'}, {userKey: 'short'},
+    {background: 'true'}, {background: 1}, {background: null}, {background: {}},
   ];
   for (const extra of bad) assert.equal((await post('/wake', wakeBody(extra))).status, 400, JSON.stringify(extra));
   assert.equal(fake.captured.length, 0);
@@ -164,6 +165,89 @@ test('没有托管 Key 也没有 userKey 时 503，CLI 没有启动', async () =
   const r = await post('/wake', wakeBody({id: 'u:hank', provider: 'glm', model: 'glm-4.7'}));
   assert.equal(r.status, 503);
   assert.equal(fake.captured.length, 0);
+});
+
+const check = text => ({kind: 'check', channel: 'system', direct: false, at: '2026-11-02T19:30:00+08:00', text});
+
+test('background：有当天的会话就带 resume + forkSession，成功存分叉出来的 id，失败不碰会话文件；不是后台的照旧', async t => {
+  // 假的 query()：记下每一轮的 options，按顺序给出结果（Error 表示 CLI 半路崩了、没有结果消息）。
+  const seen = [], results = [];
+  const queryFn = async function* ({options}) {
+    seen.push(options);
+    const next = results.shift();
+    if (next instanceof Error) throw next;
+    yield next;
+  };
+  const ok = id => ({type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: id, total_cost_usd: 0});
+  const failed = id => ({type: 'result', subtype: 'error_during_execution', is_error: true, session_id: id, total_cost_usd: 0});
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-fork-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn});
+  t.after(() => svc.close());
+  const dirs = scopeDirs(dir, 'owner', 'u:mia'), day = '2026-11-02';
+  const wakeMia = async (extra, result) => {
+    results.push(result);
+    const r = await fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:mia', ...extra}))});
+    assert.equal(r.status, 200);
+    return {out: await r.json(), options: seen.at(-1), session: await sessionFor(dirs, day)};
+  };
+
+  // 当天还没有会话：后台那一轮开一段新的，不分叉；成功了存下来，她回话时接得上。
+  let w = await wakeMia({background: true, trigger: check('定期看看')}, ok('bg-1'));
+  assert.deepEqual([w.options.resume, 'forkSession' in w.options, w.session, w.out.outcome, w.out.reply], [undefined, false, 'bg-1', 'success', '']);
+
+  // 聊天那一轮照旧：resume，不分叉。
+  w = await wakeMia({}, ok('bg-1'));
+  assert.deepEqual([w.options.resume, 'forkSession' in w.options, w.session], ['bg-1', false, 'bg-1']);
+
+  // 后台那一轮从当天的会话分叉；成功了，分叉出来的那段成了当天的会话。
+  w = await wakeMia({background: true, trigger: check('定期看看')}, ok('fork-1'));
+  assert.deepEqual([w.options.resume, w.options.forkSession, w.session, w.out.sessionId], ['bg-1', true, 'fork-1', 'fork-1']);
+
+  // 后台那一轮失败（有结果消息，或者半路崩了）：会话文件不动。
+  w = await wakeMia({background: true, trigger: check('看看走路记了没有')}, failed('fork-2'));
+  assert.deepEqual([w.options.resume, w.options.forkSession, w.out.outcome, w.session], ['fork-1', true, 'error', 'fork-1']);
+  w = await wakeMia({background: true, trigger: check('看看走路记了没有')}, Error('CLI exited'));
+  assert.deepEqual([w.options.resume, w.options.forkSession, w.out.outcome, w.session], ['fork-1', true, 'error', 'fork-1']);
+
+  // background: false 就是聊天那一轮：接着分叉出来的那段，失败了照旧清掉（下次重新开一段）。
+  w = await wakeMia({background: false}, ok('fork-1'));
+  assert.deepEqual([w.options.resume, 'forkSession' in w.options, w.session], ['fork-1', false, 'fork-1']);
+  w = await wakeMia({}, failed('fork-1'));
+  assert.deepEqual([w.options.resume, 'forkSession' in w.options, w.out.outcome, w.session], ['fork-1', false, 'error', null]);
+
+  // 换了一天：昨天的会话不接，也不从它分叉。
+  await saveSession(dirs, day, 'yesterday');
+  w = await wakeMia({background: true, localDate: '2026-11-03', trigger: check('定期看看')}, failed('bg-2'));
+  assert.deepEqual([w.options.resume, 'forkSession' in w.options], [undefined, false]);
+  assert.equal(await sessionFor(dirs, day), 'yesterday', '失败的后台那一轮不碰会话文件');
+});
+
+test('后台那一轮（实测）：成功了，下一轮接上分叉出来的会话，两轮都看得到', async () => {
+  fresh(steps([{text: '好，18:00 去走路'}, {text: '看过了，先不说'}, {text: '记上了'}]));
+  const chat = await (await post('/wake', wakeBody({id: 'u:nora', trigger: {...wakeBody().trigger, text: '我 18:00 去走路'}}))).json();
+  const background = await (await post('/wake', wakeBody({id: 'u:nora', background: true, trigger: check('看看走路记了没有')}))).json();
+  assert.equal(background.outcome, 'success');
+  assert.equal(background.reply, '', '没人找它的那一轮，最后一段话不是回复');
+  assert.ok(chat.sessionId && background.sessionId && background.sessionId !== chat.sessionId);
+  const next = await (await post('/wake', wakeBody({id: 'u:nora', trigger: {...wakeBody().trigger, text: '走了'}}))).json();
+  assert.equal(next.sessionId, background.sessionId);
+  const seen = JSON.stringify(modelCalls().at(-1).body.messages);
+  assert.ok(seen.includes('我 18:00 去走路') && seen.includes('看看走路记了没有'), seen.slice(0, 400));
+});
+
+test('后台那一轮（实测）：失败了（熔断），当天的会话还在，下一轮接着原来的那段', async () => {
+  fresh(steps([{text: '好'}]));
+  const chat = await (await post('/wake', wakeBody({id: 'u:olga'}))).json();
+  assert.equal(chat.outcome, 'success');
+  fresh(b => isMain(b) ? {tool: 'Bash', input: {command: 'echo loop', description: 'x'}} : {text: 't'}, {input: 800000, output: 100000});
+  const failed = await (await post('/wake', wakeBody({id: 'u:olga', background: true, trigger: check('定期看看')}))).json();
+  assert.equal(failed.outcome, 'error_max_budget_usd');
+  fresh(steps([{text: 'x'}, {text: '你说今天走了 20 分钟'}]));
+  const next = await (await post('/wake', wakeBody({id: 'u:olga', trigger: {...wakeBody().trigger, text: '我刚才说了什么'}}))).json();
+  assert.equal(next.sessionId, chat.sessionId);
+  assert.equal(next.reply, '你说今天走了 20 分钟');
+  const seen = JSON.stringify(modelCalls().at(-1).body.messages);
+  assert.ok(seen.includes('今天走了 20 分钟') && !seen.includes('定期看看'), seen.slice(0, 400));
 });
 
 test('/forget 删除这个人的目录，别人的不动', async () => {

@@ -3,8 +3,8 @@
 // 只有自带验证的内部接口不拦（Agent 服务的通行证、微信桥接和后台判断的令牌），其余地址一律要密码。
 const encoder = new TextEncoder();
 const SELF_AUTHENTICATED = ['/api/internal/agent/tools/', '/api/internal/hermes/', '/api/internal/wechat/'];
-// 叫醒前的数据快照也认通行证，只放行这一个地址。
-const SELF_AUTHENTICATED_EXACT = ['/api/internal/agent/snapshot'];
+// 叫醒前的数据快照也认通行证；服务器自己的闹钟认 Agent 服务的令牌。只放行这两个地址。
+const SELF_AUTHENTICATED_EXACT = ['/api/internal/agent/snapshot', '/api/internal/tick'];
 const digest = async text => new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text)));
 
 // 比较摘要，耗时和内容无关。

@@ -25,16 +25,70 @@ const recorder = (reply = {ok: true, text: 'ok'}) => {
   return {calls, rpc};
 };
 
-test('一轮请求只带 owner 范围的内置工具和 weave 工具，Skill 只有 weave:weekly-review', async () => {
+test('一轮请求只带 owner 范围的内置工具和 weave 工具，Skill 只有 weave:weekly-review 和 weave:proactive-judgment', async () => {
   fresh(steps([{text: '你好呀'}]));
   const r = await h.wakeOnce();
   assert.equal(r.outcome, 'success');
   const body = mainCalls()[0].body, names = body.tools.map(t => t.name);
   assert.deepEqual(names.filter(n => !n.startsWith('mcp__')).sort(), ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Skill', 'WebSearch', 'Write']);
-  assert.deepEqual(names.filter(n => n.startsWith('mcp__')).sort(), ['mcp__weave__log_completion', 'mcp__weave__save_goal', 'mcp__weave__save_habit', 'mcp__weave__send_message', 'mcp__weave__set_reminder']);
+  assert.deepEqual(names.filter(n => n.startsWith('mcp__')).sort(), [
+    'mcp__weave__cancel_schedule', 'mcp__weave__log_completion', 'mcp__weave__save_goal', 'mcp__weave__save_habit',
+    'mcp__weave__schedule_wake', 'mcp__weave__send_message', 'mcp__weave__set_proactivity', 'mcp__weave__set_reminder',
+  ]);
   const all = JSON.stringify(body);
   assert.ok(all.includes('weave:weekly-review') && all.includes('复盘一周的习惯完成情况时使用'));
+  assert.ok(all.includes('weave:proactive-judgment') && all.includes('被定时或事件叫醒，要决定现在值不值得开口时使用'));
   assert.ok(!all.includes('dataviz') && !all.includes('code-review'), 'a bundled coding skill leaked in');
+});
+
+const check = (text, at = '2026-11-02T19:30:00+08:00') => ({kind: 'check', channel: 'system', direct: false, at, text});
+
+test('后台那一轮能加载 weave:proactive-judgment，正文回到模型；不调 send_message 就没有 reply', async () => {
+  fresh(steps([{tool: 'Skill', input: {skill: 'weave:proactive-judgment'}}, {text: '看过了，今天先不说'}]));
+  const r = await h.wakeOnce({trigger: check('定期看看')});
+  assert.equal(r.outcome, 'success');
+  assert.equal(r.reply, '');
+  const seen = JSON.stringify(mainCalls().at(-1).body.messages);
+  assert.ok(seen.includes('大多数时候不开口是对的') && seen.includes('schedule_wake'), seen.slice(0, 400));
+});
+
+test('forkSession 只和 resume 一起设：有 sessionId 才分叉，没要分叉就没有这个键', async () => {
+  const seen = [];
+  const queryFn = async function* (call) {
+    seen.push(call.options);
+    yield {type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: 'fork-1', total_cost_usd: 0};
+  };
+  const scope = scopeFor('owner');
+  const isolation = isolationFor({mode: 'local', scope, dirs: h.tenant(), pluginDir: PLUGIN_DIR, proxy: {url: h.proxyUrl}, sandbox: false});
+  const run = extra => wake({scope, trigger: check('定期看看'), provider: providerFor('deepseek'), model: 'deepseek-flash', runToken: 'run-token', isolation, rpc: async () => ({ok: true, text: 'ok'}), queryFn, ...extra});
+  assert.equal((await run({sessionId: 's-1', forkSession: true})).sessionId, 'fork-1', '返回的是结果消息里的 session_id，也就是分叉出来的那段');
+  await run({sessionId: 's-1'});
+  await run({forkSession: true});
+  await run({});
+  assert.deepEqual(seen.map(o => [o.resume, o.forkSession, 'forkSession' in o]), [
+    ['s-1', true, true], ['s-1', undefined, false], [undefined, undefined, false], [undefined, undefined, false],
+  ]);
+});
+
+test('分叉（实测）：新会话带着原来的历史、id 不一样；原会话不动，接着它的下一轮看不到后台那一轮', async () => {
+  const dirs = h.tenant();
+  fresh(steps([{text: '好，18:00 去走路'}, {text: '看过了'}, {text: '走了就好'}]));
+  const chat = await h.wakeOnce({dirs, trigger: message('我 18:00 去走路')});
+  const background = await h.wakeOnce({dirs, sessionId: chat.sessionId, forkSession: true, trigger: check('看看走路记了没有')});
+  assert.equal(chat.outcome, 'success');
+  assert.equal(background.outcome, 'success');
+  assert.ok(chat.sessionId && background.sessionId && background.sessionId !== chat.sessionId, `${chat.sessionId} / ${background.sessionId}`);
+  assert.ok(JSON.stringify(mainCalls().at(-1).body.messages).includes('我 18:00 去走路'), '分叉出来的会话带着原来的历史');
+
+  const original = await h.wakeOnce({dirs, sessionId: chat.sessionId, trigger: message('我刚才说了什么')});
+  const toOriginal = JSON.stringify(mainCalls().at(-1).body.messages);
+  assert.equal(original.sessionId, chat.sessionId);
+  assert.ok(toOriginal.includes('我 18:00 去走路') && !toOriginal.includes('看看走路记了没有'), '原会话里不该有后台那一轮');
+
+  const fork = await h.wakeOnce({dirs, sessionId: background.sessionId, trigger: message('走了')});
+  const toFork = JSON.stringify(mainCalls().at(-1).body.messages);
+  assert.equal(fork.sessionId, background.sessionId);
+  assert.ok(toFork.includes('我 18:00 去走路') && toFork.includes('看看走路记了没有'), '接着分叉出来的那段，两轮都看得到');
 });
 
 test('系统提示是自定义的：没有 You are Claude Code；SDK 前缀之后是 Weave 那句，记忆在里面，trigger 在用户消息里', async () => {
