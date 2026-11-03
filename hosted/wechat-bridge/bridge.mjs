@@ -27,6 +27,10 @@ export function createDaemon({baseUrl,token,account,fetcher=fetch}){
     ack:cursor=>request(`/consumers/${CONSUMER}/ack`,{method:'POST',signal:AbortSignal.timeout(15000),headers:{'Content-Type':'application/json'},body:JSON.stringify({cursor})}),
     send:async(job)=>(await request('/sends',{method:'POST',signal:AbortSignal.timeout(30000),headers:{'Content-Type':'application/json','Idempotency-Key':job.id},body:JSON.stringify({threadId:job.threadId,text:job.text,...(job.mentions?{mentions:job.mentions}:{})})})).json(),
     sendStatus:async id=>(await request('/sends/'+encodeURIComponent(id),{signal:AbortSignal.timeout(15000)})).json(),
+    // One read from WeChat of a group's member list, written into the daemon's own copy; nothing is posted in the group. Read scope is enough.
+    // It starts an operation (202); operation() follows it.
+    refreshMembers:async group=>(await request('/groups/'+encodeURIComponent(group)+'/members/refresh',{method:'POST',signal:AbortSignal.timeout(15000)})).json(),
+    operation:async id=>(await request('/operations/'+encodeURIComponent(id),{signal:AbortSignal.timeout(15000)})).json(),
   };
 }
 export function createWeave({origin,token,fetcher=fetch}){
@@ -101,28 +105,96 @@ export function throttleFromEnv(env=process.env,now=Date.now){
     perDay:whole(env.WECHAT_SEND_PER_DAY,200),minGapMs:whole(env.WECHAT_SEND_MIN_GAP_MS,1500,{zero:true}),maxHoldMs:whole(env.WECHAT_SEND_MAX_HOLD_MS,600000),now,
   });
 }
-export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay,throttle}){
+// A group reply asks the daemon to @ the person who asked. The daemon takes that person's display name from its own copy of the group's
+// member list, and that copy can be missing or partial (a group it has only seen in an incoming message has no member table at all):
+// 404 media_not_cached = no table, 409 = the person (or the account itself) is not in it, 400 invalid_mentions = an id it will not take.
+// That must not lose the answer. In this order: ask WeChat once for the group's member list (one read, nothing is posted in the group)
+// and try the @ again; if that does not help, or is not allowed again yet, send the answer without the @.
+// Refused on the request (400, 404, 409): no send was created, because the member lookup runs before the send is stored. So the second
+// try with the @ may use the same idempotency key.
+const MENTION_REFUSALS={400:['invalid_mentions'],404:['media_not_cached'],409:['mention_member_unavailable','mention_group_membership_unavailable','profile_unavailable']};
+const mentionRefused=error=>MENTION_REFUSALS[error?.status]?.includes(error.code)===true;
+// Taken, then failed: the daemon checks the members once more when it submits, and ends the send as failed with an errorCode. That send
+// exists under the first key, so the second try with the @ needs another one (:m2), and the version without the @ has its own (:plain).
+const MENTION_FAILURES=new Set(['mention_member_unavailable','mention_group_membership_unavailable','mention_all_forbidden','mention_all_permission_unavailable','profile_unavailable']);
+const mentionFailed=send=>send.state==='failed'&&MENTION_FAILURES.has(send.errorCode);
+// A group's member list is asked for at most once per 10 minutes, and the bridge waits at most 60 s for the answer.
+const REFRESH_EVERY_MS=600000,REFRESH_POLL_MS=1000,REFRESH_POLLS=60;
+const OPERATION_END=new Set(['succeeded','failed','cancelled','expired','rejected']);
+// A daemon error, state or number goes into the log only as a short plain value, never as anything that could carry a message or a name.
+const word=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,64}$/.test(value)?value:'-';
+const why=error=>`${Number.isInteger(error?.status)?error.status:'-'} ${word(error?.code)}`;
+const count=value=>Number.isInteger(value)&&value>=0?value:'-';
+const flag=value=>typeof value==='boolean'?value:'-';
+const asVersion=(job,name)=>name==='plain'?{id:job.id+':plain',threadId:job.threadId,text:job.text}:name==='m2'?{...job,id:job.id+':m2'}:job;
+// What the bridge remembers between claims. A job that already moved to another version goes straight there when it is claimed again after a
+// lease that ran out: the @ version might work by now, and sending that as well would put the same answer in the group twice.
+const newMemory=()=>({version:new Map(),refreshedAt:new Map()});
+export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay,throttle,log=(...args)=>console.error(...args),memory=newMemory(),now=Date.now}){
   const {jobs}=await weave('claim',{});let delivered=0;
+  // Waits (a few seconds at most) for the daemon to bring a send to an end state.
+  const settle=async send=>{for(let i=0;i<attempts&&!TERMINAL.has(send.state);i++){await sleep(waitMs);send=await daemon.sendStatus(send.id);}return send;};
+  // Sends one version of a job and follows it. A refusal throws.
+  const sendAs=async(job,name)=>{const send=await daemon.send(asVersion(job,name));throttle?.record(job);return settle(send);};
+  // Sends the version of a job with the @. {send}: the daemon took it and it did not fail on the @. Otherwise {problem} says what happened,
+  // {stored} that a failed send now holds the key, {hard} that no member list can help (the id itself is refused).
+  const withMentions=async(job,name)=>{
+    let send;
+    try{send=await sendAs(job,name);}
+    catch(error){if(!mentionRefused(error))throw error;return {problem:`被拒（${why(error)}）`,hard:error.status===400};}
+    return mentionFailed(send)?{problem:`发送失败（failed ${word(send.errorCode)}）`,stored:true}:{send};
+  };
+  // Asks WeChat for the group's member list and waits for the daemon to write it down. true = it finished.
+  const refreshGroup=async(job,because)=>{
+    const last=memory.refreshedAt.get(job.threadId);
+    if(last!==undefined&&now()-last<REFRESH_EVERY_MS){log(`这个群的成员 10 分钟内刷新过了，这次不再刷新：${job.id}`);return false;}
+    memory.refreshedAt.set(job.threadId,now());
+    log(`${because}：${job.id}`);
+    let operation;
+    try{
+      operation=await daemon.refreshMembers(job.threadId);
+      for(let i=0;i<REFRESH_POLLS&&!OPERATION_END.has(operation.state);i++){await sleep(REFRESH_POLL_MS);operation=await daemon.operation(operation.id);}
+    }catch(error){log(`刷新群成员没有成功（${why(error)}）：${job.id}`);return false;}
+    if(!OPERATION_END.has(operation.state)){log(`群成员刷新 ${REFRESH_POLLS*REFRESH_POLL_MS/1000} 秒内没有结束（${word(operation.state)}）：${job.id}`);return false;}
+    const result=operation.result??{};
+    log(`群成员刷新结束（${word(operation.state)}，成员 ${count(result.memberCount)}，名单完整 ${flag(result.completeRoster)}）：${job.id}`);
+    return operation.state==='succeeded';
+  };
+  const toPlain=async(job,because)=>{log(`${because}，已去掉 @ 重发：${job.id}`);memory.version.set(job.id,'plain');return sendAs(job,'plain');};
+  const deliver=async job=>{
+    const fixed=memory.version.get(job.id);
+    if(!job.mentions||fixed==='plain')return sendAs(job,fixed==='plain'?'plain':'as-is');
+    const first=await withMentions(job,fixed??'as-is');
+    if(first.send)return first.send;
+    // One refresh and one more try with the @ per job (a job already on :m2 has had its turn), and none for an id the daemon refuses.
+    if(!fixed&&!first.hard&&await refreshGroup(job,`群消息带 @ ${first.problem}，先向微信刷新这个群的成员`)){
+      const name=first.stored?'m2':'as-is';
+      if(name==='m2')memory.version.set(job.id,'m2');
+      const again=await withMentions(job,name);
+      if(again.send){log(`刷新后带 @ 重发被守护进程收下：${job.id}`);return again.send;}
+      return toPlain(job,`刷新后带 @ 重发仍${again.problem}`);
+    }
+    return toPlain(job,`群消息带 @ ${first.problem}`);
+  };
   for(const job of jobs){
     if(throttle){
       const verdict=throttle.admit(job);
-      if(verdict==='drop'){console.error('这条消息被发送上限压了太久，已放弃：'+job.id);await weave('receipt',{id:job.id,state:'failed'});continue;}
+      if(verdict==='drop'){log('这条消息被发送上限压了太久，已放弃：'+job.id);await weave('receipt',{id:job.id,state:'failed'});continue;}
       if(verdict==='hold')continue;
       const gap=throttle.gap();if(gap>0)await sleep(gap);
     }
     let state;
     try{
-      let send=await daemon.send(job);
-      throttle?.record(job);
-      for(let i=0;i<attempts&&!TERMINAL.has(send.state);i++){await sleep(waitMs);send=await daemon.sendStatus(send.id);}
+      const send=await deliver(job);
       state=send.state;
+      if(state==='failed'||state==='cancelled'||state==='needs_review')log(`发送结果是 ${word(state)}${send.errorCode?`（${word(send.errorCode)}）`:''}，已原样报告给 Weave：${job.id}`);
     }catch(error){
-      if(REJECTED.has(error.status))state='failed';
-      else{console.error('消息暂时发不出去，稍后用同一幂等键重试：'+error.message);continue;}
+      if(REJECTED.has(error.status)){state='failed';log(`守护进程拒绝了这条消息（${why(error)}），已向 Weave 报告发送失败：${job.id}`);}
+      else{log('消息暂时发不出去，稍后用同一幂等键重试：'+error.message);continue;}
     }
     // Not terminal yet: keep the lease; the next claim reuses the same idempotency key.
     if(!TERMINAL.has(state))continue;
-    await weave('receipt',{id:job.id,state});delivered++;
+    await weave('receipt',{id:job.id,state});memory.version.delete(job.id);delivered++;
   }
   return delivered;
 }
@@ -172,12 +244,12 @@ export async function main(env=process.env){
   // process 20 s before it kills it. So leave after 3 s at most. Nothing is lost: an unfinished send keeps its
   // idempotency key and is claimed again, and the cursor is saved atomically.
   let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;setTimeout(()=>process.exit(0),3000).unref();});
-  const throttle=throttleFromEnv(env);
+  const throttle=throttleFromEnv(env),memory=newMemory();
   console.log('微信桥接已启动。');
   void follow({daemon,weave,cursors,isStopping:()=>stopping});
   if(env.WEAVE_TICK==='1')void tickLoop({weave,isStopping:()=>stopping});
   while(!stopping){
-    try{await deliverOnce({daemon,weave,throttle});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
+    try{await deliverOnce({daemon,weave,throttle,memory});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
     // Weave queues replies from a once-a-minute Cron, and each poll reads D1.
     await delay(20000);
   }
