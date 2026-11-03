@@ -101,28 +101,64 @@ export function throttleFromEnv(env=process.env,now=Date.now){
     perDay:whole(env.WECHAT_SEND_PER_DAY,200),minGapMs:whole(env.WECHAT_SEND_MIN_GAP_MS,1500,{zero:true}),maxHoldMs:whole(env.WECHAT_SEND_MAX_HOLD_MS,600000),now,
   });
 }
-export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay,throttle}){
+// A group reply asks the daemon to @ the person who asked. The daemon takes that person's display name from its own copy of the group's
+// member list, and that copy can be missing or partial: 404 media_not_cached = no member table for the group at all, 409 = the member
+// (or the account itself) is not in it, 400 invalid_mentions = an id it will not take. That is no reason to lose the answer, so it goes
+// out again without the @, under another idempotency key: the same key with other content would only conflict, and on the second path
+// below a failed send does exist under the first key.
+// Path 1, refused on the request: no send was created (the member lookup runs before the send is stored).
+const MENTION_REFUSALS={400:['invalid_mentions'],404:['media_not_cached'],409:['mention_member_unavailable','mention_group_membership_unavailable','profile_unavailable']};
+const mentionRefused=error=>MENTION_REFUSALS[error?.status]?.includes(error.code)===true;
+// Path 2, taken and then failed: the daemon checks the members again when it submits, and ends the send as failed with an errorCode.
+const MENTION_FAILURES=new Set(['mention_member_unavailable','mention_group_membership_unavailable','mention_all_forbidden','mention_all_permission_unavailable','profile_unavailable']);
+// A daemon error or state goes into the log only as a short plain word, never as anything that could carry a message or a name.
+const word=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,64}$/.test(value)?value:'-';
+const why=error=>`${Number.isInteger(error?.status)?error.status:'-'} ${word(error?.code)}`;
+const withoutMentions=job=>({id:job.id+':plain',threadId:job.threadId,text:job.text});
+// `plain` remembers jobs that already fell back, so a job claimed again after a lease that ran out goes straight to the plain send: the
+// @ version might work by then, and sending it too would put the same answer in the group twice.
+export async function deliverOnce({daemon,weave,waitMs=500,attempts=20,sleep=delay,throttle,log=(...args)=>console.error(...args),plain=new Set()}){
   const {jobs}=await weave('claim',{});let delivered=0;
   for(const job of jobs){
     if(throttle){
       const verdict=throttle.admit(job);
-      if(verdict==='drop'){console.error('这条消息被发送上限压了太久，已放弃：'+job.id);await weave('receipt',{id:job.id,state:'failed'});continue;}
+      if(verdict==='drop'){log('这条消息被发送上限压了太久，已放弃：'+job.id);await weave('receipt',{id:job.id,state:'failed'});continue;}
       if(verdict==='hold')continue;
       const gap=throttle.gap();if(gap>0)await sleep(gap);
     }
     let state;
     try{
-      let send=await daemon.send(job);
+      // Waits (a few seconds at most) for the daemon to bring this send to an end state.
+      const settle=async send=>{for(let i=0;i<attempts&&!TERMINAL.has(send.state);i++){await sleep(waitMs);send=await daemon.sendStatus(send.id);}return send;};
+      let send;
+      if(plain.has(job.id))send=await daemon.send(withoutMentions(job));
+      else{
+        try{send=await daemon.send(job);}
+        catch(error){
+          if(!job.mentions||!mentionRefused(error))throw error;
+          log(`群消息带 @ 被拒（${why(error)}），已去掉 @ 重发：${job.id}`);
+          plain.add(job.id);
+          send=await daemon.send(withoutMentions(job));
+        }
+      }
       throttle?.record(job);
-      for(let i=0;i<attempts&&!TERMINAL.has(send.state);i++){await sleep(waitMs);send=await daemon.sendStatus(send.id);}
+      send=await settle(send);
+      if(job.mentions&&!plain.has(job.id)&&send.state==='failed'&&MENTION_FAILURES.has(send.errorCode)){
+        log(`群消息带 @ 发送失败（failed ${word(send.errorCode)}），已去掉 @ 重发：${job.id}`);
+        plain.add(job.id);
+        send=await daemon.send(withoutMentions(job));
+        throttle?.record(job);
+        send=await settle(send);
+      }
       state=send.state;
+      if(state==='failed'||state==='cancelled'||state==='needs_review')log(`发送结果是 ${word(state)}${send.errorCode?`（${word(send.errorCode)}）`:''}，已原样报告给 Weave：${job.id}`);
     }catch(error){
-      if(REJECTED.has(error.status))state='failed';
-      else{console.error('消息暂时发不出去，稍后用同一幂等键重试：'+error.message);continue;}
+      if(REJECTED.has(error.status)){state='failed';log(`守护进程拒绝了这条消息（${why(error)}），已向 Weave 报告发送失败：${job.id}`);}
+      else{log('消息暂时发不出去，稍后用同一幂等键重试：'+error.message);continue;}
     }
     // Not terminal yet: keep the lease; the next claim reuses the same idempotency key.
     if(!TERMINAL.has(state))continue;
-    await weave('receipt',{id:job.id,state});delivered++;
+    await weave('receipt',{id:job.id,state});plain.delete(job.id);delivered++;
   }
   return delivered;
 }
@@ -172,12 +208,12 @@ export async function main(env=process.env){
   // process 20 s before it kills it. So leave after 3 s at most. Nothing is lost: an unfinished send keeps its
   // idempotency key and is claimed again, and the cursor is saved atomically.
   let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;setTimeout(()=>process.exit(0),3000).unref();});
-  const throttle=throttleFromEnv(env);
+  const throttle=throttleFromEnv(env),plain=new Set();
   console.log('微信桥接已启动。');
   void follow({daemon,weave,cursors,isStopping:()=>stopping});
   if(env.WEAVE_TICK==='1')void tickLoop({weave,isStopping:()=>stopping});
   while(!stopping){
-    try{await deliverOnce({daemon,weave,throttle});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
+    try{await deliverOnce({daemon,weave,throttle,plain});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
     // Weave queues replies from a once-a-minute Cron, and each poll reads D1.
     await delay(20000);
   }
