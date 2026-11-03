@@ -3,7 +3,7 @@
 import {test, before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {mkdtempSync, readFileSync, realpathSync} from 'node:fs';
+import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
@@ -98,4 +98,29 @@ test('a photo turn leaves sessions.json alone: the next text turn the same day r
   const three = await (await post('/wake', wakeBody({id, trigger: {...wakeBody().trigger, text: '成员2：我刚才说了什么'}}))).json();
   assert.equal(three.sessionId, one.sessionId);
   assert.equal(images(modelCalls().at(-1).body).length, 0);
+});
+
+// Regression: the photo in a wake was once called `image` inside handleWake, which hid the container image's name, so every
+// docker run asked for an image called "undefined" (CI caught it). A fake docker on PATH records what it was asked to run.
+test('docker isolation still runs the configured container image, for a text turn and for a photo turn', async t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-fake-docker-'))), bin = join(dir, 'bin'), calls = join(dir, 'calls');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'docker'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\n[ "$1" = rm ] && exit 0\nexit 1\n`);
+  chmodSync(join(bin, 'docker'), 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = `${bin}:${saved}`;
+  const docker = await createAgentService({
+    token: TOKEN, dataDir: join(dir, 'data'), isolation: 'docker', image: 'weave-agent:regression', weaveUrl: weave.url,
+    keys: {deepseek: 'real-key'}, upstreams: {deepseek: fake.baseUrl}, limits: {perAccount: 1e9, total: 1e10},
+  });
+  t.after(async () => { process.env.PATH = saved; await docker.close(); });
+  const send = body => fetch(docker.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(body)});
+  for (const extra of [{}, {image: IMAGE}]) assert.equal((await send(wakeBody({id: 'g:' + 'd'.repeat(20), ...extra}))).status, 200);
+  assert.ok(existsSync(calls), 'docker was never called');
+  const runs = readFileSync(calls, 'utf8').split('\n').filter(line => line.startsWith('run '));
+  assert.equal(runs.length, 2, runs.join('\n'));
+  for (const run of runs) {
+    assert.ok(run.includes(' weave-agent:regression claude '), run.slice(0, 300));
+    assert.ok(!run.includes(' undefined '), run.slice(0, 300));
+  }
 });

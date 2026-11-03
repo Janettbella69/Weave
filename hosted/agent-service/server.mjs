@@ -72,7 +72,8 @@ function checkWake(input) {
     if (!provider.vision) fail(400, '这个模型提供方不能看图');
     try { image = checkImage(input.image); } catch { fail(400, '照片无效'); }
   }
-  return {scope, provider, image};
+  // 叫 photo，不叫 image：createAgentService 里的 image 是容器镜像的名字。
+  return {scope, provider, photo: image};
 }
 
 export async function createAgentService({
@@ -105,9 +106,9 @@ export async function createAgentService({
   let legacyActive = 0;
 
   async function handleWake(input) {
-    const {scope, provider, image} = checkWake(input);
+    const {scope, provider, photo} = checkWake(input);
     // 带照片的一轮一律用能看图的模型，不管这个人选的是哪个。
-    const model = image ? provider.vision : input.model;
+    const model = photo ? provider.vision : input.model;
     if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
     if (isolation === 'docker' && uid === 0) fail(503, '请用非 root 用户运行 Agent 服务');
     if (!input.userKey && !keys[provider.name]) fail(503, `没有 ${provider.name} 的模型 Key`);
@@ -132,13 +133,13 @@ export async function createAgentService({
       const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, image, queryFn,
+          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, image: photo, queryFn,
           isolation: runIsolation,
           rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
-        if (image) { /* sessions.json stays as it was */ }
+        if (photo) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
         else await workspace.clearSession(dirs);
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
