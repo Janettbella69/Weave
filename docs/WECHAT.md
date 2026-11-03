@@ -144,9 +144,10 @@ agent-wechat 自己没有发送限速，微信风控能容忍多少也没有公�
 打开（先开桥接，再开网站；少一处都和现在一样只看文字）：
 
 1. 确认新文字：开启打卡群时多说的一句（之前就开启的群会单独收到同一句）、隐私说明里多的一条、交给模型的那句说明（原句列在 PR 里）。
-2. 网站前面的 nginx（桥接经过它交照片时）：`deploy/tencent/weave.nginx.conf` 多了一行 `client_body_buffer_size 1m;`，让照片留在内存里、不写进共用 nginx 的磁盘。这个文件不会随 `deploy.sh` 生效，要按 [`deploy/tencent/README.md`](../deploy/tencent/README.md) 第 5 节重新装一次：先跑「要撤掉 nginx 里的 weave」那条命令，再跑「接入 Azora 的 nginx」那条命令。撤掉是用最近一次备份恢复，会连带撤掉那次备份之后 `nginx.conf` 里的其他改动，跑之前先确认没有。
-3. 桥接：桥接用的 wx 密钥（`WX_TOKEN`）要带 `media` 权限，桥接的环境里设 `WEAVE_WECHAT_IMAGES=1`，重启桥接。现在的 Mac 部署用一条命令做完：更新代码后跑 `bash deploy/wechat-mac/images.sh on`（先建新密钥、写进 `bridge.env`、重启桥接，最后才作废旧密钥；换密钥不会让小号掉线）。
-4. 网站：`web.env` 加一行 `WEAVE_WECHAT_IMAGES=1`，重新部署。网站要听到桥接说「我也开着」才会用照片，所以桥接没开时，网站开了也不会说照片的事、不会等照片。
+2. 桥接：桥接用的 wx 密钥（`WX_TOKEN`）要带 `media` 权限，桥接的环境里设 `WEAVE_WECHAT_IMAGES=1`，重启桥接。现在的 Mac 部署用一条命令做完：更新代码后跑 `bash deploy/wechat-mac/images.sh on`（先建新密钥、写进 `bridge.env`、重启桥接，最后才作废旧密钥；换密钥不会让小号掉线）。
+3. 网站：`web.env` 加一行 `WEAVE_WECHAT_IMAGES=1`，重新部署。网站要听到桥接说「我也开着」才会用照片，所以桥接没开时，网站开了也不会说照片的事、不会等照片。
+
+可选的加固，这些步骤不会去动正在用的 nginx：`deploy/tencent/weave.nginx.conf` 里多了一行 `client_body_buffer_size 1m;`，只有以后新装 nginx 时才会带上。没有它，一张照片可能会作为临时文件在共用 nginx 的磁盘上短暂停留一下。要改正在用的那份 nginx，是另一件要小心做的事（在原文件上原地改一行，再检查、重载），只在负责人同意后才做，不在这些步骤里。
 
 关掉（先关网站，再关桥接）：`web.env` 里删掉那一行、重新部署；再关桥接的开关、去掉 `media`（Mac 部署：`bash deploy/wechat-mac/images.sh off`）。
 
@@ -155,7 +156,7 @@ agent-wechat 自己没有发送限速，微信风控能容忍多少也没有公�
 1. 在之前就开启的打卡群里 @助理 说一句，确认群里收到那条看图说明。
 2. 先发一张饭的照片，再 @助理 问「这顿大概多少卡」。
 3. 看桥接的日志：要有一行「照片已交给 Weave（类型，字节数，standard 或 thumbnail）」。没有这一行，或者看到「照片没有交给 Weave（原因）」，就关掉，把那几行发给 Claude。
-4. 回复里能看出模型看到了照片。
+4. 回复里能看出模型看到了照片，而且方向是对的（去掉附加信息时，EXIF 里的「照片朝向」也一起去掉了；如果微信的副本靠它来摆正，模型看到的可能是横着或倒着的）。
 
 还要知道的：
 

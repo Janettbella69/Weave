@@ -179,7 +179,7 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；**�
 - 之前就开启的群：第一次有人 @ 它时单独发一次说明，确认发出后才用照片（第 4.2 节）。
 - 只发照片不说话，不回复。
 - 引用（回复）一张照片再 @ 的消息（`type` 49，带 `quote`）现在不处理；agent-wechat 能列出被引用图片的附件，以后可以做。
-- 超过约 1 MB 的照片被 nginx 拒（实际上限约 1 MB，代码里写的是 2 MB）；要放宽得改 Azora 共用的 nginx，这次不动。`weave.nginx.conf` 只加了 `client_body_buffer_size 1m;`，要重新装一次 nginx 才生效（第 12 节）。
+- 超过约 1 MB 的照片被 nginx 拒（实际上限约 1 MB，代码里写的是 2 MB）；要放宽得改 Azora 共用的 nginx，这次不动。`weave.nginx.conf` 只加了 `client_body_buffer_size 1m;`，是可选的加固：只有以后新装 nginx 才带上，打开看图的步骤不动正在用的 nginx（第 12 节）。
 - 照片那一轮的问答不进会话（第 6 节的代价）。
 
 ## 11. 测试
@@ -198,7 +198,7 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；**�
 | I2 | 说明和隐私页只看服务器开关，按「先服务器后 Mac」的顺序会先说有照片、其实发不了 | 桥接每个请求带 `X-Weave-Photos: on`，Weave 记下来（会过期）；三样都有才算打开（第 4 节开头）；文档改成「打开先 Mac 后服务器，关掉先服务器」 | 服务器开、Mac 关：没有说明、没有提示、什么都不存、隐私页不显示；请求头写入、过期、关掉 |
 | I3 | 照片原样发出去，带着 EXIF/GPS | 桥接交照片前按格式去掉附加信息（JPEG 的 APP1/APP13/COM 等，PNG 的 eXIf/tEXt/iTXt/zTXt 等，WebP 的 EXIF/XMP 并清掉 VP8X 里的标记，GIF 的注释/应用/纯文本扩展，以及文件结尾之后的东西），只留白名单里的部分，不重新编码；读不懂就不交 | `test/wechat-bridge-images.test.mjs`：四种格式各一个带 GPS 的样本（底图是用 sips 生成、确认能解码的真图片），去掉以后和干净的底图逐字节相同、找不到 GPS；坏文件一律拒绝；端到端交出去的字节里没有 GPS。去掉以后的四个文件在本机用 sips 完整解码过 |
 | M2 | 照片可能活过 10 分钟 | 照片表多一列 `owner`，删账号时按主人删；看图开着时每个 `/events` 也清一遍过期的；`/photo` 里写 world 一直冲突、最后放弃时，刚存的照片马上删 | 删账号时等着的照片没了；world 写不进去时照片没了、30 秒后照常回答；事件顺带清过期照片 |
-| M3 | 照片会被共用的 nginx 写到磁盘上 | `weave.nginx.conf` 加 `client_body_buffer_size 1m;`；文档写明要按 `deploy/tencent/README.md` 第 5 节重新装一次（先撤掉再接入，撤掉会连带撤掉备份之后的其他改动） | 只是配置和文档 |
+| M3 | 照片会被共用的 nginx 写到磁盘上 | `weave.nginx.conf` 加 `client_body_buffer_size 1m;`，新装时带上。第二轮审查后：不再让她为这个重装 nginx（文档里的重装办法是用最近的备份整个覆盖共用的 `nginx.conf`，会悄悄丢掉之后 Azora、codememory 的改动）；文档写成可选的加固，正在用的 nginx 要改得另外小心地原地改，并先经她同意 | 只是配置和文档 |
 | M4 | 换密钥时先作废旧的，中间有一段桥接没密钥 | `bridge_key_create`（建新的、写 `bridge.env`）→ 重启桥接 → `bridge_key_revoke_others`（留下新的那把）；`login.sh` 和 `images.sh` 都按这个顺序 | 假 wx + 假 launchctl 写同一个调用记录：建新密钥在重启之前，作废旧密钥在重启之后，新的那把不作废 |
 | M5 | 桥接收到 `upload` 就读照片 | 读之前自己再核对配对 | Weave 乱要照片时一个字节都不读 |
 | M7 | 只有 thumbnail 时立刻用 thumbnail | standard 没好时最多等 3 秒（每半秒看一次）；日志写交出去的是哪一种 | 等到 standard 就用 standard，等不到用 thumbnail，已经有 standard 就不等 |
@@ -207,3 +207,10 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；**�
 没改、留给她定的三件事在第 10 节开头。
 
 **桥接以后可能不在 Mac 上：** 另一个 PR（`feat/wechat-on-server`）准备把 wx 守护进程和桥接搬到腾讯云服务器上。看图的代码只依赖两样：桥接环境里的 `WEAVE_WECHAT_IMAGES=1`，和 `WX_TOKEN` 带 `media` 权限，不管桥接跑在哪都一样。`deploy/wechat-mac/images.sh` 只是现在 Mac 部署上设这两样的办法；搬到服务器以后，那边的部署脚本设同样的两样就行。文档里「先开桥接、再开网站，关掉先关网站」的顺序也不变。桥接和网站在同一台机器上、不经过 nginx 时，1 MB 的限制就没有了，代码里的 2 MB 才是上限。
+
+### 第二轮审查（2026-11-03）
+
+- 打开看图的步骤里去掉了「重装 nginx」：那套办法会用最近的备份覆盖共用的 `nginx.conf`。`client_body_buffer_size 1m;` 留在 `weave.nginx.conf` 里给以后新装用，文档写成可选的加固；`nginx-add-weave.sh` 没改。
+- 群说明没确认发出时的重发加了上限：每个群每个北京时间（`GROUP_TIMEZONE`）的一天最多重发一次（`photoNoticeTried`、`photoNoticeResentOn` 两个标记）；确认发出以前照旧不用照片。测试在 `test/wechat-images-gates.test.mjs`。
+- 记下两件事：去掉 APP1 时也去掉了 EXIF 里的照片朝向，微信的副本如果靠它摆正，模型看到的可能是转了的（真机试的时候看；以后可以只留一个只有朝向的 APP1）；过期照片的清理只在桥接发来请求时才跑（事件、定时任务、交照片；VPS 上 Cron 不触发），桥接一直不连时过期的照片行会留到它再连上（是加密的；删账号时照样马上删）。
+

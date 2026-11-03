@@ -104,3 +104,9 @@
 - [x] 「要你决定」三件事写进 PR：私聊要不要等 10 秒、「别记」前面的照片怎么算、先别打开等真机验一次（文档里加了「先在真机上试一次」）。
 - [x] 全部测试、`tsc`、`build` 通过；只追加提交、不强推；再查一次和现在的 `feat/deploy-tencent` 能不能干净合并；等 CI。
 
+### Task 9：第二轮审查
+
+- [x] 打开步骤里去掉重装 nginx（`docs/WECHAT.md`、`deploy/tencent/README.md`、Mac README、PR 正文）；`client_body_buffer_size 1m;` 留给新装，写成可选的加固，改正在用的 nginx 另行、经她同意；`nginx-add-weave.sh` 不动。
+- [x] 群说明重发每个群每个北京时间的一天最多一次；测试。
+- [x] PR 正文记下 EXIF 朝向和过期清理只在桥接请求时跑这两条；真机清单里加「方向对不对」。
+

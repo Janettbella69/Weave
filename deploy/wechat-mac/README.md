@@ -212,7 +212,7 @@ launchctl kickstart -k gui/$(id -u)/com.weave.wechat.bridge
 
 打开以后，@ 它的人（私聊里是你自己）在前 60 秒内或后 10 秒内发的一张照片，会和那句话一起交给模型看。照片交出去之前，这台 Mac 先去掉里面的拍摄时间、GPS 位置这类附加信息。规则和隐私说明见 [`docs/WECHAT.md`](../../docs/WECHAT.md) 的「看图（默认关闭）」。
 
-**打开：先开桥接（这台 Mac），再开网站。** 先确认 PR 里列的新文字，照 `docs/WECHAT.md` 重新装一次 nginx，然后在这台 Mac 上：
+**打开：先开桥接（这台 Mac），再开网站。** 先确认 PR 里列的新文字，然后在这台 Mac 上：
 
 ```
 cd ~/weave-wechat && git pull && bash deploy/wechat-mac/images.sh on
