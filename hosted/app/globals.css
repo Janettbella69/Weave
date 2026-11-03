@@ -262,7 +262,9 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-chat-width{max-width:760px;margin:0 auto}
 .wv-day{align-self:center;margin:12px 0 4px;font-size:12px;color:var(--wv-small)}
 .wv-day:first-child{margin:4px 0}
-.wv-bubble{max-width:75%;min-width:0;padding:12px 18px;border-radius:22px;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
+/* The boards' bubbles take their max-width for the text alone, the padding comes on top (content-box), so a long
+   message is as wide as on the boards: 336px on a 390px phone, not 304. */
+.wv-bubble{box-sizing:content-box;max-width:75%;min-width:0;padding:12px 18px;border-radius:22px;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
 .wv-bubble.is-user{align-self:flex-end;background:var(--wv-blue);color:var(--wv-on-blue);white-space:pre-wrap}
 .wv-bubble.is-assistant{align-self:flex-start;background:var(--wv-bubble)}
 .wv-bubble.is-thinking{color:var(--wv-secondary)}
