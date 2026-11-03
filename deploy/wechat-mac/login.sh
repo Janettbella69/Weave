@@ -25,6 +25,19 @@ authenticated=$(wx_cli --account "$id" account status | json_get authenticated)
 if [ "$authenticated" = true ]; then
   say "小号已经登录着，跳过扫码。"
 else
+  if proxy_fake_ip; then
+    say ""
+    say "！！ 这台 Mac 上的代理软件正在接管所有联网（微信的域名被解析成了 198.18.x.x，这是它的「虚拟 IP」模式）。"
+    say "   wx 不能设代理，但会被它带上：微信看到的会是代理的出口 IP，和手机所在的家里网络对不上，登录风控更容易出问题。"
+    say "   请先把代理软件彻底退出（菜单栏图标 → 退出，不是只关系统代理），再重跑本脚本。"
+    if [ -t 0 ]; then
+      printf '%s' "   明知如此也要现在登录？输入 y 回车继续，直接回车取消："
+      read -r answer || answer=""
+      [ "$answer" = y ] || die "已取消。退出代理软件后重跑 bash $here/login.sh。"
+    else
+      say "   （不是在终端里跑，没法问你，继续。）"
+    fi
+  fi
   say ""
   say "======================================================"
   say "  用小号扫这个二维码"
