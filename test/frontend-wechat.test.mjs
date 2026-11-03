@@ -45,17 +45,34 @@ const appSources=async()=>{
   return Promise.all(files.filter(file=>/\.(jsx?|mjs|tsx?)$/.test(file.pathname)).map(async file=>[file.pathname,await readFile(file,'utf8')]));
 };
 
-test('the sentence has one home, and the old hiding and dead button are gone',async()=>{
+// The WeChat row lives on the settings page (pages/SettingsPage.jsx); the shell around it is checked too.
+const pageSources=async()=>{
   const sources=await appSources();
+  const find=name=>{const found=sources.find(([path])=>path.endsWith(name));assert.ok(found,'the walk reaches '+name);return found[1];};
+  return {sources,workspace:find('/workspace/Workspace.jsx'),settings:find('/workspace/pages/SettingsPage.jsx')};
+};
+
+test('the sentence has one home, and the old hiding and dead button are gone',async()=>{
+  const {sources,workspace,settings}=await pageSources();
   assert.deepEqual(sources.filter(([,text])=>text.includes(NOTE)).map(([path])=>path.split('/').pop()),['wechat-row.mjs']);
-  const workspace=sources.find(([path])=>path.endsWith('/Workspace.jsx'))[1];
-  assert.ok(!workspace.includes('wechatShown'),'the row is no longer hidden');
-  assert.ok(!workspace.includes('disabled={!state.settings.wechat'),'no disabled connect button');
+  for(const page of [workspace,settings]){
+    assert.ok(!page.includes('wechatShown'),'the row is no longer hidden');
+    assert.ok(!page.includes('disabled={!state.settings.wechat'),'no disabled connect button');
+  }
   for(const [path,text] of sources)assert.ok(!text.includes('微信连接暂不可用'),path+' brings back the old unavailable wording');
 });
 
-test('the row follows the server, and the card the row',{todo:'Task 10 moves the WeChat row into SettingsPage.jsx'},async()=>{
-  const workspace=(await appSources()).find(([path])=>path.endsWith('/Workspace.jsx'))[1];
-  assert.ok(workspace.includes('wechatRow(state.settings.wechat)'));
-  assert.ok(workspace.includes('{wechat.card&&'),'the card follows the same state as the row');
+test('the row follows the server, and the card the row',async()=>{
+  const {settings}=await pageSources();
+  assert.ok(settings.includes('wechatRow(state.settings.wechat)'));
+  assert.match(settings,/\{wechat\.card\s*&&/,'the card follows the same state as the row');
+});
+
+test('binding: the one message is what gets copied, a new code replaces the old one, and 断开 asks first',async()=>{
+  const {settings}=await pageSources();
+  assert.match(settings,/writeText\(bindMessage\(/,'「复制绑定消息」 copies 「绑定 码」 and nothing else');
+  for(const name of ['COPY_BIND','BIND_HINT','NEW_CODE','NEW_CODE_NOTE'])assert.match(settings,new RegExp('\\{'+name+'\\}'),name+' is on the page');
+  assert.ok(!settings.includes('在微信中发送'),'the old instruction is not put in front of the message');
+  assert.match(settings,/window\.confirm\(UNBIND_CONFIRM\)/);
+  assert.match(settings,/api\('wechat\/bind'/);assert.match(settings,/api\('wechat\/unbind'/);
 });

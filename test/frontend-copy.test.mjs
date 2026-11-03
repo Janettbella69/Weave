@@ -67,6 +67,29 @@ test('the to-do and goals pages count days in the account\'s zone',async()=>{
   assert.match(goals,/goalsModel\(\{[^}]*\btz\b[^}]*\}\)/);
 });
 
+test('the records page counts days in the account\'s zone and turns months only where the status answer reaches',async()=>{
+  const page=await read('app/workspace/pages/RecordsPage.jsx');
+  assert.match(page,/const tz = state\.profile\.timezone, today = state\.today/);
+  for(const name of ['monthModel','recentNotes','monthBounds'])assert.match(page,new RegExp(name+'\\(\\{[^}]*\\btz\\b[^}]*\\btoday\\b|'+name+'\\(\\{[^}]*\\btoday\\b[^}]*\\btz\\b'),name+' gets the zone and the day');
+  assert.match(page,/COPY\.earliest/,'the first month says why there is nothing before it');
+});
+
+test('the settings page saves the zone that was picked, with the whole profile, and never the browser\'s',async()=>{
+  const page=await read('app/workspace/pages/SettingsPage.jsx');
+  assert.match(page,/api\('profile', profileForSave\(/);
+  assert.match(page,/zoneOptions\(/);
+  assert.ok(!/Intl\.DateTimeFormat\(\)/.test(page),'the browser\'s zone is not read here');
+});
+
+test('the settings page keeps export, the privacy page and deleting the account as they were',async()=>{
+  const page=await read('app/workspace/pages/SettingsPage.jsx');
+  assert.match(page,/href="\/api\/export"/);
+  assert.match(page,/href="\/privacy"/);
+  assert.match(page,/window\.confirm\(COPY\.deleteConfirm\)/,'deleting asks first, with the old question');
+  assert.match(page,/api\('account\/delete', \{confirm: true\}\)/);
+  assert.match(page,/authKind === 'guest' \? '\/api\/auth\/guest\/signout\?return_to=%2F' : '\/'/,'a guest is signed out, anyone else goes home');
+});
+
 test('a new goal is talked over in the chat, with its category',async()=>{
   const goals=await read('app/workspace/pages/GoalsPage.jsx');
   assert.match(goals,/sendChat\(props,\s*COPY\.goalStarter\(/);

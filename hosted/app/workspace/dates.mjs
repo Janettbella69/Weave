@@ -47,6 +47,30 @@ export function dayRange(from, to) {
   return days;
 }
 
+const MONTH = /^(\d{4})-(\d{2})$/;
+
+// The year and month of a month as 'YYYY-MM' ('2026-10'); null when it is not a month.
+function monthParts(month) {
+  const match = MONTH.exec(typeof month === 'string' ? month : '');
+  if (!match) return null;
+  const year = Number(match[1]), number = Number(match[2]);
+  return number >= 1 && number <= 12 ? {year, number} : null;
+}
+
+// The month `n` months on from `month` ('2026-10', -1 -> '2026-09'); '' when `month` is not a month.
+export function addMonths(month, n) {
+  const parts = monthParts(month);
+  if (!parts) return '';
+  const index = parts.year * 12 + parts.number - 1 + n;
+  return String(Math.floor(index / 12)).padStart(4, '0') + '-' + String((index % 12 + 12) % 12 + 1).padStart(2, '0');
+}
+
+// '2026 年 10 月': the month over the records calendar (v3-Records).
+export function formatMonth(month) {
+  const parts = monthParts(month);
+  return parts ? parts.year + ' 年 ' + parts.number + ' 月' : '';
+}
+
 // '11 月 2 日'
 export function formatDay(day) {
   const ms = dayMs(day);

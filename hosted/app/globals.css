@@ -446,6 +446,121 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-goal-talk .wv-composer-box{padding:2px 2px 2px 16px;border-radius:25px;box-shadow:none}
 }
 
+/* 记录 (pages/RecordsPage.jsx): the habit buttons (the first run's .wv-option pills), the three numbers, the month's
+   calendar and the newest records */
+.wv-page-column.is-records{max-width:1080px;gap:22px}
+.wv-records-line{font-size:15px;color:var(--wv-secondary);overflow-wrap:anywhere}
+.wv-pills{display:flex;flex-wrap:wrap;gap:10px}
+.wv-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}
+.wv-stat{display:flex;flex-direction:column;gap:6px;min-width:0;padding:18px 20px;border-radius:20px;background:var(--wv-block)}
+.wv-stat dt{font-size:13px;color:var(--wv-secondary)}
+.wv-stat dd{margin:0;font-size:26px;font-weight:600;line-height:1.3}
+.wv-stat-unit{font-size:15px;font-weight:400;color:var(--wv-secondary)}
+.wv-records-body{display:flex;flex-wrap:wrap;align-items:flex-start;gap:20px}
+.wv-calendar{flex:1.2 1 420px;min-width:0;display:flex;flex-direction:column;gap:16px;padding:20px 24px;border-radius:24px;background:var(--wv-block)}
+.wv-calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wv-calendar-head h2{font-size:17px}
+.wv-calendar-note{margin-top:-6px;font-size:13px;color:var(--wv-secondary);text-align:center}
+/* A round 44px button with an icon: the months here, deleting a reminder on the assistant's home page */
+.wv-round{flex:none;display:flex;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:1px solid var(--wv-field);border-radius:999px;background:#FFFFFF;color:var(--wv-ink)}
+@media(hover:hover){.wv-round:hover:not([aria-disabled=true]){background:#F2F2F2}}
+.wv-round[aria-disabled=true]{opacity:.4;cursor:default}
+.wv-weekdays,.wv-cal-days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.wv-weekdays{font-size:13px;color:var(--wv-secondary);text-align:center}
+.wv-cal-days{list-style:none;margin:0;padding:0}
+.wv-cal-day{position:relative;display:flex;align-items:center;justify-content:center;height:44px;border-radius:12px;font-size:14px;line-height:1}
+.wv-cal-day.is-before{background:var(--wv-pill);color:var(--wv-secondary)}
+.wv-cal-day.is-done{background:var(--wv-link);color:#FFFFFF;font-weight:600}
+.wv-cal-day.is-missed{border:2px solid var(--wv-missed);background:#FFFFFF;font-weight:600}
+/* Before the status window: nothing is known, so it is drawn plain, like a day that is not there */
+.wv-cal-day.is-unknown{color:var(--wv-small)}
+/* Today, until it is done (the dashed ring of the goals page's today dot) */
+.wv-cal-day.is-today{border:2px dashed var(--wv-link)}
+.wv-legend{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--wv-secondary)}
+.wv-legend li{display:flex;align-items:center;gap:6px}
+.wv-swatch{flex:none;width:14px;height:14px;border-radius:4px}
+.wv-swatch.is-done{background:var(--wv-link)}
+.wv-swatch.is-missed{border:2px solid var(--wv-missed);background:#FFFFFF}
+.wv-swatch.is-before{border:1px solid #D6D6D6;background:var(--wv-pill)}
+.wv-notes{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:4px;padding:20px 24px;border-radius:24px;background:var(--wv-block)}
+.wv-notes h2{margin-bottom:6px;font-size:17px}
+.wv-notes ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.wv-note{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:16px;background:#FFFFFF}
+.wv-note-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wv-note-date{font-size:14px;font-weight:600}
+.wv-source{flex:none;padding:2px 10px;border-radius:999px;font-size:12px;line-height:1.6}
+.wv-source.is-web{background:var(--wv-chip);color:var(--wv-on-blue)}
+.wv-source.is-agent{background:var(--wv-pill);color:var(--wv-ink)}
+.wv-note p{font-size:15px;line-height:1.6;overflow-wrap:anywhere}
+@media(max-width:719.98px){
+  .wv-page-column.is-records{gap:18px}
+  .wv-records-line{font-size:14px}
+  .wv-stats{gap:8px}
+  .wv-stat{gap:4px;padding:14px 12px;border-radius:18px}
+  .wv-stat dt{font-size:12px}
+  .wv-stat dd{font-size:22px}
+  .wv-stat-unit{font-size:13px}
+  .wv-records-body{gap:16px}
+  .wv-calendar{gap:12px;padding:16px 14px;border-radius:20px}
+  .wv-weekdays,.wv-cal-days{gap:4px}
+  .wv-cal-day{height:40px;border-radius:10px}
+  .wv-notes{padding:16px;border-radius:20px}
+}
+
+/* 设置 (pages/SettingsPage.jsx): three grey blocks of rows */
+.wv-page-column.is-settings{gap:20px}
+.wv-page-column.is-settings>.wv-page-title{margin-bottom:4px}
+.wv-settings{display:flex;flex-direction:column;padding:8px 24px;border-radius:24px;background:var(--wv-block)}
+.wv-settings>h2{margin:16px 0 4px;font-size:17px}
+.wv-settings.is-data{padding-bottom:20px}
+.wv-settings.is-data>h2{margin-bottom:8px}
+.wv-setting+.wv-setting{border-top:1px solid #EAEAEA}
+.wv-setting-row{display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:16px 0}
+.wv-setting-row.is-split{justify-content:space-between;padding:14px 0}
+.wv-setting-icon{flex:none;display:flex;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid var(--wv-field);border-radius:12px;background:#FFFFFF;color:var(--wv-ink)}
+.wv-setting-icon.is-letter{font-size:20px;font-weight:700}
+.wv-setting-text{flex:1 1 240px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.wv-setting-name{font-size:16px;font-weight:600}
+.wv-setting-note{display:flex;align-items:center;gap:6px;font-size:14px;line-height:1.5;color:var(--wv-secondary);overflow-wrap:anywhere}
+.wv-connected-mark.is-16{width:16px;height:16px}
+.wv-connected-mark.is-20{width:20px;height:20px}
+.wv-setting-actions{display:flex;flex-wrap:wrap;gap:10px}
+/* At the end of a row, and at its right edge when the row wraps on a narrow screen */
+.wv-setting-row>.wv-setting-actions{margin-left:auto}
+.wv-badge{flex:none;padding:6px 12px;border-radius:999px;background:#EAEAEA;font-size:13px;line-height:1.3}
+.wv-setting-label{font-size:15px}
+.wv-setting-link{display:inline-flex;align-items:center;min-height:44px;font-size:15px}
+.wv-select{position:relative;display:inline-flex;align-items:center}
+.wv-select select{min-height:44px;min-width:160px;margin:0;padding:0 40px 0 16px;border:1px solid var(--wv-field);border-radius:999px;background:#FFFFFF;color:var(--wv-ink);font-size:15px;-webkit-appearance:none;appearance:none}
+.wv-select svg{position:absolute;right:14px;color:var(--wv-secondary);pointer-events:none}
+.wv-settings-text{margin-bottom:16px;font-size:15px;line-height:1.7}
+/* The Notion pages to pick from, under the row */
+.wv-picker{display:flex;flex-direction:column;gap:8px;padding:0 0 16px}
+.wv-picker-title{font-size:14px;color:var(--wv-secondary)}
+.wv-picker ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.wv-picker-page{width:100%;min-height:48px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border:1px solid var(--wv-field);border-radius:16px;background:#FFFFFF;color:var(--wv-ink);font-size:15px;line-height:1.4;text-align:left}
+.wv-picker-page:hover:not(:disabled){border-color:var(--wv-link)}
+.wv-picker-page:disabled{cursor:default}
+.wv-picker-name{min-width:0;overflow-wrap:anywhere}
+.wv-picker-state{flex:none;font-size:13px;color:var(--wv-link)}
+.wv-picker-page:disabled .wv-picker-state{color:var(--wv-secondary)}
+/* The WeChat binding code: the one message to send, which a tap selects whole, and what to do with it */
+.wv-bind{display:flex;flex-direction:column;gap:12px;margin-bottom:16px;padding:16px 18px;border-radius:20px;background:#FFFFFF}
+.wv-bind-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.wv-bind-message{flex:1 1 260px;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:15px;line-height:1.5;word-break:break-all;-webkit-user-select:all;user-select:all}
+.wv-bind-hint{font-size:14px;line-height:1.6;color:var(--wv-secondary)}
+.wv-bind-renew{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:13px;color:var(--wv-secondary)}
+@media(max-width:719.98px){
+  .wv-page-column.is-settings{gap:16px}
+  .wv-settings{padding:4px 18px;border-radius:20px}
+  .wv-settings>h2{margin:14px 0 2px}
+  .wv-settings.is-data{padding-bottom:18px}
+  .wv-setting-row{gap:12px;padding:14px 0}
+  .wv-setting-text{flex-basis:180px}
+  .wv-settings-text{font-size:14px}
+  .wv-bind{padding:14px}
+}
+
 @media(prefers-reduced-motion:reduce){
   *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
 }

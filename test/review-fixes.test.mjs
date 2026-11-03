@@ -150,6 +150,6 @@ test('product copy no longer makes the claims the code contradicts',async()=>{
   const privacy=await read('privacy/page.tsx');for(const text of ['DeepSeek','Notion','删除','导出'])assert.ok(privacy.includes(text),text);
 });
 
-test('the workspace still offers to delete the account',{todo:'Task 10 moves account deletion into SettingsPage.jsx'},async()=>{
+test('the workspace still offers to delete the account',async()=>{
   assert.ok((await workspaceText()).includes('account/delete'));
 });

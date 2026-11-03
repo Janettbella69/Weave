@@ -24,9 +24,13 @@ const TEXT = {
   // records
   recordsEmpty: '还没有记录。在待办里打勾，或者跟 Weave 说一声，这里就会有。', earliest: '更早的记录先看不了。', longest: '最长一次连续', doubleMiss: '连着错过两天',
   recent: '最近记下的', sourceWeb: '你在网页上记的', sourceAgent: 'Weave 帮你记的', done: '做到了', missed: '没做', notStarted: '还没开始',
+  pickHabit: '选一个习惯', prevMonth: '上个月', nextMonth: '下个月', dayUnit: '天', timeUnit: '次',
   // settings
   connections: '连接', time: '时间', zoneLabel: '所在地时间', whenProactive: 'Weave 什么时候主动找你', goAgent: '去助理主页看', privacy: '数据与隐私',
   privacyText: '你的记录只在你的账号里，别人看不到。聊天内容会发给 DeepSeek 生成回复。', export: '导出我的数据', deleteAccount: '删除账号',
+  notion: 'Notion', notionIntro: '把计划和记录存进你自己的 Notion。', connectNotion: '连接 Notion', disconnect: '断开', wechat: '微信群', connect: '连接', privacyLink: '隐私说明',
+  // settings, carried over word for word from the settings page the v3 one replaces (not on the boards)
+  changePage: '更换页面', pickPage: '选择用于 Weave 长期记忆的页面', choosePage: '选择此页面', deleteConfirm: '确定要永久删除账号吗？你的聊天、计划和日程都会被删除，无法恢复。',
   // the assistant's home page
   remindersTab: '提醒', memoryTab: '记忆', notLive: '主动提醒还没开通。现在 Weave 只会在你交代的时间提醒你一次；开通以后，它会按下面的安排主动来找你。',
   once: '只响一次', daily: '每天', weekly: '每周', monthly: '每月', noneScheduled: '暂时没有安排。',
@@ -56,6 +60,12 @@ const CALLS = [
   ['goalIntro', ['健康'], '好，聊聊「健康」。你想做到什么？说说现在的情况就行，我帮你拆成每天的一小步。'],
   ['goalStarter', ['健康', '想睡得早一点'], '我想定一个「健康」方面的目标：想睡得早一点'],
   ['monthDone', [10], '10 月做到'],
+  ['calendarLabel', [10], '10 月日历'],
+  ['dayState', ['10 月 12 日', '做到了'], '10 月 12 日：做到了'],
+  ['since', ['10 月 12 日'], '从 10 月 12 日开始'],
+  ['outOf', [20], '/ 20 天'],
+  ['outOf', [0], '/ 0 天'],
+  ['notionPage', ['习惯日记'], '用到的页面：习惯日记'],
   ['firstRunPick', ['饭后走走'], '好，就从「饭后走走」开始。'],
   ['firstRunStep', ['吃完饭，穿上鞋走到楼下'], '第一步可以小到：吃完饭，穿上鞋走到楼下。'],
   ['firstRunStarter', ['饭后走走', '吃完饭，穿上鞋走到楼下'], '我想从「饭后走走」开始，第一步：吃完饭，穿上鞋走到楼下。'],
@@ -77,7 +87,7 @@ test('COPY is frozen, lists and all', () => {
   assert.ok(Object.isFrozen(COPY));
   assert.throws(() => { COPY.chat = 'x'; }, TypeError);
   assert.throws(() => { COPY.extra = 'x'; }, TypeError);
-  for (const list of [COPY.zones, COPY.firstRunOptions]) assert.ok(Object.isFrozen(list) && list.every(Object.isFrozen));
+  for (const list of [COPY.zones, COPY.firstRunOptions, COPY.weekdays]) assert.ok(Object.isFrozen(list) && list.every(Object.isFrozen));
 });
 
 test('every plain sentence is the one on the board or in the spec, and there are no others', () => {
@@ -113,6 +123,20 @@ test('the six zones, in order, are real time zones', () => {
     {value: 'Europe/London', label: '伦敦时间'}, {value: 'Asia/Tokyo', label: '东京时间'}, {value: 'Asia/Singapore', label: '新加坡时间'},
   ]);
   assert.ok(COPY.zones.every(zone => isValidTimezone(zone.value)));
+});
+
+test('the records calendar\'s weekdays, Monday first, as on the board', () => {
+  assert.deepEqual(COPY.weekdays, ['一', '二', '三', '四', '五', '六', '日']);
+});
+
+test('the lines the pages put together read as the boards have them', () => {
+  // 记录: the line under the title, a number with its unit, what a day of the calendar says
+  assert.equal([COPY.forGoal('每天动一动'), COPY.since('10 月 12 日')].join(' · '), '为了「每天动一动」 · 从 10 月 12 日开始');
+  assert.equal(COPY.startedOn('健康', '10 月 12 日'), '健康 · ' + COPY.since('10 月 12 日'), 'the goals page says when a goal began the same way');
+  assert.equal('16 ' + COPY.outOf(20), '16 / 20 天');
+  assert.equal(COPY.dayState('10 月 1 日', COPY.notStarted), '10 月 1 日：还没开始');
+  // 设置: the connected Notion row
+  assert.equal([COPY.connected, COPY.notionPage('习惯日记')].join(' · '), '已连接 · 用到的页面：习惯日记');
 });
 
 test('the first run offers five small things; the fifth is the person\'s own', () => {

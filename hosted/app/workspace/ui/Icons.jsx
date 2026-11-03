@@ -10,6 +10,7 @@ export {Calendar, MessageCircle, Settings2, SquareCheck, Target};
 export {
   ArrowUp,                    // send
   Check,                      // a ticked box
+  ChevronDown,                // the zone choice in settings
   ChevronLeft, ChevronRight,
   Clock,                      // 「HH:MM · Weave 主动来问」, and the reminders tab
   Zap,                        // 「已连接」

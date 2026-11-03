@@ -3,9 +3,14 @@
 // Every sentence comes from the v3 design boards or from the spec (docs/superpowers/specs/2026-11-03-frontend-v3-design.md,
 // section 3 and Appendix A-4), written as it is there. A value is a string, or a function that puts the changing part
 // (a count, a name, a date) into the sentence. Sentences marked 草稿文案 are the new ones the spec lists for the owner
-// to confirm (A-4, and the one first message for a goal); after she has, they do not change.
+// to confirm (A-4, and the one first message for a goal); after she has, they do not change. A few in settings, marked,
+// are not on the boards: they come word for word from the settings page the v3 one replaces, with the flow they belong
+// to (the Notion page picker, and the question before an account is deleted).
 //
 // The WeChat row has its own file, wechat-row.mjs, because it carries the wording the owner already approved.
+
+// 「从 10 月 12 日开始」: when a goal (目标) or a habit (记录) began.
+const since = date => '从 ' + date + '开始';
 
 const freeze = value => {
   if (value && typeof value === 'object') { Object.values(value).forEach(item => freeze(item)); Object.freeze(value); }
@@ -71,7 +76,7 @@ export const COPY = freeze({
   everyDay: name => '每天：' + name,
   last7: '最近 7 天',
   // The boards write 「从 10 月 12 日开始」, with no space before 开始.
-  startedOn: (category, date) => category + ' · 从 ' + date + '开始',
+  startedOn: (category, date) => category + ' · ' + since(date),
   // `date` is already written out ('11 月 1 日'). `source` is 'web' or 'agent'; a record with no source is from before the
   // web could record anything, so it was Weave's.
   latest: (date, source, note) => '最近：' + date + '，' + (source === 'web' ? '你在网页上记下' : 'Weave 帮你记下') + '「' + note + '」',
@@ -99,6 +104,21 @@ export const COPY = freeze({
   done: '做到了',
   missed: '没做',
   notStarted: '还没开始',
+  // The line under the title: 为了「每天动一动」 · 从 10 月 12 日开始 (COPY.forGoal, then this)
+  since,
+  // The habit buttons' accessible name, and the month buttons' (the board's aria-labels)
+  pickHabit: '选一个习惯',
+  prevMonth: '上个月',
+  nextMonth: '下个月',
+  // The calendar: its accessible name (「10 月日历」), the weekdays over it, Monday first, and what a day says to a screen
+  // reader: 「10 月 12 日：做到了」 (the board and its script)
+  calendarLabel: month => month + ' 月日历',
+  weekdays: ['一', '二', '三', '四', '五', '六', '日'],
+  dayState: (date, state) => date + '：' + state,
+  // The units of the three numbers: 16 / 20 天, 5 天, 0 次 (the board's script)
+  outOf: n => '/ ' + n + ' 天',
+  dayUnit: '天',
+  timeUnit: '次',
 
   // Settings (设置)
   connections: '连接',
@@ -118,6 +138,23 @@ export const COPY = freeze({
   privacyText: '你的记录只在你的账号里，别人看不到。聊天内容会发给 DeepSeek 生成回复。',
   export: '导出我的数据',
   deleteAccount: '删除账号',
+  privacyLink: '隐私说明',
+  // The Notion row (the board): 「把计划和记录存进你自己的 Notion。」, or connected, 「已连接 · 用到的页面：习惯日记」
+  notion: 'Notion',
+  notionIntro: '把计划和记录存进你自己的 Notion。',
+  notionPage: title => '用到的页面：' + title,
+  connectNotion: '连接 Notion',
+  disconnect: '断开',
+  // The WeChat row: its name on the board, and its button (spec section 3.5 calls it 「连接」)
+  wechat: '微信群',
+  connect: '连接',
+  // Not on the boards: the Notion page picker of the settings page this one replaces (#18, the one-click Notion
+  // connection, which spec section 3.5 keeps), word for word ...
+  changePage: '更换页面',
+  pickPage: '选择用于 Weave 长期记忆的页面',
+  choosePage: '选择此页面',
+  // ... and its question before an account is deleted, word for word.
+  deleteConfirm: '确定要永久删除账号吗？你的聊天、计划和日程都会被删除，无法恢复。',
 
   // The assistant's home page (助理主页)
   remindersTab: '提醒',

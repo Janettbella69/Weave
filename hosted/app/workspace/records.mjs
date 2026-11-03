@@ -30,6 +30,13 @@ export function newestFirst(a, b) {
   return x === y ? 0 : x < y ? 1 : -1;
 }
 
+// The habits for the records page's buttons: the one added last first. Habits added at the same moment keep the order
+// they were given in; one with no time of its own comes last. A new list: the one given is left as it is.
+export function newestHabitsFirst(habits) {
+  const when = habit => (habit && typeof habit.createdAt === 'string' ? habit.createdAt : '');
+  return (Array.isArray(habits) ? habits : []).slice().sort((a, b) => (when(a) === when(b) ? 0 : when(a) < when(b) ? 1 : -1));
+}
+
 const MONTH = /^(\d{4})-(\d{2})$/;
 const pad = n => String(n).padStart(2, '0');
 

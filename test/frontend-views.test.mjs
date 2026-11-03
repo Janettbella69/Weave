@@ -1,12 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
+import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue,formatMonth,addMonths} from '../hosted/app/workspace/dates.mjs';
 import {todoModel} from '../hosted/app/workspace/todo.mjs';
 import {habitKey,reminderKey,withChecks,settleChecks} from '../hosted/app/workspace/todo-checks.mjs';
 import {CATEGORY_LABEL,goalsModel,goalWordsLimit} from '../hosted/app/workspace/goals-view.mjs';
 import {MESSAGE_MAX_LENGTH} from '../hosted/app/workspace/chat-input.mjs';
-import {monthModel,recentNotes,monthBounds} from '../hosted/app/workspace/records.mjs';
+import {monthModel,recentNotes,monthBounds,newestHabitsFirst} from '../hosted/app/workspace/records.mjs';
+import {zoneOptions,profileForSave,bindCodeTimeout,BIND_CODE_LIFETIME} from '../hosted/app/workspace/settings-view.mjs';
 import {withSeparators,isProactive,proactiveLabel} from '../hosted/app/workspace/chat-view.mjs';
 import {retryOnConflict} from '../hosted/app/workspace/retry.mjs';
 import {ApiError} from '../hosted/app/workspace/api-client.mjs';
@@ -83,6 +84,22 @@ test('formatHeaderShort is the date of the phone\'s top bar, as on the phone boa
   assert.deepEqual(['2026-11-03','2026-11-04','2026-11-05','2026-11-06','2026-11-07','2026-11-08'].map(day=>formatHeaderShort(day).split(' · ')[1]),['周二','周三','周四','周五','周六','周日']);
   assert.equal(formatHeaderShort('2027-01-01'),'1 月 1 日 · 周五');
   for(const bad of ['','2026-02-30','soon',undefined])assert.equal(formatHeaderShort(bad),'','nothing to show for '+String(bad));
+});
+
+test('formatMonth is the records page\'s month title, as on the board',()=>{
+  assert.equal(formatMonth('2026-10'),'2026 年 10 月');
+  assert.equal(formatMonth('2027-01'),'2027 年 1 月','no leading zero');
+  for(const bad of ['2026-13','2026-00','2026-1','soon','',undefined,null])assert.equal(formatMonth(bad),'',String(bad));
+});
+
+test('addMonths turns the month, over the turn of the year both ways',()=>{
+  assert.equal(addMonths('2026-10',-1),'2026-09');
+  assert.equal(addMonths('2026-10',1),'2026-11');
+  assert.equal(addMonths('2026-12',1),'2027-01');
+  assert.equal(addMonths('2026-01',-1),'2025-12');
+  assert.equal(addMonths('2026-10',0),'2026-10');
+  assert.equal(addMonths('2026-10',-13),'2025-09');
+  for(const bad of ['2026-13','2026-1','',undefined])assert.equal(addMonths(bad,1),'',String(bad));
 });
 
 test('formatTime is the clock in the person\'s zone',()=>{
@@ -539,6 +556,49 @@ test('monthBounds: from the month the status window starts in to the month of to
   assert.deepEqual(monthBounds({completions:[],today:'2026-03-01'}),{earliest:'2025-12',latest:'2026-03'},'over New Year, the other way');
   for(const today of ['','2026-1-2','soon',undefined])assert.deepEqual(monthBounds({completions:[],today}),{earliest:'',latest:''},String(today));
   assert.deepEqual(monthBounds({}),{earliest:'',latest:''});
+});
+
+test('newestHabitsFirst: the habit added last comes first; the list it was given stays as it was',()=>{
+  const habits=[habit('h:a','a',{createdAt:'2026-10-12T03:00:00.000Z'}),habit('h:b','b',{createdAt:'2026-10-20T03:00:00.000Z'}),habit('h:c','c',{createdAt:'2026-10-20T03:00:00.000Z'}),habit('h:d','d',{createdAt:undefined})];
+  assert.deepEqual(newestHabitsFirst(habits).map(h=>h.id),['h:b','h:c','h:a','h:d'],'newest first; added at the same moment, in the order given; with no date, last');
+  assert.deepEqual(habits.map(h=>h.id),['h:a','h:b','h:c','h:d']);
+  assert.deepEqual(newestHabitsFirst([]),[]);assert.deepEqual(newestHabitsFirst(undefined),[]);
+});
+
+// ---- 设置 ----
+
+test('zoneOptions: the six zones in order, and the account\'s own zone once at the end when it is none of them',()=>{
+  const six=COPY.zones.map(zone=>zone.value);
+  assert.deepEqual(zoneOptions('Asia/Shanghai').map(o=>o.value),six);
+  assert.deepEqual(zoneOptions('America/Los_Angeles').map(o=>o.value),six,'a zone on the list is not added again');
+  assert.deepEqual(zoneOptions('Asia/Shanghai').map(o=>o.label),['北京时间','洛杉矶时间','纽约时间','伦敦时间','东京时间','新加坡时间']);
+  const berlin=zoneOptions('Europe/Berlin');
+  assert.deepEqual(berlin.map(o=>o.value),[...six,'Europe/Berlin']);
+  assert.equal(berlin.filter(o=>o.value==='Europe/Berlin').length,1,'once');
+  assert.deepEqual(berlin.at(-1),{value:'Europe/Berlin',label:'Europe/Berlin'},'a zone with no name on the boards is shown as it is stored');
+  for(const bad of ['','Mars/Olympus',undefined,null,42])assert.deepEqual(zoneOptions(bad).map(o=>o.value),six,'nothing to add for '+String(bad));
+  assert.ok(Object.isFrozen(COPY.zones),'COPY.zones is left as it was');
+});
+
+test('profileForSave: the whole profile with the zone that was picked, and only the free times still to come',()=>{
+  const now=Date.parse('2026-11-02T12:00:00Z');
+  const profile={name:'养成宝',goal:'早点睡',preferences:'晚上别找我',timezone:'America/Los_Angeles',activities:['散步'],revision:7,
+    slots:['2026-11-01T12:00:00.000Z','2026-11-02T12:00:00.000Z','2026-11-03T09:30:00.000Z','2026-11-04T01:00:00+08:00']};
+  const saved=profileForSave(profile,{timezone:'Asia/Shanghai',now});
+  assert.deepEqual(saved,{name:'养成宝',goal:'早点睡',preferences:'晚上别找我',timezone:'Asia/Shanghai',activities:['散步'],revision:7,
+    slots:['2026-11-03T09:30:00.000Z','2026-11-03T17:00:00.000Z']},'past and present times are dropped; the rest are ISO, as the server keeps them');
+  assert.equal(profile.timezone,'America/Los_Angeles','the profile it was given is left as it was');
+  assert.equal(profile.slots.length,4);
+  assert.deepEqual(profileForSave({...profile,slots:undefined},{timezone:'Asia/Tokyo',now}).slots,[],'no times at all is an empty list');
+});
+
+test('bindCodeTimeout: the binding code stays until it expires, never longer than a code lives',()=>{
+  const now=Date.parse('2026-11-02T12:00:00Z');
+  assert.equal(BIND_CODE_LIFETIME,15*60*1000);
+  assert.equal(bindCodeTimeout(now+15*60*1000,now),15*60*1000,'a code just issued: 15 minutes');
+  assert.equal(bindCodeTimeout(now+5*60*1000,now),5*60*1000);
+  assert.equal(bindCodeTimeout(now+60*60*1000,now),BIND_CODE_LIFETIME,'a clock behind the server\'s does not keep it longer');
+  for(const odd of [now,now-1000,undefined,null,'soon',NaN])assert.equal(bindCodeTimeout(odd,now),BIND_CODE_LIFETIME,'a clock ahead of the server\'s, or no expiry, still shows it for its life: '+String(odd));
 });
 
 // ---- 聊天 ----
