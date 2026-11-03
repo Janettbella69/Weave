@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {hash} from '../hosted/lib/weave/crypto.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {GROUP_ENABLED_TEXT, GROUP_PHOTO_TEXT, wechatPhotosShown} from '../hosted/lib/weave/wechat.mjs';
-import {setup, reply, ROOM, bridgeToken, start} from './helpers/wechat-sdk.mjs';
+import {setup, reply, ROOM, bridgeToken, start, SERVICE_TOKEN} from './helpers/wechat-sdk.mjs';
 
 const jpeg = (size = 4000) => { const b = new Uint8Array(size).fill(9); b.set([0xff, 0xd8, 0xff, 0xe0]); return b; };
 const PHOTO = jpeg();
@@ -174,4 +174,20 @@ test('a notice that keeps coming back unconfirmed is sent again at most once a B
   assert.ok(nextDay, 'a new Beijing day allows one more re-send');
   await h.bridge('receipt', {id: nextDay.id, state: 'accepted'});
   assert.equal((await ask('五')).data.photo, 'upload', 'photos only once a notice is confirmed');
+});
+
+test('the Agent service\'s server tick (/api/internal/tick, every minute since #35) sweeps expired photos too, without any bridge request', async () => {
+  const h = await setup({images: true});
+  await h.bind();
+  const text = h.message('这顿多少卡', {photo: 'ready'});
+  await h.bridge('events', text);
+  await h.photo(text.id, PHOTO);
+  assert.ok(photoRows(h) > 0);
+  const tick = () => h.call(null, 'internal/tick', {}, {Authorization: 'Bearer ' + SERVICE_TOKEN});
+  h.setNow(h.now + 9 * 60_000);
+  assert.equal((await tick()).status, 200);
+  assert.ok(photoRows(h) > 0, 'not expired yet: kept');
+  h.setNow(h.now + 60_000);
+  assert.equal((await tick()).status, 200);
+  assert.equal(photoRows(h), 0, 'expired: swept by the server tick alone');
 });
