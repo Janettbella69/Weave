@@ -125,3 +125,22 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs weave-w
 ```
 
 第一条是补丁救回来的次数（不是 0 就说明它在工作，每一次原来都会卡 5 秒以上）；第二条列出超过 10 秒的请求，修好以后不应该再有新的。
+
+## 网站一直 502
+
+现象：网站一直 502，`weave-web-1` 却显示在运行。原因：wrangler 底下的 workerd 进程内存越用越多，容器到了 768 MB 上限时被内核杀掉，而 wrangler 不会跟着退出，Docker 以为容器没事，不会重启它（2026-11-03 出过一次，持续约一个半小时；内存为什么涨还没查清楚）。
+
+现在容器里有个看门狗（`hosted/scripts/web-watchdog.sh`）：每 10 秒请求一次本机的网站，网站第一次回答以后开始盯着；之后连续 3 次没有正常回答，就让 wrangler 退出，Docker 会自动把容器重新拉起来。它还每 5 分钟在日志里记一行内存。看它做过什么、内存怎么涨（都是只读命令）：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs -t weave-web-1 2>&1 | grep "weave watchdog"; docker inspect -f "自动重启过 {{.RestartCount}} 次" weave-web-1'
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs -t weave-web-1 2>&1 | grep "weave memory" | tail -30'
+```
+
+第二条每行带时间：`容器` 是整个网站容器占的内存（含文件缓存，比 `docker stats` 的数字高一些），`workerd` 是所有 workerd 进程加起来占的内存，有两个时括号里分开列（11-03 那两次，被杀的 workerd 都涨到了四百 MB 上下）。
+
+网站 502 超过五分钟还没好，就手动重启网站容器，数据不会丢：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker restart weave-web-1'
+```

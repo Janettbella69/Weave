@@ -138,7 +138,7 @@ test('a group capability cannot use personal tools', async () => {
   assert.equal((await h.read()).people[h.id].habits, undefined);
 });
 
-test('send_message in a group run speaks to that group only, once per call, and counts against the group\'s daily limit', async () => {
+test('send_message in a group run speaks to that group only, once per call, and has no daily cap', async () => {
   const h = await setup();
   await h.enableGroup();
   const token = await groupCapability(h);
@@ -148,14 +148,9 @@ test('send_message in a group run speaks to that group only, once per call, and 
   const jobs = await groupJobs(h);
   assert.deepEqual(jobs.map(j => [j.threadId, j.text, j.mentions]), [[ROOM, '补一句：大家都很棒', undefined]]);
   assert.ok(!JSON.stringify((await h.read()).people[h.id].messages).includes('大家都很棒'));
-  const store = new Store(h.db), world = await store.load(), key = Object.keys(world.runtime).find(k => k.startsWith('wechat-group:'));
-  world.runtime[key].replyCount = 29;
-  world.runtime[key].replyDay = new Date(h.now).toISOString().slice(0, 10);
-  await store.save(world);
-  assert.equal((await h.tool('send_message', {text: '第三十次'}, token, 'toolu_2')).data.ok, true);
-  const over = await h.tool('send_message', {text: '第三十一次'}, token, 'toolu_3');
-  assert.equal(over.data.ok, false);
-  assert.match(over.data.text, /上限/);
+  for (let i = 2; i <= 35; i++) assert.equal((await h.tool('send_message', {text: '第' + i + '次'}, token, 'toolu_' + i)).data.ok, true);
+  const last = await h.tool('send_message', {text: '第三十六次'}, token, 'toolu_36');
+  assert.deepEqual(last.data, {ok: true, text: '已发出。'});
 });
 
 test('an owner run on the wechat channel speaks to WeChat; on the web channel it does not', async () => {
@@ -202,4 +197,18 @@ test('deleting the account also deletes the Agent workspaces of the groups it en
   const groupId = await hash(ROOM);
   assert.ok(h.calls.some(c => c.path === '/forget' && c.body.scope === 'group' && c.body.id === groupId));
   assert.ok(h.calls.some(c => c.path === '/forget' && c.body.scope === 'owner' && c.body.id === h.id));
+});
+
+test('群里叫醒带的日期和时间按北京时间，不跟开启者的时区走', async () => {
+  const h = await setup({agent: async () => reply('好')});
+  const store = new Store(h.db), world = await store.load();
+  world.people[h.id].profile.timezone = 'America/Los_Angeles';
+  await store.save(world);
+  await h.enableGroup();
+  await ask(h);
+  assert.equal((await h.tick()).data.processed, 1);
+  const {body} = h.wakes()[0];
+  // 2030-01-01T00:00Z：洛杉矶还是 2029-12-31 16:00，北京已经是 2030-01-01 08:00。
+  assert.equal(body.localDate, '2030-01-01');
+  assert.equal(body.trigger.at, '2030-01-01T08:00:00+08:00');
 });

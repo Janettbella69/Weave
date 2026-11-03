@@ -4,7 +4,7 @@
 // 写入仍走 MCP 工具（agent-tools.mjs），规则在那边。格式见 docs/ARCHITECTURE.md 第 10 节。
 import {Store} from './store.mjs';
 import {verifyCapability} from './capability.mjs';
-import {localClock} from './proactivity.mjs';
+import {localClock, GROUP_TIMEZONE} from './proactivity.mjs';
 import {groupSnapshotMessages} from './wechat.mjs';
 
 // 列的顺序和 hosted/agent-service/snapshot.mjs 的 TABLES 一一对应；新列只往后加（weekly-review 的 stats.py 按列名读，不受影响）。
@@ -19,8 +19,9 @@ const reminderRow = r => ({reminder_id: r.id, text: r.text, due_at: r.dueAt, sta
 
 export function snapshotFor(person, claims, now) {
   const owner = claims.scope === 'owner';
-  // 群那一轮看不到任何人的私人资料，连开启者在哪个时区也不给（today 照给，按开启者的当地日期）。
-  const snapshot = {version: 1, today: localClock(person, now).day, timezone: owner ? person.profile?.timezone ?? null : null, tables: {}, files: {}};
+  // 群那一轮看不到任何人的私人资料，连开启者在哪个时区也不给；群里的 today 按北京时间（GROUP_TIMEZONE）。
+  const clock = owner ? person : {profile: {timezone: GROUP_TIMEZONE}};
+  const snapshot = {version: 1, today: localClock(clock, now).day, timezone: owner ? person.profile?.timezone ?? null : null, tables: {}, files: {}};
   if (!owner) return snapshot;
   snapshot.tables.habits = (person.habits || []).map(habitRow);
   snapshot.tables.completions = (person.completions || []).map(completionRow);

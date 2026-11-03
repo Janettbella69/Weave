@@ -170,10 +170,10 @@ test('messages older than six hours are context only, so a sleeping Mac does not
   assert.equal((await h.bridge('events',h.message('昨晚的私聊',{createdAt:old}))).data.stale,true);
   const seen=[];assert.equal((await schedule(h,'x',seen)).processed,0);assert.equal(seen.length,0);
 });
-test('group replies stop at the daily limit so a noisy group cannot burn the owner budget',async()=>{
+test('group replies have no daily cap: every @ in one day is queued',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));
   let queued=0;for(let i=0;i<32;i++)if((await h.bridge('events',h.group('wxid-bob','@助理 第'+i+'次',true))).data.queued)queued++;
-  assert.equal(queued,30);
+  assert.equal(queued,32);
 });
 test('group context stays bounded',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));

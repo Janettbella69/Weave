@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {hash} from '../hosted/lib/weave/crypto.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {issueCapability} from '../hosted/lib/weave/capability.mjs';
+import {Store} from '../hosted/lib/weave/store.mjs';
 import {setup, secret, ROOM} from './helpers/wechat-sdk.mjs';
 
 test('群范围的快照：group_messages 只有这个群的消息，没有本人的习惯，时区是 null', async () => {
@@ -24,4 +25,25 @@ test('群范围的快照：group_messages 只有这个群的消息，没有本�
   assert.equal(data.timezone, null, '群里看不到开启者在哪个时区');
   assert.deepEqual(data.files, {});
   for (const leak of ['私人习惯', 'wxid-', ROOM]) assert.ok(!JSON.stringify(data).includes(leak), leak);
+});
+
+test('群范围快照的 today 按北京时间，不跟开启者的时区走；本人范围照旧按本人时区', async () => {
+  const h = await setup();
+  const store = new Store(h.db), world = await store.load();
+  world.people[h.id].profile.timezone = 'America/Los_Angeles';
+  await store.save(world);
+  await h.enableGroup();
+  // 2030-01-01T00:00Z：洛杉矶还是 2029-12-31，北京已经是 2030-01-01。
+  const snapshot = async scope => {
+    const claims = {owner: h.id, scope, runId: 'run-' + scope, channel: scope === 'group' ? 'wechat' : 'web', direct: true, ...(scope === 'group' ? {group: await hash(ROOM)} : {})};
+    const cap = await issueCapability(secret, claims, h.now);
+    const r = await handleAPI(new Request('https://weave.example/api/internal/agent/snapshot', {headers: {Authorization: 'Bearer ' + cap}}), {db: h.db, secret, now: h.now});
+    assert.equal(r.status, 200);
+    return r.json();
+  };
+  const group = await snapshot('group'), owner = await snapshot('owner');
+  assert.equal(group.today, '2030-01-01');
+  assert.equal(group.timezone, null, '群里仍然看不到开启者在哪个时区');
+  assert.equal(owner.today, '2029-12-31');
+  assert.equal(owner.timezone, 'America/Los_Angeles');
 });
