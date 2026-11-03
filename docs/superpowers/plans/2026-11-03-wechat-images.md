@@ -73,7 +73,7 @@
 
 ### Task 5：Mac 脚本（`deploy/wechat-mac`）
 
-- [x] `lib.sh` 的 `bridge_key_renew`；`login.sh` 用它，开着时保留 `media`；新的 `images.sh on|off`。
+- [x] `lib.sh` 的换密钥函数（第一轮审查后拆成 `bridge_key_create` 和 `bridge_key_revoke_others`）；`login.sh` 用它，开着时保留 `media`；新的 `images.sh on|off`。
 - [x] 测试（假 wx）：`on` 建带 `media` 的密钥、写开关、不显示密钥、不碰登录；`off` 去掉；`login.sh` 开着时保留；参数不对或没登录时什么都不改；`bash -n` 和可执行。
 - [x] 提交 `feat(deploy): ...`。
 
@@ -89,3 +89,18 @@
 - [x] 推 `feat/wechat-images`，开草稿 PR 到 `feat/deploy-tencent`；PR 正文写在工作区里被忽略的 `.data/`，用完删掉。
 - [x] `git merge-tree --write-tree` 检查和 `origin/fix/wechat-group-no-daily-cap`（PR #31）、`origin/fix/web-watchdog`（PR #32）能不能干净合并。
 - [x] 等 CI（最多 20 分钟），报告结果。
+
+### Task 8：第一轮审查（独立隐私审查，PR #33 头 `004878e`）
+
+- [x] I1：`GROUP_PHOTO_TEXT` 改成照代码说话；群要先被告知才用照片（`photoNotice`、`photosToldAt`，回执确认发出），之前就开启的群第一次 @ 时单独发一次。
+- [x] I2：桥接每个请求带 `X-Weave-Photos: on`，Weave 记在 `runtime:wechat-photos`（最多一分钟写一次，5 分钟过期，不带就马上删）；说明、提示、隐私页都要它；文档改成先 Mac 后服务器、关掉先服务器。
+- [x] I3：桥接交照片前按格式去掉附加信息（白名单，不重新编码），去不掉就不交；用 sips 生成并确认能解码的真图片做样本，种进 EXIF GPS、XMP、IPTC、注释、文本块、结尾之后的数据。
+- [x] M2：照片表加 `owner`，删账号时删；看图开着时每个 `/events` 清过期照片；`/photo` 写 world 放弃时删掉刚存的照片。
+- [x] M3：`weave.nginx.conf` 加 `client_body_buffer_size 1m;`，文档写明要按第 5 节重新装 nginx。
+- [x] M4：换密钥改成先建新的、写 `bridge.env`、重启桥接、再作废旧的；用假 launchctl 测顺序。
+- [x] M5：桥接收到 `upload` 先自己核对配对。
+- [x] M7：standard 没好时最多等 3 秒；日志写交出去的是哪一种。
+- [x] M12：文档里对不上的几处；隐私页那一条写明照片本身不保存、回复照常保存。
+- [x] 「要你决定」三件事写进 PR：私聊要不要等 10 秒、「别记」前面的照片怎么算、先别打开等真机验一次（文档里加了「先在真机上试一次」）。
+- [x] 全部测试、`tsc`、`build` 通过；只追加提交、不强推；再查一次和现在的 `feat/deploy-tencent` 能不能干净合并；等 CI。
+

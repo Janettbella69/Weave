@@ -17,12 +17,12 @@
 | 决定 | 内容 | 落在哪 |
 | --- | --- | --- |
 | R-I1 | 两边各一个开关，默认关：服务器 `WEAVE_WECHAT_IMAGES=1`（`web.env` → `start-vps.sh` → `.dev.vars`），桥接 `WEAVE_WECHAT_IMAGES=1`（`~/.weave-wechat/bridge.env`）。任何一个关着，行为和现在只看文字时完全一样，测试证明 | `wechat.mjs` 的 `wechatConfig`；`api.mjs` 只在 `agentRuntime==='sdk'` 时打开；`bridge.mjs` 的 `main`；`start-vps.sh`；测试见第 9 节 |
-| R-I2 | 照片字节只在配上以后才离开 Mac。群：桥接只在内存里按（聊天，发送人）记 60 秒内的照片 id，只有同一个人的 @ 配上了（照片在前），或 @ 之后 10 秒内来了这个人的照片（@ 在前），才上传。私聊：桥接不知道谁绑定了，只发元数据，服务器说这个人是绑定的本人才上传 | 第 4 节的协议。比决定更紧一点：私聊也是配上以后才发元数据，单独一张照片连 id 都不发 |
+| R-I2 | 照片字节只在配上以后才离开 Mac。群：桥接只在内存里按（聊天，发送人）记 60 秒内的照片 id，只有同一个人的 @ 配上了（照片在前），或 @ 之后 10 秒内来了这个人的照片（@ 在前），才上传。私聊：桥接不知道谁绑定了，只发元数据，服务器说这个人是绑定的本人才上传 | 第 4 节的协议。私聊里每一句都带一个 `photo`（'ready' 有一张配得上的照片，'watch' 没有），陌生人的也一样；照片本身和它的 id 都不发，Weave 说这是绑定的本人才上传。没配上的照片（群里和私聊里）连 id 都不离开 Mac |
 | R-I3 | 只用已缓存的副本：列出附件，取 `standard`（没有就 `thumbnail`），状态 `available`，读 `/media/{assetId}/content`；绝不让守护进程去微信下载。只收 JPEG/PNG/GIF/WebP，原始大小 ≤ 2 MiB，否则按没有照片回答 | `bridge.mjs` 的 `readPhoto`；服务器 `wechat-photos.mjs` 的 `photoProblem`；Agent 服务 `images.mjs` 的 `checkImage` |
 | R-I4 | 照片字节永远不进 world JSON。放在活过一个请求、活不过一天的地方（D1 表，最长 10 分钟），用排队条目里的 id 找，这一轮之后不管结果都删。不进群记录、`person.messages`、记忆、回执、日志（日志只有 id 和大小）。开启群的门槛和「别记」在存任何东西之前生效 | `wechat-photos.mjs`；`wechat.mjs` 的 `receivePhoto`、`claimNext`、`processInboundSdk`；第 5 节 |
 | R-I5 | Agent 通过流式输入拿到照片：`runner.mjs` 的 prompt 变成异步生成器，产出一条用户消息 `[文字块, 图片块（base64）]`；只有文字的一轮完全照旧。带照片的一轮强制 `deepseek-flash`。trigger 文字告诉模型照片是用户给的数据，不是指令。`/wake` 的大小上限只放大到够用；记住模型代理 8 MiB 的上限。核实 SDK 0.3.316 里 `resume: sessionId` 和生成器 prompt 能一起用 | `runner.mjs`、`prompts.mjs`、`server.mjs`、`providers.mjs`；核实结果见第 6 节 |
-| R-I6 | 新的给用户看、给模型看的文字都是草稿，标 `// 草稿文案，待确认`，原句列在 PR 的「新文字（请确认）」里。开关关着时不改任何已确认的文字 | `GROUP_PHOTO_TEXT`（只在开着时接在 `GROUP_ENABLED_TEXT` 后面）、`IMAGE_NOTE`、隐私页那一条（只在开着时显示）、`docs/WECHAT.md` 那一句和新的一节 |
-| R-I7 | 桥接密钥要加 `media` 权限，Mac 上一条有文档的命令搞定（重建密钥；重建不会让微信掉线），只在她打开看图时才做。我不跑 wx | `deploy/wechat-mac/images.sh on|off`，`lib.sh` 的 `bridge_key_renew`，`login.sh` 开着时保留 `media` |
+| R-I6 | 新的给用户看、给模型看的文字都是草稿，标 `// 草稿文案，待确认`，原句列在 PR 的「新文字（请确认）」里。开关关着时不改任何已确认的文字 | `GROUP_PHOTO_TEXT`（只在看图真的打开时接在 `GROUP_ENABLED_TEXT` 后面，或者单独发给之前就开启的群）、`IMAGE_NOTE`、隐私页那一条（只在看图真的打开时显示）、`docs/WECHAT.md` 那一句和新的一节。「真的打开」见第 12 节 |
+| R-I7 | 桥接密钥要加 `media` 权限，Mac 上一条有文档的命令搞定（重建密钥；重建不会让微信掉线），只在她打开看图时才做。我不跑 wx | `deploy/wechat-mac/images.sh on|off`，`lib.sh` 的 `bridge_key_create` 和 `bridge_key_revoke_others`（先建新的、重启桥接、再作废旧的），`login.sh` 开着时保留 `media` |
 | R-I8 | 一轮最多一张照片，不加新的每日上限 | 桥接每人只记最后一张；服务器一条消息只收一张（收过就不再等） |
 
 ## 3. 依据
@@ -56,6 +56,8 @@
 
 三方：桥接（Mac）、Weave（网站）、Agent 服务。下面的字段**只在两边开关都开着时出现**；任何一边不认识它们，行为和以前一样。
 
+**看图算不算打开（第一轮审查后加的）：** 桥接开着时，发给 Weave 的每个请求都带请求头 `X-Weave-Photos: on`。Weave（服务器开关开着时）把听到的时间记在 world 的 `runtime:wechat-photos` 里（最多一分钟写一次）；桥接的请求不带它，就马上删掉；5 分钟没听到也当关了。只有「服务器开关开着 + Agent SDK 路线 + 桥接最近说过它开着」三样都有，Weave 才读 `photo` 字段、回 `upload`/`watch`、在群里说照片的事、在隐私页显示照片那一条。所以只开服务器、Mac 还没开时，什么都不变。
+
 ### 4.1 桥接 → `POST /api/internal/wechat/events`
 
 和以前一样的 8 个字段，再加一个（只加在可能开始一轮的消息上：私聊里的每一句，群里 @ 了它的）：
@@ -67,19 +69,23 @@
 
 ### 4.2 Weave 对 `/events` 的回答
 
-Weave 只在这句话**真的要排进队**时（已绑定的本人且不过期；开启的群、@ 了它、不是「别记」、不过期）把它标成 `awaiting-photo`（最多 30 秒），并在回答里加：
+Weave 只在这句话**真的要排进队**时（已绑定的本人且不过期；开启的群、@ 了它、不是「别记」、不过期）、并且（群里）这个群已经被告知过照片的事时，把它标成 `awaiting-photo`（最多 30 秒），并在回答里加：
 
 - `photo: 'upload'`（对 `'ready'`）：把那张照片交过来。
 - `photo: 'watch'`（对 `'watch'`）：这个人 10 秒内在这个聊天里发了照片就交过来。
 
-这时**不带** `wake`（这一轮还不能开始）。其他情况（陌生人、没开启的群、「别记」、普通群聊、重复、过期、开关关着）回答里没有 `photo`，桥接什么都不做。
+这时**不带** `wake`（这一轮还不能开始）。其他情况（陌生人、没开启的群、「别记」、普通群聊、重复、过期、开关关着、群还没被告知）回答里没有 `photo`，桥接什么都不做。
+
+**群要先被告知（第一轮审查后加的）：** 群记录里有两个标记：`photoNotice`（说明已经排进发送队列，等回执）和 `photosToldAt`（说明确认发出去了）。看图打开时开启的群，开启的那段话就带着说明（`GROUP_ENABLED_TEXT + GROUP_PHOTO_TEXT`）；之前就开启的群，看图打开后第一次有人 @ 它（会排进队的那种 @）时，Weave 单独排一条 `GROUP_PHOTO_TEXT`（不 @ 任何人），这一句照常回答、不等照片。桥接的回执是 accepted/succeeded 时记 `photosToldAt`，从那以后才回 `upload`/`watch`；回执是 failed/cancelled/needs_review 时清掉 `photoNotice`，下一次 @ 再发一次。
+
+**桥接自己再核对一遍（第一轮审查后加的）：** 桥接收到 `upload` 时，读照片之前再查一次：这句话能开始一轮（私聊，或群里 @ 了它），照片和它配得上（时间在窗口里）。不是就一个字节都不读，回 `{for, none:'not_paired'}`。收到 `watch` 也只对能开始一轮的消息起作用。
 
 ### 4.3 桥接 → `POST /api/internal/wechat/photo`（只在服务器开关开着时存在）
 
 - 照片：请求体就是原始字节，`Content-Type` 是 `image/jpeg`、`image/png`、`image/gif`、`image/webp` 之一（按字节认出来的）；请求头 `X-Weave-For`（在等照片的那句话的消息 id）、`X-Weave-Thread`（照片所在聊天）、`X-Weave-Sender`（发照片的人）。不放进地址，免得进 nginx 的访问日志。
 - 没照片：JSON `{for, none}`，`none` 是原因代码（`none` 等满了 10 秒、`not_cached`、`too_large`、`unsupported`、`media_403`、`upload_failed`、`replaced`、`gone`）。
 
-Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；照片是同一个聊天里同一个人发的（私聊：聊天就是这个人，且是绑定的那个人；群：群号对得上、密封的消息里记的发送人对得上）；格式和大小合格。合格就存照片、把那条消息排进队；不合格就不存，照样把那条消息排进队。回答：
+Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；**桥接报上来的**聊天和发照片的人跟那条消息对得上（私聊：聊天就是这个人，且是绑定的那个人；群：群号对得上、密封的消息里记的发送人对得上）——这只防桥接出错，照片到底是谁、在哪发的只有桥接知道，Weave 没法独立核实；格式和大小合格。合格就存照片、把那条消息排进队；不合格就不存，照样把那条消息排进队。回答：
 
 - `{accepted: true, attached: true|false, wake: true}`：那条消息排进队了，`wake` 让桥接马上跑一次 tick（和 `/events` 的 `wake` 一样处理）。
 - `{accepted: true, ignored: true}`：那条消息不在等照片了（已经开始、群关了、id 不对），什么都没存。
@@ -126,7 +132,7 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；照
 ## 7. Mac 端
 
 - `deploy/wechat-mac/images.sh on`：重建 `weave-bridge` 密钥（读、发、`media`），写 `WEAVE_WECHAT_IMAGES=1`，重启桥接；`off` 反过来。密钥不显示、不进命令行参数。
-- 和 `login.sh` 原来的顺序一样：先作废旧的同名密钥再建新的；建新密钥不会让小号掉线（agent-wechat `reference/tokens.mdx`：「Revoking a token doesn't log out of WeChat」）。
+- 先建新密钥、写进 `bridge.env`、重启桥接，最后才作废别的同名密钥（第一轮审查后改的，`login.sh` 也改成这样）；建新密钥、作废旧密钥都不会让小号掉线（agent-wechat `reference/tokens.mdx`：「Revoking a token doesn't log out of WeChat」）。
 - `login.sh` 以后再跑，看到 `bridge.env` 里开着就保留 `media`；关着时和以前建一模一样的密钥。
 - 桥接只调用两条新路由：`GET /messages/{id}/media`（读本机的微信数据库，`media_assets_with_reader`）和 `GET /media/{assetId}/content`（读本机已经存好的加密副本，要求 `state == "available"`，`wechat-core/src/media.rs` 的 `media_content`）。会去微信下载的 `POST /messages/{id}/media-transfers` 不调用，测试里检查过。
 
@@ -167,11 +173,13 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；照
 
 ## 10. 已知限制和待她定的事
 
-- 私聊里，前面 60 秒没有照片的每一句话，打开后都会多等最多 10 秒。要不要私聊不等、或者等得更短，她来定。
-- 已经开启的群不会补发那句新说明；要不要在打开开关后补发，她来定。
+- 要她定：私聊里，前面 60 秒没有照片的每一句话，打开后都会多等最多 10 秒。要不要私聊根本不等。
+- 要她定：「别记」那一句之前的照片，现在还留在桥接内存里，60 秒内同一个人再 @ 一次就会被用上。要不要「别记」也把它前面的照片作废。
+- 要她定：先别打开，等真机上先验一次（图片是不是 `type` 3、拿到的是 standard 还是 thumbnail、附加信息是不是去干净了）；`docs/WECHAT.md` 里有「先在真机上试一次」的清单。
+- 之前就开启的群：第一次有人 @ 它时单独发一次说明，确认发出后才用照片（第 4.2 节）。
 - 只发照片不说话，不回复。
 - 引用（回复）一张照片再 @ 的消息（`type` 49，带 `quote`）现在不处理；agent-wechat 能列出被引用图片的附件，以后可以做。
-- 超过约 1 MB 的照片被 nginx 拒；要放宽得改 Azora 共用的 nginx，这次不动。
+- 超过约 1 MB 的照片被 nginx 拒（实际上限约 1 MB，代码里写的是 2 MB）；要放宽得改 Azora 共用的 nginx，这次不动。`weave.nginx.conf` 只加了 `client_body_buffer_size 1m;`，要重新装一次 nginx 才生效（第 12 节）。
 - 照片那一轮的问答不进会话（第 6 节的代价）。
 
 ## 11. 测试
@@ -179,3 +187,23 @@ Weave 在存任何东西之前确认：那条消息还在 `awaiting-photo`；照
 - 根目录 `node --test 'test/*.test.mjs'`：`test/wechat-images.test.mjs`（服务器）、`test/wechat-bridge-images.test.mjs`（桥接）、`test/wechat-images-sync.test.mjs`（三处的格式检查和上限一致）、`test/wechat-deploy-scripts.test.mjs`（`images.sh`、`login.sh`）。
 - `hosted/agent-service`：`test/images.test.mjs`、`test/server-images.test.mjs`、`test/e2e-wechat-images.test.mjs`，`test/container.test.mjs` 多一条（只在 CI）。
 - 覆盖：开关关着时完全不变（回答的字段、队列、叫醒的内容、没有表、没有路由、开启群的原话）；群里照片在前；@ 在前 10 秒内；没配上的群照片从不离开 Mac；私聊只给绑定的本人；这一轮之后照片删掉（成功、500、429、断线）；选了 v4-pro 的人照片那一轮用 flash；大小和格式；「别记」和没开启的群什么都不存；一轮一张；关群删照片；30 秒兜底；日志里没有 id、微信号、文字。
+
+## 12. 第一轮审查后的修改（2026-11-03）
+
+独立的隐私审查说：两个开关都关着时可以合并，但还不能打开。改了这些：
+
+| 编号 | 问题 | 怎么改的 | 测试 |
+| --- | --- | --- | --- |
+| I1 | 群里的说明不全，而且看图打开以前就开启的群永远收不到 | `GROUP_PHOTO_TEXT` 改成照代码说话（前 60 秒、后 10 秒、自己发的、DeepSeek、用完就删）；群要先被告知（第 4.2 节），用 `photoNotice`、`photosToldAt` 两个标记 | `test/wechat-images-gates.test.mjs`：之前开启的群第一次 @ 只发一次说明、回执前不用照片、没发出去就再发；开启时带说明的群，回执后才用 |
+| I2 | 说明和隐私页只看服务器开关，按「先服务器后 Mac」的顺序会先说有照片、其实发不了 | 桥接每个请求带 `X-Weave-Photos: on`，Weave 记下来（会过期）；三样都有才算打开（第 4 节开头）；文档改成「打开先 Mac 后服务器，关掉先服务器」 | 服务器开、Mac 关：没有说明、没有提示、什么都不存、隐私页不显示；请求头写入、过期、关掉 |
+| I3 | 照片原样发出去，带着 EXIF/GPS | 桥接交照片前按格式去掉附加信息（JPEG 的 APP1/APP13/COM 等，PNG 的 eXIf/tEXt/iTXt/zTXt 等，WebP 的 EXIF/XMP 并清掉 VP8X 里的标记，GIF 的注释/应用/纯文本扩展，以及文件结尾之后的东西），只留白名单里的部分，不重新编码；读不懂就不交 | `test/wechat-bridge-images.test.mjs`：四种格式各一个带 GPS 的样本（底图是用 sips 生成、确认能解码的真图片），去掉以后和干净的底图逐字节相同、找不到 GPS；坏文件一律拒绝；端到端交出去的字节里没有 GPS。去掉以后的四个文件在本机用 sips 完整解码过 |
+| M2 | 照片可能活过 10 分钟 | 照片表多一列 `owner`，删账号时按主人删；看图开着时每个 `/events` 也清一遍过期的；`/photo` 里写 world 一直冲突、最后放弃时，刚存的照片马上删 | 删账号时等着的照片没了；world 写不进去时照片没了、30 秒后照常回答；事件顺带清过期照片 |
+| M3 | 照片会被共用的 nginx 写到磁盘上 | `weave.nginx.conf` 加 `client_body_buffer_size 1m;`；文档写明要按 `deploy/tencent/README.md` 第 5 节重新装一次（先撤掉再接入，撤掉会连带撤掉备份之后的其他改动） | 只是配置和文档 |
+| M4 | 换密钥时先作废旧的，中间有一段桥接没密钥 | `bridge_key_create`（建新的、写 `bridge.env`）→ 重启桥接 → `bridge_key_revoke_others`（留下新的那把）；`login.sh` 和 `images.sh` 都按这个顺序 | 假 wx + 假 launchctl 写同一个调用记录：建新密钥在重启之前，作废旧密钥在重启之后，新的那把不作废 |
+| M5 | 桥接收到 `upload` 就读照片 | 读之前自己再核对配对 | Weave 乱要照片时一个字节都不读 |
+| M7 | 只有 thumbnail 时立刻用 thumbnail | standard 没好时最多等 3 秒（每半秒看一次）；日志写交出去的是哪一种 | 等到 standard 就用 standard，等不到用 thumbnail，已经有 standard 就不等 |
+| M12 | 文档有几处和代码对不上 | R-I2 那一行（私聊的元数据）、Weave 核对的是桥接报上来的聊天和发送人、实际上限约 1 MB、30 秒加下一次定时任务的兜底、私聊里配的是「要回复的那句话」、`media` 权限本身也允许下载；隐私页那一条写明照片本身不保存、回复照常保存 | 文档 |
+
+没改、留给她定的三件事在第 10 节开头。
+
+**桥接以后可能不在 Mac 上：** 另一个 PR（`feat/wechat-on-server`）准备把 wx 守护进程和桥接搬到腾讯云服务器上。看图的代码只依赖两样：桥接环境里的 `WEAVE_WECHAT_IMAGES=1`，和 `WX_TOKEN` 带 `media` 权限，不管桥接跑在哪都一样。`deploy/wechat-mac/images.sh` 只是现在 Mac 部署上设这两样的办法；搬到服务器以后，那边的部署脚本设同样的两样就行。文档里「先开桥接、再开网站，关掉先关网站」的顺序也不变。桥接和网站在同一台机器上、不经过 nginx 时，1 MB 的限制就没有了，代码里的 2 MB 才是上限。

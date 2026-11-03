@@ -210,18 +210,20 @@ launchctl kickstart -k gui/$(id -u)/com.weave.wechat.bridge
 
 <!-- 草稿文案，待确认 -->
 
-打开以后，@ 它的人（私聊里是你自己）在前 60 秒内或后 10 秒内发的一张照片，会和那句话一起交给模型看。规则和隐私说明见 [`docs/WECHAT.md`](../../docs/WECHAT.md) 的「看图（默认关闭）」。
+打开以后，@ 它的人（私聊里是你自己）在前 60 秒内或后 10 秒内发的一张照片，会和那句话一起交给模型看。照片交出去之前，这台 Mac 先去掉里面的拍摄时间、GPS 位置这类附加信息。规则和隐私说明见 [`docs/WECHAT.md`](../../docs/WECHAT.md) 的「看图（默认关闭）」。
 
-先确认 PR 里列的新文字，在服务器 `web.env` 里加 `WEAVE_WECHAT_IMAGES=1` 并重新部署，再在这台 Mac 上：
+**打开：先开桥接（这台 Mac），再开网站。** 先确认 PR 里列的新文字，照 `docs/WECHAT.md` 重新装一次 nginx，然后在这台 Mac 上：
 
 ```
 cd ~/weave-wechat && git pull && bash deploy/wechat-mac/images.sh on
 ```
 
-它会重建桥接用的 wx 密钥（读、发，加上只用来读已存好的照片副本的 `media`），在 `bridge.env` 里写 `WEAVE_WECHAT_IMAGES=1`，再重启桥接。重建密钥不会让小号掉线，新密钥不显示。之后重跑 `login.sh` 也会保留 `media`。
+它先建一把新的 wx 密钥（读、发，加上 `media`），写进 `bridge.env`，写 `WEAVE_WECHAT_IMAGES=1`，重启桥接，最后才作废旧密钥，所以中间桥接一直有密钥可用。换密钥不会让小号掉线，新密钥不显示。之后重跑 `login.sh` 也会保留 `media`。`media` 权限本身也允许让守护进程去微信下载附件，只是桥接只读已经存好的副本、不调用下载接口。
 
-关掉：`bash ~/weave-wechat/deploy/wechat-mac/images.sh off`（密钥去掉 `media`，开关清空，重启桥接），服务器那行也删掉再部署。
+最后在 `web.env` 里加 `WEAVE_WECHAT_IMAGES=1` 并重新部署网站。网站只有听到桥接说它也开着才会用照片。
 
-看它在不在工作：桥接日志里会有「照片已交给 Weave（类型，字节数）」或「照片没有交给 Weave（原因）」。原因是 `media_403` 时，说明密钥还没有 `media` 权限，重跑 `images.sh on`。
+**关掉：先关网站，再关桥接。** `web.env` 那行删掉再部署，然后：`bash ~/weave-wechat/deploy/wechat-mac/images.sh off`（新建一把不带 `media` 的密钥，开关清空，重启桥接，再作废旧密钥）。
 
-还没验证：真实微信里的图片消息是不是 `type` 3、副本的 `contentType` 和大小，都是照 agent-wechat 的源码和文档写的，没有在真机上看过。
+看它在不在工作：桥接日志里会有「照片已交给 Weave（类型，字节数，standard 或 thumbnail）」或「照片没有交给 Weave（原因）」。原因是 `media_403`：`WX_TOKEN` 还没有 `media` 权限，重跑 `images.sh on`；`strip_failed`：这张照片的附加信息去不掉，没有交出去。打开以后先照 `docs/WECHAT.md` 的「先在真机上试一次」走一遍，没通过就关掉。
+
+还没验证：真实微信里的图片消息是不是 `type` 3、副本的 `contentType`、大小、有没有附加信息，都是照 agent-wechat 的源码和文档写的，没有在真机上看过。
