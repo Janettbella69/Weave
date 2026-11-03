@@ -236,6 +236,8 @@ tmutil destinationinfo
 
 **wx 的主令牌**是守护进程第一次启动时自己生成的（agent-wechat 文档：API tokens），在卷里，权限 600，只有容器里的用户读得到。脚本都用 `docker exec` 在容器里调 wx，令牌不离开容器。桥接用的是另一把只能读和发的密钥，由 login.sh 建，写在 `bridge.env` 里。
 
+**为什么服务器上的桥接还设 `WEAVE_TICK=1`：** PR #35 以后，Agent 服务每分钟会敲一次网站的 `/api/internal/tick`（服务器自己的闹钟），但那一下只管到点的提醒和后台主动找你，**故意不处理微信消息**（`hosted/lib/weave/api.mjs` 里是 `wechatInbound:false`，注释写明留给桥接）。回复微信靠的还是桥接每分钟调一次的 `/api/internal/wechat/tick`，以及消息一到就叫醒 Agent 的快路，这两样都要 `WEAVE_TICK=1`。所以服务器上的桥接照样设它（login.sh 会写好）；去掉的话，消息收得到，但永远不会有回复。两个闹钟都会送到点的提醒，但一条提醒只会送一次：标记「已送出」是在一次事务里做的，撞上了就重读再来（`domain.mjs` 的 `deliverReminders`、`store.mjs` 的 `withWorld`；读代码得出，没实测）。
+
 **手动给 wx 下命令：**
 
 ```
@@ -248,7 +250,7 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'bash ~/weave/deploy
 ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'bash ~/weave/deploy/tencent/wechat/wx.sh --json --account weave account settings --auto-download-max-mb 0'
 ```
 
-**看图（PR #33 合并以后，默认关）：** 它读守护进程存好的照片，自动下载调成 0 以后多半只拿得到缩略图（没验证）。要在服务器上打开：在 `bridge.env` 里加一行 `WEAVE_WECHAT_IMAGES=1`，再重跑 login.sh（会换一把带 media 权限的密钥）；网站的 `web.env` 也要加 `WEAVE_WECHAT_IMAGES=1` 再部署（见 `docs/WECHAT.md`）。不打开就什么都不变。
+**看图（PR #33 合并以后，默认关）：** 它只读守护进程已经存好的副本：先找标准图，没有才用缩略图（PR #33 的 `bridge.mjs`）。自动下载调成 0 以后标准图不会自动存，所以多半只剩缩略图（没在真机上试过）。照片只在桥接的内存里放 60 秒，最多 2 MiB，不写磁盘。要在服务器上打开：在 `bridge.env` 里加一行 `WEAVE_WECHAT_IMAGES=1`，再重跑 login.sh（会换一把带 media 权限的密钥）；网站的 `web.env` 也要加 `WEAVE_WECHAT_IMAGES=1` 再部署（见 `docs/WECHAT.md`）。不打开就什么都不变。
 
 **换网站的桥接令牌：** 在服务器上生成新的（不显示，网站会重新部署），再重跑 login.sh：
 
