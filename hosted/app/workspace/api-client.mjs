@@ -1,6 +1,6 @@
 // Calls to /api/*, shared by the workspace. Pure of React so it can be tested with a fake fetch.
 
-const GET_PATHS = new Set(['status', 'connections/notion', 'connections/notion/pending', 'connections/notion/pages', 'wechat', 'memory', 'proactivity', 'export', 'calendar.ics']);
+const GET_PATHS = new Set(['status', 'connections/notion', 'connections/notion/pending', 'connections/notion/pages', 'wechat', 'memory', 'agent-memory', 'proactivity', 'export', 'calendar.ics']);
 const RELOAD_KEY = 'weave:reloaded-for-401';
 
 export class ApiError extends Error {
@@ -49,7 +49,9 @@ export async function apiRequest(path, data, {fetchImpl = fetch, onUnauthorized}
 
 // The status answer, checked and filled in. The workspace needs the profile, the settings and the lists it shows
 // (messages, plans, feedback, reminders, notifications). The lists that only belong to friends and shared
-// plans (people, invites, negotiations, calendar) may be missing; they become empty. Anything else (an empty
+// plans (people, invites, negotiations, calendar) may be missing; they become empty. So do the habit lists
+// (goals, habits, completions) and `today`, the person's local date as 'YYYY-MM-DD': an answer from a server
+// that does not send them yet, or a field of the wrong type, becomes [] and ''. Anything else (an empty
 // object from a proxy, a half-written answer) gives null: it is a failed request, not a page to render.
 export function normalizeStatus(value) {
   if (!value || typeof value !== 'object') return null;
@@ -58,6 +60,7 @@ export function normalizeStatus(value) {
   if (!value.settings || typeof value.settings !== 'object') return null;
   if (!['messages', 'plans', 'checkins', 'reminders', 'notifications'].every(key => Array.isArray(value[key]))) return null;
   const out = {...value, profile: {...profile, slots: Array.isArray(profile.slots) ? profile.slots : [], activities: Array.isArray(profile.activities) ? profile.activities : []}};
-  for (const key of ['people', 'invites', 'negotiations', 'calendar']) if (!Array.isArray(out[key])) out[key] = [];
+  for (const key of ['people', 'invites', 'negotiations', 'calendar', 'goals', 'habits', 'completions']) if (!Array.isArray(out[key])) out[key] = [];
+  if (typeof out.today !== 'string') out.today = '';
   return out;
 }
