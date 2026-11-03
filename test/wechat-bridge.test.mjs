@@ -249,6 +249,137 @@ test('delivery: a send that never reached WeChat (logged out, offline) does not 
   assert.equal(await deliverOnce({daemon, weave, throttle, sleep: async () => {}}), 1);
 });
 
+// ── a group reply whose @ the daemon cannot resolve (its copy of the member list is missing or partial) is not lost ──────────
+const refusal = (status, code) => { const e = Error(`agent-wechat 请求失败 (${status} ${code})`); e.status = status; e.code = code; return e; };
+const groupJob = (extra = {}) => ({id: 'out:1', threadId: '99999@chatroom', text: 'SECRET-TEXT 好的', mentions: {userIds: ['wxid_secret_user']}, ...extra});
+const harness = jobs => { const receipts = [], logs = []; return {receipts, logs, log: line => logs.push(line), weave: async (path, data) => { if (path === 'claim') return {jobs}; receipts.push(data); return {ok: true}; }}; };
+const quick = {sleep: async () => {}};
+
+test('delivery: an @ the daemon refuses with 404 media_not_cached goes out again without it under the :plain key, and the receipt carries the retry\'s state', async () => {
+  const sent = [], h = harness([groupJob()]);
+  const daemon = {send: async job => { sent.push(job); if (job.mentions) throw refusal(404, 'media_not_cached'); return {id: 's2', state: 'accepted'}; }};
+  assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, ...quick}), 1);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].id, 'out:1');
+  assert.deepEqual(sent[0].mentions, {userIds: ['wxid_secret_user']});
+  assert.deepEqual(sent[1], {id: 'out:1:plain', threadId: '99999@chatroom', text: 'SECRET-TEXT 好的'});   // no mentions key at all
+  assert.deepEqual(h.receipts, [{id: 'out:1', state: 'accepted'}]);
+  assert.deepEqual(h.logs, ['群消息带 @ 被拒（404 media_not_cached），已去掉 @ 重发：out:1']);
+});
+
+test('delivery: the 409 mention codes and 400 invalid_mentions take the same path instead of the retry-later loop', async () => {
+  for (const [status, code] of [[409, 'mention_member_unavailable'], [409, 'mention_group_membership_unavailable'], [409, 'profile_unavailable'], [400, 'invalid_mentions']]) {
+    const sent = [], h = harness([groupJob()]);
+    const daemon = {send: async job => { sent.push([job.id, !!job.mentions]); if (job.mentions) throw refusal(status, code); return {id: 's2', state: 'succeeded'}; }};
+    assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, ...quick}), 1, code);
+    assert.deepEqual(sent, [['out:1', true], ['out:1:plain', false]], code);
+    assert.deepEqual(h.receipts, [{id: 'out:1', state: 'succeeded'}], code);
+    assert.deepEqual(h.logs, [`群消息带 @ 被拒（${status} ${code}），已去掉 @ 重发：out:1`], code);
+  }
+});
+
+test('delivery: a refusal that is not about the @ is not retried: logged and reported failed, or kept for later when the daemon is logged out', async () => {
+  const cases = [
+    [groupJob(), refusal(404, 'not_found'), 'failed', '守护进程拒绝了这条消息（404 not_found），已向 Weave 报告发送失败：out:1'],
+    [groupJob({mentions: undefined}), refusal(404, 'media_not_cached'), 'failed', '守护进程拒绝了这条消息（404 media_not_cached），已向 Weave 报告发送失败：out:1'],   // a private reply has no @ to drop
+    [groupJob(), refusal(400, 'invalid_request'), 'failed', '守护进程拒绝了这条消息（400 invalid_request），已向 Weave 报告发送失败：out:1'],
+    [groupJob(), refusal(409, 'auth_required'), null, '消息暂时发不出去，稍后用同一幂等键重试：agent-wechat 请求失败 (409 auth_required)'],
+  ];
+  for (const [job, error, receipt, line] of cases) {
+    let calls = 0;
+    const h = harness([job]);
+    await deliverOnce({daemon: {send: async () => { calls++; throw error; }}, weave: h.weave, log: h.log, ...quick});
+    assert.equal(calls, 1, line);
+    assert.deepEqual(h.receipts, receipt ? [{id: 'out:1', state: receipt}] : [], line);
+    assert.deepEqual(h.logs, [line]);
+  }
+});
+
+test('delivery: an end state of failed, cancelled or needs_review is logged with the job id and state (and the daemon\'s errorCode); accepted and succeeded are not', async () => {
+  for (const [state, errorCode, line] of [
+    ['needs_review', null, '发送结果是 needs_review，已原样报告给 Weave：out:1'],
+    ['cancelled', null, '发送结果是 cancelled，已原样报告给 Weave：out:1'],
+    ['failed', 'worker_interrupted', '发送结果是 failed（worker_interrupted），已原样报告给 Weave：out:1'],
+    ['accepted', null, null],
+    ['succeeded', null, null],
+  ]) {
+    const h = harness([{id: 'out:1', threadId: '99999@chatroom', text: 'SECRET-TEXT'}]);
+    await deliverOnce({daemon: {send: async () => ({id: 's', state, errorCode})}, weave: h.weave, log: h.log, ...quick});
+    assert.deepEqual(h.receipts, [{id: 'out:1', state}], state);
+    assert.deepEqual(h.logs, line ? [line] : [], state);
+  }
+});
+
+test('delivery: a send the daemon took and then ended as failed because of the @ (errorCode) is sent again without it under the :plain key; other failures are not', async () => {
+  for (const code of ['mention_member_unavailable', 'mention_group_membership_unavailable', 'mention_all_forbidden', 'mention_all_permission_unavailable', 'profile_unavailable']) {
+    const sent = [], h = harness([groupJob()]);
+    const daemon = {
+      send: async job => { sent.push([job.id, !!job.mentions]); return job.mentions ? {id: 's1', state: 'queued'} : {id: 's2', state: 'accepted'}; },
+      sendStatus: async id => id === 's1' ? {id, state: 'failed', errorCode: code} : {id, state: 'accepted'},
+    };
+    assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, ...quick}), 1, code);
+    assert.deepEqual(sent, [['out:1', true], ['out:1:plain', false]], code);
+    assert.deepEqual(h.receipts, [{id: 'out:1', state: 'accepted'}], code);
+    assert.deepEqual(h.logs, [`群消息带 @ 发送失败（failed ${code}），已去掉 @ 重发：out:1`], code);
+  }
+  // Failed for another reason: reported as it is, nothing is sent again.
+  const other = harness([groupJob()]), otherSent = [];
+  await deliverOnce({daemon: {send: async job => { otherSent.push(job.id); return {id: 's1', state: 'queued'}; }, sendStatus: async () => ({id: 's1', state: 'failed', errorCode: 'worker_interrupted'})}, weave: other.weave, log: other.log, ...quick});
+  assert.deepEqual(otherSent, ['out:1']);
+  assert.deepEqual(other.receipts, [{id: 'out:1', state: 'failed'}]);
+  assert.deepEqual(other.logs, ['发送结果是 failed（worker_interrupted），已原样报告给 Weave：out:1']);
+  // The plain send is not itself retried, whatever it ends as: no loop.
+  const loop = harness([groupJob()]), loopSent = [];
+  await deliverOnce({daemon: {send: async job => { loopSent.push(job.id); return {id: 's' + loopSent.length, state: 'queued'}; }, sendStatus: async () => ({state: 'failed', errorCode: 'mention_member_unavailable'})}, weave: loop.weave, log: loop.log, ...quick});
+  assert.deepEqual(loopSent, ['out:1', 'out:1:plain']);
+  assert.deepEqual(loop.receipts, [{id: 'out:1', state: 'failed'}]);
+});
+
+test('delivery: a plain retry that is not finished keeps the lease, and the next claim goes straight to the plain send instead of trying the @ again', async () => {
+  const sent = [], h = harness([groupJob()]), plain = new Set();
+  let finished = false;
+  const daemon = {
+    send: async job => { sent.push([job.id, !!job.mentions]); if (job.mentions) throw refusal(404, 'media_not_cached'); return {id: 's2', state: finished ? 'accepted' : 'queued'}; },
+    sendStatus: async () => ({id: 's2', state: finished ? 'accepted' : 'queued'}),
+  };
+  assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, attempts: 2, plain, ...quick}), 0);
+  assert.deepEqual(h.receipts, []);                         // the lease is kept, as for any send that is not finished
+  finished = true;
+  assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, attempts: 2, plain, ...quick}), 1);
+  // The @ version may work by now; sending it as well would put the same answer in the group twice.
+  assert.deepEqual(sent, [['out:1', true], ['out:1:plain', false], ['out:1:plain', false]]);
+  assert.deepEqual(h.receipts, [{id: 'out:1', state: 'accepted'}]);
+  assert.equal(h.logs.length, 1);                           // the fallback is logged once, not on every claim
+  assert.equal(plain.size, 0);                              // and forgotten once it is reported
+});
+
+test('delivery: if the plain retry cannot be taken right now (logged out), the lease is kept and the next claim sends only the plain version', async () => {
+  const sent = [], h = harness([groupJob()]), plain = new Set();
+  let loggedOut = true;
+  const daemon = {send: async job => { sent.push([job.id, !!job.mentions]); if (job.mentions) throw refusal(409, 'mention_member_unavailable'); if (loggedOut) throw refusal(409, 'auth_required'); return {id: 's2', state: 'accepted'}; }};
+  assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, plain, ...quick}), 0);
+  assert.deepEqual(h.receipts, []);
+  loggedOut = false;
+  assert.equal(await deliverOnce({daemon, weave: h.weave, log: h.log, plain, ...quick}), 1);
+  assert.deepEqual(sent, [['out:1', true], ['out:1:plain', false], ['out:1:plain', false]]);
+  assert.deepEqual(h.receipts, [{id: 'out:1', state: 'accepted'}]);
+});
+
+test('delivery: nothing the new log lines print can carry the message text, the thread id or a user id', async () => {
+  const secrets = ['SECRET-TEXT', '99999@chatroom', 'wxid_secret_user'];
+  const dirty = secrets.join(' ');
+  const leaky = (status, code) => { const e = Error(`${status} ${dirty}`); e.status = status; e.code = code; return e; };
+  const logs = [];
+  const run = async (daemon, job = groupJob()) => { const h = harness([job]); await deliverOnce({daemon, weave: h.weave, log: line => logs.push(line), ...quick}); };
+  await run({send: async job => { if (job.mentions) throw leaky(404, 'media_not_cached'); return {id: 's', state: 'failed', errorCode: dirty}; }});     // the @ is refused, then the retry fails with a hostile errorCode
+  await run({send: async () => { throw leaky(404, dirty); }});                                                                                        // refused with a code that is not a plain word
+  await run({send: async () => { throw leaky(400, undefined); }}, groupJob({mentions: undefined}));                                                    // a rejection with no code at all
+  await run({send: async () => ({id: 's1', state: 'queued'}), sendStatus: async () => ({id: 's1', state: 'failed', errorCode: 'mention_member_unavailable'})});    // the async path, and the plain retry fails the same way
+  await run({send: async () => ({id: 's', state: 'needs_review', errorCode: dirty})});                                                                // an end state with a hostile errorCode
+  assert.ok(logs.length >= 5, logs.join('\n'));
+  for (const secret of secrets) assert.ok(!logs.join('\n').includes(secret), `${secret} leaked into: ${logs.join(' | ')}`);
+});
+
 test('reconnecting to the daemon backs off while it is down or logged out, so the log does not fill up and nobody is hammered', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 50].map(reconnectDelay), [3000, 6000, 12000, 24000, 48000, 60000, 60000, 60000]);
 });
