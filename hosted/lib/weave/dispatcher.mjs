@@ -8,7 +8,7 @@
 import {withWorld} from './store.mjs';
 import {unseal} from './crypto.mjs';
 import {fail, record} from './domain.mjs';
-import {localClock} from './proactivity.mjs';
+import {localClock, GROUP_TIMEZONE} from './proactivity.mjs';
 import {DEFAULT_MODEL} from './model.mjs';
 import {issueCapability} from './capability.mjs';
 
@@ -53,7 +53,7 @@ export function localISO(timezone, now) {
 //   scope     'owner'（本人）或 'group'（打卡群）。群范围要给 groupId：群 id 的哈希，不是微信的群号。
 //   ownerId   本人；群范围里是开启这个群的人，用他的模型和 Key。
 //   channel   通行证上的通道（web / wechat），决定 send_message 发到哪。
-//   trigger   {kind, channel, direct, text}：kind 默认 message，direct 默认 true；at 由这里按本人时区补上。
+//   trigger   {kind, channel, direct, text}：kind 默认 message，direct 默认 true；at 由这里补上：本人范围按本人时区，群范围按北京时间。
 //   beforeWake  可选，在读模型设置的同一个事务里先跑（网页和微信用它先存用户的消息）。
 // 返回 {outcome, reply, uncertain, retryable, runId}：
 //   retryable  Agent 服务明确说没开始跑（429 / 400 401 403 404 413 503），可以说「没有处理」，稍后重试也安全；
@@ -72,8 +72,9 @@ export async function wake({db, secret, service, fetcher = fetch, now = Date.now
       model: person.settings?.model || DEFAULT_MODEL,
       // 用自己 Key 的人自己付费，模型代理不计他的额度（沿用 budget.mjs 的口径）。
       userKey: person.settings?.deepseekKey ? await unseal(person.settings.deepseekKey, secret, ownerId) : undefined,
-      localDate: localClock(person, now).day,
-      at: localISO(person.profile.timezone, now),
+      // 群里的日期和时间按北京时间，不用开启者的时区（GROUP_TIMEZONE）。
+      localDate: localClock(scope === 'group' ? {profile: {timezone: GROUP_TIMEZONE}} : person, now).day,
+      at: localISO(scope === 'group' ? GROUP_TIMEZONE : person.profile.timezone, now),
     };
   });
   const capability = await issueCapability(secret, {owner: ownerId, scope, runId, channel, direct, ...(scope === 'group' ? {group: groupId} : {})}, now);
