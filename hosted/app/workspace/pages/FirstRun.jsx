@@ -1,6 +1,6 @@
 'use client';
 import {useId, useRef, useState} from 'react';
-import {isImeComposing} from '../chat-input.mjs';
+import {MESSAGE_MAX_LENGTH, isImeComposing} from '../chat-input.mjs';
 import {COPY} from '../copy.mjs';
 import Avatar from '../ui/Avatar';
 import Composer from '../ui/Composer';
@@ -46,7 +46,7 @@ export default function FirstRun(props) {
       {option && !option.step && <form className="wv-own" onSubmit={sendOwn}>
         <label htmlFor={ownId}>{COPY.ownHabit}</label>
         <div className="wv-own-row">
-          <input id={ownId} className="wv-input" type="text" maxLength={4000} enterKeyHint="send" value={own} placeholder={COPY.ownPlaceholder}
+          <input id={ownId} className="wv-input" type="text" maxLength={MESSAGE_MAX_LENGTH} enterKeyHint="send" value={own} placeholder={COPY.ownPlaceholder}
             onChange={event => setOwn(event.target.value)} onKeyDown={holdWhileComposing}
             onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { setTimeout(() => { composing.current = false; }, 0); }}/>
           <button type="submit" className="wv-button is-primary is-large" disabled={!ready || !own.trim()}>{COPY.ownDone}</button>

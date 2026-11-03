@@ -74,6 +74,14 @@ test('the records page counts days in the account\'s zone and turns months only 
   assert.match(page,/COPY\.earliest/,'the first month says why there is nothing before it');
 });
 
+test('the records calendar has only 做到了 / 没做 / 还没开始: today has no mark of its own',async()=>{
+  // v3-Records and spec §3.4 draw no ring and say no 「今天」 on the calendar; today's cell is drawn by its kind.
+  const page=await read('app/workspace/pages/RecordsPage.jsx'),css=await read('app/globals.css');
+  assert.match(page,/const SAID = \{done: COPY\.done, missed: COPY\.missed, before: COPY\.notStarted\};/);
+  assert.ok(!/is-today|COPY\.today/.test(page),'no today ring, no 「今天」 reading');
+  assert.ok(!/\.wv-cal-day\.is-today/.test(css));
+});
+
 test('the settings page saves the zone that was picked, with the whole profile, and never the browser\'s',async()=>{
   const page=await read('app/workspace/pages/SettingsPage.jsx');
   assert.match(page,/api\('profile', profileForSave\(/);
@@ -118,8 +126,12 @@ test('the goal box takes no more than the chat can, with the starter in front',a
   // goalWordsLimit is tested in frontend-views.test.mjs; here: the page uses it, the box applies it, and the number is
   // the server's own (POST /api/chat refuses more than 4000 characters).
   const goals=await read('app/workspace/pages/GoalsPage.jsx'),composer=await read('app/workspace/ui/Composer.jsx'),api=await read('lib/weave/api.mjs');
+  const firstRun=await read('app/workspace/pages/FirstRun.jsx');
   assert.match(goals,/<Composer [^>]*maxLength=\{goalWordsLimit\(picked\)\}/);
+  // maxLength only stops typing; the words typed for another category stay in the box through 换一个, so the send cuts them.
+  assert.match(goals,/sendChat\(props, COPY\.goalStarter\(CATEGORY_LABEL\[picked\], words\.slice\(0, goalWordsLimit\(picked\)\)\)\)/);
   assert.match(composer,/maxLength = MESSAGE_MAX_LENGTH/,'every other box keeps the chat\'s own limit');
+  assert.match(firstRun,/maxLength=\{MESSAGE_MAX_LENGTH\}/,'the first run\'s own line too');
   assert.match(composer,/<textarea [^>]*maxLength=\{maxLength\}/);
   assert.match(api,/if\(!text\|\|text\.length>4000\)domain\.fail\(/);
 });

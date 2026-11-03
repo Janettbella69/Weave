@@ -475,8 +475,6 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-cal-day.is-missed{border:2px solid var(--wv-missed);background:#FFFFFF;font-weight:600}
 /* Before the status window: nothing is known, so it is drawn plain, like a day that is not there */
 .wv-cal-day.is-unknown{color:var(--wv-small)}
-/* Today, until it is done (the dashed ring of the goals page's today dot) */
-.wv-cal-day.is-today{border:2px dashed var(--wv-link)}
 .wv-legend{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--wv-secondary)}
 .wv-legend li{display:flex;align-items:center;gap:6px}
 .wv-swatch{flex:none;width:14px;height:14px;border-radius:4px}

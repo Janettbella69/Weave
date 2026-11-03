@@ -35,8 +35,10 @@ export default function GoalsPage(props) {
     }
   }, [picked]);
   const back = () => { returnTo.current = picked; setPicked(null); };
+  // The words are cut to what this category's box takes: they stay in the box through 「换一个」, and maxLength only
+  // stops typing, so words written under a category with a shorter name can be longer than this one leaves room for.
   const send = words => {
-    sendChat(props, COPY.goalStarter(CATEGORY_LABEL[picked], words));
+    sendChat(props, COPY.goalStarter(CATEGORY_LABEL[picked], words.slice(0, goalWordsLimit(picked))));
     setText('');
     navigate('chat');
   };

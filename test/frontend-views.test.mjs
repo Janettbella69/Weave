@@ -375,6 +375,21 @@ test('goalWordsLimit: a new goal\'s words leave room for the starter, so the mes
   assert.equal(goalWordsLimit('nonsense'),goalWordsLimit('other'),'a category nobody knows is 其他, as on the cards');
 });
 
+test('goalWordsLimit at send: a full box kept through 换一个 into the category with the longest name still makes a message the chat takes',()=>{
+  // The words stay in the box when 换一个 picks another category, and maxLength only stops typing: a box filled for
+  // 健康 holds more than 人际关系 leaves room for. GoalsPage cuts the words to goalWordsLimit(picked) when it sends
+  // (pinned in frontend-copy.test.mjs); this is that message, for every pair of categories.
+  const keys=Object.keys(CATEGORY_LABEL);
+  const roomiest=keys.reduce((a,b)=>goalWordsLimit(b)>goalWordsLimit(a)?b:a),longest=keys.reduce((a,b)=>goalWordsLimit(b)<goalWordsLimit(a)?b:a);
+  const full='字'.repeat(goalWordsLimit(roomiest));
+  assert.ok(COPY.goalStarter(CATEGORY_LABEL[longest],full).length>MESSAGE_MAX_LENGTH,'uncut, POST /api/chat would refuse it');
+  assert.equal(COPY.goalStarter(CATEGORY_LABEL[longest],full.slice(0,goalWordsLimit(longest))).length,MESSAGE_MAX_LENGTH,'cut, it is exactly what the chat takes');
+  for(const from of keys)for(const to of keys){
+    const words='字'.repeat(goalWordsLimit(from));
+    assert.ok(COPY.goalStarter(CATEGORY_LABEL[to],words.slice(0,goalWordsLimit(to))).length<=MESSAGE_MAX_LENGTH,from+' -> '+to);
+  }
+});
+
 // ---- 记录 ----
 
 const octoberWalk=misses=>{

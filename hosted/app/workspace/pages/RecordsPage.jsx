@@ -72,7 +72,7 @@ export default function RecordsPage({state}) {
           {atEarliest && <p id={earliestId} className="wv-calendar-note">{COPY.earliest}</p>}
           <div className="wv-weekdays" aria-hidden="true">{COPY.weekdays.map(day => <span key={day}>{day}</span>)}</div>
           <ol className="wv-cal-days">
-            {model.cells.map((cell, index) => <Day key={cell.day || 'pad' + index} cell={cell} today={today}/>)}
+            {model.cells.map((cell, index) => <Day key={cell.day || 'pad' + index} cell={cell}/>)}
           </ol>
           <ul className="wv-legend">
             <li><span className="wv-swatch is-done" aria-hidden="true"/>{COPY.done}</li>
@@ -107,12 +107,12 @@ function Stat({label, value, unit}) {
 }
 
 // A day of the calendar. Its number is drawn; a screen reader hears the date and what happened. Padding and the days the
-// page knows nothing about ('unknown') say nothing. Today, until it is done, is still open: a ring, and 「今天」.
-function Day({cell, today}) {
+// page knows nothing about ('unknown') say nothing. Today has no mark of its own (v3-Records, spec §3.4): until it is
+// done, it is drawn and read like the days still to come.
+function Day({cell}) {
   if (cell.kind === 'empty' || cell.kind === 'unknown') return <li className={'wv-cal-day is-' + cell.kind} aria-hidden="true">{cell.label}</li>;
-  const isToday = cell.day === today && cell.kind === 'future';
-  const said = SAID[cell.kind] || (isToday ? COPY.today : '');
-  return <li className={'wv-cal-day is-' + cell.kind + (isToday ? ' is-today' : '')}>
+  const said = SAID[cell.kind];
+  return <li className={'wv-cal-day is-' + cell.kind}>
     <span aria-hidden="true">{cell.label}</span>
     <span className="wv-sr-only">{said ? COPY.dayState(formatDay(cell.day), said) : formatDay(cell.day)}</span>
   </li>;
