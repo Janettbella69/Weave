@@ -51,10 +51,16 @@ function sendMessage(world, person, claims, args, now) {
   return TEXT.sent;
 }
 
+// 模型常把时间写到分钟、不带秒，比如 2026-11-04T20:00+08:00；domain.validTime（网页的表单也用它）要求有秒。
+// 所以只在这个工具里补上 :00：形如 YYYY-MM-DDTHH:MM 后面紧跟 Z 或 ±HH:MM 的才补，其他一概不动。
+// 没有时区、已经过去、日期或钟点不存在，照样由 addReminder 按原来的规则拒绝。
+const MINUTES_ONLY = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(Z|[+-]\d{2}:\d{2})$/;
+const withSeconds = value => typeof value === 'string' ? value.replace(MINUTES_ONLY, '$1:00$2') : value;
+
 // 只响一次的提醒：直接用现有的 domain.addReminder（1–500 字、必须是将来的 ISO 时间，规则和网页上设提醒一样）。
 // 到点后怎么送达不在这里：网页每次请求时把到点的提醒写进聊天和通知，微信由 scheduler.mjs 排队。
 function setReminder(person, args) {
-  const item = addReminder(person, {text: args.text, dueAt: args.due_at});
+  const item = addReminder(person, {text: args.text, dueAt: withSeconds(args.due_at)});
   return {reminder: {reminder_id: item.id, text: item.text, due_at: item.dueAt, status: item.status}};
 }
 

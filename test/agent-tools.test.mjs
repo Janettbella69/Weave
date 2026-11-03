@@ -182,6 +182,50 @@ test('set_reminder: empty text, over 500 characters, no due_at, or a time withou
   assert.equal((await s.world()).people[s.alice].reminders.length, 0);
 });
 
+// "Tomorrow" for a person in Shanghai: the Shanghai date of the real clock plus one day. Tomorrow at 20:00 is at least
+// 20 hours away, so a reminder there is always in the future whatever time of day the test runs.
+const tomorrowShanghai = () => new Date(Date.now() + 24 * 3600_000 + 8 * 3600_000).toISOString().slice(0, 10);
+
+test('set_reminder accepts a due_at without seconds and stores the same instant as with seconds', async () => {
+  const s = await setup(), token = await s.cap(s.alice), day = tomorrowShanghai();
+  // The model writes "明天晚上 8 点" as 20:00 with a zone and no seconds.
+  const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at: day + 'T20:00+08:00'}, {token, toolUseId: 'toolu_a'});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, true, r.data.text);
+  const instant = new Date(day + 'T20:00:00+08:00').toISOString();
+  const person = (await s.world()).people[s.alice];
+  assert.equal(person.reminders.length, 1);
+  assert.equal(person.reminders[0].status, 'scheduled');
+  assert.equal(person.reminders[0].dueAt, instant);
+  assert.deepEqual(JSON.parse(r.data.text), {reminder: {reminder_id: person.reminders[0].id, text: '给妈妈打电话', due_at: instant, status: 'scheduled'}});
+  // The other two spellings of a zone, Z and a negative offset, work the same way.
+  for (const [i, [short, full]] of [['2099-12-31T23:59Z', '2099-12-31T23:59:00Z'], ['2099-12-31T15:30-08:00', '2099-12-31T15:30:00-08:00']].entries()) {
+    const zoned = await s.tool('set_reminder', {text: '喝水', due_at: short}, {token, toolUseId: 'toolu_z' + i});
+    assert.equal(zoned.data.ok, true, short + ': ' + zoned.data.text);
+    assert.equal(JSON.parse(zoned.data.text).reminder.due_at, new Date(full).toISOString(), short);
+  }
+  assert.equal((await s.world()).people[s.alice].reminders.length, 3);
+});
+
+test('set_reminder: a due_at to the minute with no zone, in the past, or impossible is still refused, with the same text', async () => {
+  const s = await setup(), token = await s.cap(s.alice), day = tomorrowShanghai();
+  const bad = [
+    day + 'T20:00',                // to the minute, no zone
+    day + 'T20:00:00',             // with seconds, no zone (as before)
+    '2020-01-01T20:00+08:00',      // in the past, to the minute
+    '2099-02-30T20:00+08:00',      // no such day
+    '2099-01-01T24:00+08:00',      // no such hour
+    day + 'T20:00 +08:00',         // a stray space before the zone
+  ];
+  for (const [i, due_at] of bad.entries()) {
+    const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at}, {token, toolUseId: 'toolu_' + i});
+    assert.equal(r.status, 200, due_at);
+    assert.equal(r.data.ok, false, due_at);
+    assert.equal(r.data.text, '请输入1–500字提醒内容和有效的未来时间', due_at);
+  }
+  assert.equal((await s.world()).people[s.alice].reminders.length, 0);
+});
+
 test('a group capability cannot call save_goal or set_reminder (403), and nothing is written', async () => {
   const s = await setup(), token = await s.cap(s.alice, {scope: 'group', group: 'g1'});
   for (const [name, args] of [['save_goal', {title: '每天动一动', category: 'health'}], ['set_reminder', {text: '喝水', due_at: inOneDay()}]]) {

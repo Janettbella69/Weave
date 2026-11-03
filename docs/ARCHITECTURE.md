@@ -189,7 +189,7 @@ export function weaveServer(scope, capability) {
 | `save_habit` | 写身份句、触发、最小动作；可以挂在一个目标下（`goal_id`） | 只改自己的；`goal_id` 必须是自己还在追踪的目标 | ✓ | | |
 | `save_goal` | 新建或修改一个目标，`archived: true` 表示不再追踪 | 只改自己的；名字 1–30 字，类别七选一，最多 10 个在追踪的目标 | ✓ | | |
 | `log_completion` | 记一次完成 | 不记未来日期；同习惯同日去重 | ✓ | | |
-| `set_reminder` | 在某个时间原样提醒一次（只响一次；每天 / 每周 / 每月是第二块，加在它上面） | 调现有的 `addReminder`：1–500 字，时间必须是带时区、在将来的 ISO 时间；到点后不叫醒模型、不花钱：网页每次请求时把到点的提醒写进聊天和通知，服务器配了微信、桥接在跑时 `scheduler.mjs` 排进微信 | ✓ | | |
+| `set_reminder` | 在某个时间原样提醒一次（只响一次；每天 / 每周 / 每月是第二块，加在它上面） | 调现有的 `addReminder`：1–500 字，时间必须是带时区、在将来的 ISO 时间（可以不写秒，工具后端补 `:00`）；到点后不叫醒模型、不花钱：网页每次请求时把到点的提醒写进聊天和通知，服务器配了微信、桥接在跑时 `scheduler.mjs` 排进微信 | ✓ | | |
 | `schedule_wake` | 到点叫醒自己 | 每日上限 | ✓ | ✓ | |
 | `list_schedule` / `cancel_schedule` | 查和取消上面两种 | 只看自己的 | ✓ | ✓ | |
 | `list_friends` | 读朋友 | 只有名字和编号 | ✓ | | |
@@ -439,7 +439,7 @@ env: {
 - **叫醒前的快照**（教材 p.16「查数留SQL,不要封成MCP」；p.20「Agent启动之前 预处理。不在循环中间,不影响灵活性」）：
   - Agent 服务拿这一轮的通行证 `GET /api/internal/agent/snapshot`，返回 `{version: 1, today, timezone, tables, files}`。owner 范围给 `habits`（最后一列是 `goal_id`，没挂目标的是空）、`completions`、`goals`（全部目标，归档的也给，`archived` 是 0 / 1）、`reminders`（全部提醒，不分 `scheduled`、`delivered`、`cancelled`），group 范围不给任何人的私人资料（群消息 `group_messages` 由微信那边填）。
   - 写在哪：docker 下写到每个人根目录下的 `snapshot/`（工作目录外），只读挂到容器的 `/workspace/weave`；本机开发（local）直接写在工作目录的 `weave/`。旧的整个 rename 到工作目录外再删，不原地递归删（不跟随链接，目录链再深也挪得走）。
-  - 写成 `weave.db`：`meta(key, value)` 加上给了的表。表和列写死在 `hosted/agent-service/snapshot.mjs` 的 `TABLES`，出现不认识的表名，整份快照无效，所以 Weave 这边（`hosted/lib/weave/agent-snapshot.mjs`）加表或加列，Agent 服务这边必须同时改，否则每次叫醒都回 503。新列只往后加，`weekly-review` 的 `stats.py` 按列名读，不受影响。
+  - 写成 `weave.db`：`meta(key, value)` 加上给了的表。表和列写死在 `hosted/agent-service/snapshot.mjs` 的 `TABLES`，出现不认识的表名，整份快照无效，所以 Weave 这边（`hosted/lib/weave/agent-snapshot.mjs`）加了新表，Agent 服务这边必须同时加，否则每次叫醒都回 503。新列不会报错：`validateSnapshot` 只取 `TABLES` 里写了的列，多出来的列被悄悄丢掉，Agent 在 `weave.db` 里看不到它，所以加列也要两边一起改。新列只往后加，`weekly-review` 的 `stats.py` 按列名读，不受影响。
   - `files` 写成 `weave/<路径>`，目前没人用（Notion 定为 MCP 工具，按需读）。路径每段最多 200 字节，不能是 `.`、`..`，不含 `\`；最多 200 个文件、单个 1 MB、合计 5 MB。不合规的跳过并记日志。
   - 取不到或格式不对就不叫醒，`/wake` 回 503，dispatcher 当成「没有处理」。
   - `save_habit`、`log_completion`、`save_goal`、`set_reminder` 成功后，Agent 服务把结果同步进快照的 `weave.db`，同一轮里再查就看得到（我的看法：这是 p.20 说的副作用，放在工具外壳里，不进循环）。同步只碰宿主自己的那份：如果宿主去打开 Agent 改得到的文件，Agent 埋一个触发器就能卡住整个服务（审查发现，所以 docker 下快照只读挂载）。
