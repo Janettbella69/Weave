@@ -239,6 +239,88 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-send svg{width:20px;height:20px}
 }
 
+/* The bar at the top of a phone (Workspace.jsx): Weave, a link to the assistant's home page, and the date. The chat and
+   the assistant's home page have their own header instead, and a wide screen has the navigation column. */
+.wv-topbar{display:none}
+@media(max-width:719.98px){
+  .wv-topbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 16px;border-bottom:1px solid var(--wv-line)}
+  .wv-topbar-brand{display:flex;align-items:center;gap:8px;min-height:48px;color:var(--wv-ink);font-size:18px;font-weight:600;line-height:1.3;text-decoration:none}
+  .wv-topbar-date{font-size:14px;color:var(--wv-secondary);white-space:nowrap}
+}
+
+/* Chat (pages/ChatPage.jsx): the header, the conversation (which scrolls) and the box, which stays at the bottom */
+.wv-chat{display:flex;flex-direction:column;height:100%}
+.wv-chat-head{flex:none;display:flex;align-items:center;gap:12px;padding:8px 24px;border-bottom:1px solid var(--wv-line)}
+.wv-agent-link{display:flex;align-items:center;gap:10px;min-height:48px;color:var(--wv-ink);text-decoration:none}
+.wv-agent-name{display:flex;flex-direction:column}
+.wv-agent-title{font-size:16px;font-weight:600;line-height:1.4}
+.wv-agent-state{display:flex;align-items:center;gap:5px;font-size:12px;line-height:1.4;color:var(--wv-secondary)}
+.wv-connected-mark{flex:none;display:flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:999px;background:var(--wv-connected);color:#FFFFFF}
+.wv-chat-log{flex:1;min-height:0;overflow-y:auto;padding:24px}
+.wv-chat-column{width:100%;max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.wv-chat-width{max-width:760px;margin:0 auto}
+.wv-day{align-self:center;margin:12px 0 4px;font-size:12px;color:var(--wv-small)}
+.wv-day:first-child{margin:4px 0}
+.wv-bubble{max-width:75%;min-width:0;padding:12px 18px;border-radius:22px;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
+.wv-bubble.is-user{align-self:flex-end;background:var(--wv-blue);color:var(--wv-on-blue);white-space:pre-wrap}
+.wv-bubble.is-assistant{align-self:flex-start;background:var(--wv-bubble)}
+.wv-bubble.is-thinking{color:var(--wv-secondary)}
+.wv-proactive{align-self:flex-start;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--wv-secondary)}
+.wv-chat-compose{flex:none;padding:8px 24px 20px}
+.wv-chat-note{margin-left:20px;font-size:12px;color:var(--wv-small)}
+/* What Weave writes in Markdown (Markdown.jsx), inside its bubble. A code block scrolls sideways inside the bubble. */
+.wv-bubble>*+*{margin-top:8px}
+.wv-bubble :is(ul,ol){margin:0;padding-left:1.4em}
+.wv-bubble li+li,.wv-bubble li>:is(ul,ol){margin-top:2px}
+.wv-bubble .md-heading{font-size:17px}
+.wv-bubble a{color:var(--wv-link)}
+.wv-bubble a:hover{color:var(--wv-on-blue)}
+.wv-bubble code{padding:1px 5px;border-radius:6px;background:#FFFFFF;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}
+.wv-bubble pre{max-width:100%;margin:0;padding:10px 14px;border-radius:12px;background:#FFFFFF;overflow-x:auto;font-size:13px;line-height:1.5}
+.wv-bubble pre code{padding:0;border-radius:0;background:none;font-size:inherit;overflow-wrap:normal;white-space:pre}
+.wv-bubble hr{margin:12px 0;border:0;border-top:1px solid #DADADA}
+@media(max-width:719.98px){
+  .wv-chat-head{padding:6px 16px}
+  .wv-chat-log{padding:16px}
+  .wv-chat-column{gap:12px}
+  .wv-day{margin:8px 0 0}
+  .wv-day:first-child{margin:0}
+  .wv-bubble{max-width:85%;padding:10px 16px;border-radius:20px;font-size:15px}
+  .wv-chat-compose{padding:8px 12px 10px}
+  /* The phone board has no room for this line; settings says the same under 数据与隐私. */
+  .wv-chat-note{display:none}
+}
+
+/* First run (pages/FirstRun.jsx) */
+.wv-first-run{padding:64px 40px 40px}
+.wv-first-run-column{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.wv-welcome{display:flex;flex-direction:column;gap:10px}
+.wv-welcome h1{margin-top:6px;font-size:28px}
+.wv-welcome p{font-size:16px;line-height:1.7;color:var(--wv-secondary)}
+.wv-options{display:flex;flex-wrap:wrap;gap:10px}
+.wv-option{min-height:44px;padding:0 18px;border:1px solid var(--wv-field);border-radius:999px;background:#FFFFFF;color:var(--wv-ink);font-size:15px;line-height:1.3}
+.wv-option[aria-pressed=true]{border-color:var(--wv-blue);background:var(--wv-blue);color:var(--wv-on-blue);font-weight:600}
+.wv-plan,.wv-own{display:flex;flex-direction:column;gap:12px;padding:20px 24px;border-radius:24px;background:var(--wv-block)}
+.wv-own{gap:10px}
+.wv-plan-title{font-size:16px;font-weight:600}
+.wv-plan-step{font-size:15px;line-height:1.7}
+.wv-plan-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.wv-plan-hint{font-size:14px;color:var(--wv-secondary)}
+.wv-own label{font-size:15px;font-weight:600}
+.wv-own-row{display:flex;flex-wrap:wrap;gap:10px}
+.wv-button.is-large{min-height:48px;padding:0 22px;font-size:16px}
+.wv-input{flex:1 1 240px;min-width:0;min-height:48px;margin:0;padding:0 18px;border:1px solid var(--wv-field);border-radius:999px;background:#FFFFFF;color:var(--wv-ink);font-size:15px}
+.wv-input:focus{outline:none;border-color:var(--wv-link)}
+.wv-input::placeholder{color:var(--wv-small)}
+.wv-first-run .wv-composer{margin-top:8px}
+.wv-composer-label{font-size:14px;color:var(--wv-secondary)}
+.wv-first-run .wv-composer-box textarea{font-size:15px}
+@media(max-width:719.98px){
+  .wv-first-run{padding:32px 16px 24px}
+  .wv-welcome h1{font-size:24px}
+  .wv-plan,.wv-own{padding:18px 20px;border-radius:20px}
+}
+
 @media(prefers-reduced-motion:reduce){
   *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
 }

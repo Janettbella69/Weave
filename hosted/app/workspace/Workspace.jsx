@@ -1,10 +1,16 @@
 'use client';
-import {useCallback,useEffect,useRef,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {apiRequest,normalizeStatus,unauthorizedAction,reloadAllowed} from './api-client.mjs';
 import {readView,viewSearch} from './view-route.mjs';
 import {NOTION_TEXT,readNotionReturn,resolveNotionReturn,waitForNotionPages} from './notion-return.mjs';
+import {beginPending,finishPending,dropSettled} from './chat-pending.mjs';
+import {formatHeaderShort} from './dates.mjs';
 import {COPY} from './copy.mjs';
 import Nav from './ui/Nav';
+import Avatar from './ui/Avatar';
+import ViewLink from './ui/ViewLink';
+import ChatPage from './pages/ChatPage';
+import FirstRun from './pages/FirstRun';
 
 // The workspace shell: it loads /api/status and keeps it fresh, remembers which page is open, and draws the navigation
 // around that page. Everything a page shows is the page's own (one component per page).
@@ -18,7 +24,7 @@ function onUnauthorized(response){
 const api=(path,data)=>apiRequest(path,data,{onUnauthorized});
 
 // The page of each view. Every page gets the same props:
-//   {state, api, act, refresh, navigate, authKind}
+//   {state, api, act, refresh, navigate, authKind, chat}
 //   state     the last /api/status answer, through normalizeStatus. A page only shows once there is one.
 //   api       (path, body?) => Promise of the answer: a call to /api/<path>, with the 401 handling above.
 //   act       (task, notice?) => Promise: runs `task` after the changes before it. When it worked: shows `notice` and
@@ -27,28 +33,40 @@ const api=(path,data)=>apiRequest(path,data,{onUnauthorized});
 //             after the one in flight, so a change just made shows up.
 //   navigate  (view) => opens that page and keeps it in the address (?view=…).
 //   authKind  'chatgpt' | 'guest' | 'single'
+//   chat      what is on its way to Weave, and the chat's box, kept here so a change of page loses neither (chat-send.mjs
+//             sends with it): {pendings, begin, finish, cancel, restore, draft, setDraft}
+//             pendings  the entries of chat-pending.mjs. begin(text) -> entry; finish(entry, reply); cancel(entry, error)
+//             takes the entry off and shows the error; restore(text) puts a text that did not go out back in the box,
+//             unless something new was typed there; draft / setDraft are the box's text.
 // The settings page also gets `notionReturn`: what a return from Notion left for it to show (see the first effect).
 // A page renders inside the shell's <main> (which scrolls), so it brings no <main> of its own.
 // A view whose page is not written yet has an empty body. Each page adds one line here.
-const PAGES={};
-// The chat of someone who has no habits and has never written anything opens on the first-run screen. Its page goes here.
-const FIRST_RUN=null;
-const isFirstRun=state=>state.habits.length===0&&state.messages.length===0;
+const PAGES={chat:ChatPage};
+// The chat of someone who has no habits and has never written anything opens on the first-run screen, until a first
+// message is on its way: then the chat shows it, with the thinking bubble, at once.
+const FIRST_RUN=FirstRun;
+const isFirstRun=(state,pendings)=>state.habits.length===0&&state.messages.length===0&&pendings.length===0;
+// On a phone, every page but the chat and the assistant's home page (each has a header of its own) has a bar at the top:
+// Weave, which opens the assistant's home page, and the person's date (v3-Mobile, v3-GoalsMobile).
+const hasTopBar=view=>!!view&&view!=='chat'&&view!=='agent';
 
 export default function Workspace({authKind='guest'}){
  // `view` stays null until the address has been read, after the first render, so the server and the browser draw the same.
  const [state,setState]=useState(null),[view,setView]=useState(null),[loadFailed,setLoadFailed]=useState(false);
  const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busyCount,setBusyCount]=useState(0),[notionReturn,setNotionReturn]=useState(null);
- const chain=useRef(Promise.resolve()),inflight=useRef(null),again=useRef(false),entry=useRef(undefined);
+ const [pendings,setPendings]=useState([]),[draft,setDraft]=useState('');
+ const chain=useRef(Promise.resolve()),inflight=useRef(null),again=useRef(false),entry=useRef(undefined),seq=useRef(0),latest=useRef(null);
 
- // A status snapshot arrived.
- const applyState=useCallback(result=>{setState(result);setLoadFailed(false);},[]);
+ // A status snapshot arrived; `id` is the number of its request. A message that was on its way leaves the screen once a
+ // snapshot requested after its reply came back is in (chat-pending.mjs): from then on the server's copy shows.
+ const applyState=useCallback((result,id)=>{latest.current=result;setState(result);setLoadFailed(false);setPendings(list=>dropSettled(list,id));},[]);
  // One status request at a time, so a slow GET /api/status can neither pile up nor arrive out of order.
  // refresh({queue:true}) guarantees a request that starts after this call (use it after something changed).
  const refresh=useCallback(function refresh({queue=false}={}){
   if(inflight.current){if(queue)again.current=true;return inflight.current;}
+  const id=++seq.current;
   const request=(async()=>{
-   try{const result=normalizeStatus(await api('status'));if(!result)throw Error('请求失败');applyState(result);return result;}
+   try{const result=normalizeStatus(await api('status'));if(!result)throw Error('请求失败');applyState(result,id);return result;}
    finally{inflight.current=null;if(again.current){again.current=false;refresh().catch(()=>{});}}
   })();
   inflight.current=request;
@@ -110,16 +128,32 @@ export default function Workspace({authKind='guest'}){
   return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',poll);};
  },[refresh]);
 
+ // Sending to Weave (chat-send.mjs), as the old chat's send did: the text shows at once and the banner clears, and the
+ // reply stays on screen until a status request that started after it came back is in. A send does not go through
+ // `act`: a reply can take a while, and a change made meanwhile (a tick in 待办) should not wait for it.
+ const chat=useMemo(()=>({
+  pendings,draft,setDraft,
+  begin:text=>{const item=beginPending(latest.current?latest.current.messages:[],text);setError('');setNotice('');setPendings(list=>[...list,item]);return item;},
+  // The status requests numbered above `mark` start after the reply was stored; the next one is asked for here.
+  finish:(item,reply)=>{const mark=seq.current;setPendings(list=>finishPending(list,item.key,reply,mark));refresh({queue:true}).catch(()=>{});},
+  cancel:(item,failure)=>{setPendings(list=>list.filter(p=>p.key!==item.key));if(failure)setError(failure.message);},
+  restore:text=>setDraft(current=>current||text),
+ }),[pendings,draft,refresh]);
+
  const retry=()=>{setLoadFailed(false);refresh().catch(()=>setLoadFailed(true));};
- const Page=state&&(view==='chat'&&FIRST_RUN&&isFirstRun(state)?FIRST_RUN:PAGES[view]);
+ const Page=state&&(view==='chat'&&FIRST_RUN&&isFirstRun(state,pendings)?FIRST_RUN:PAGES[view]);
  // Until the first status arrives the navigation stands alone, with an empty page next to it.
- return <div className="wv" aria-busy={busyCount>0||(!state&&!loadFailed)||undefined}>
+ return <div className="wv">
   <Nav view={view} onNavigate={navigate} name={state?state.profile.name:''}/>
   <div className="wv-body">
+   {hasTopBar(view)&&<header className="wv-topbar">
+    <ViewLink view="agent" navigate={navigate} className="wv-topbar-brand" aria-label={COPY.openAgent}><Avatar size={32}/><span>{COPY.brand}</span></ViewLink>
+    {state&&state.today&&<span className="wv-topbar-date">{formatHeaderShort(state.today)}</span>}
+   </header>}
    <p className="wv-banner is-error" role="alert">{error}</p>
    <p className="wv-banner" role="status">{notice}</p>
-   <main className="wv-main" key={view||''}>
-    {Page?<Page state={state} api={api} act={act} refresh={refresh} navigate={navigate} authKind={authKind} {...(view==='settings'?{notionReturn}:null)}/>
+   <main className="wv-main" key={view||''} aria-busy={busyCount>0||(!state&&!loadFailed)||undefined}>
+    {Page?<Page state={state} api={api} act={act} refresh={refresh} navigate={navigate} authKind={authKind} chat={chat} {...(view==='settings'?{notionReturn}:null)}/>
      :!state&&loadFailed?<div className="wv-load-failed"><p role="alert">{COPY.loadFailed}</p><button type="button" className="wv-button is-primary" onClick={retry}>{COPY.retry}</button></div>
      :null}
    </main>

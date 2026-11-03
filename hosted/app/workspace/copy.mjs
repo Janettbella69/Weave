@@ -24,6 +24,7 @@ export const COPY = freeze({
   agentHome: '助理主页',
   backToChat: '返回聊天',
   connected: '已连接',
+  openAgent: '打开 Weave 的助理主页', // the accessible name of the links to it: the chat header, the phone's top bar
 
   // Chat
   send: '发送', // the round send button's accessible name (the boards' aria-label)
@@ -33,6 +34,8 @@ export const COPY = freeze({
   yesterday: '昨天',
   proactive: time => time + ' · Weave 主动来问',
   thinking: '正在想…', // spec section 7
+  conversation: '和 Weave 的对话', // the message list's accessible name (the boards' aria-label)
+  messageLabel: '发消息给 Weave', // the chat box's label, read out but not shown (the boards' hidden label)
 
   // To-do (待办)
   todayLabel: '今天',
@@ -124,6 +127,7 @@ export const COPY = freeze({
   // The first time the site is opened
   welcome: '你好，我是 Weave',
   firstRunIntro: '先选一件最想养成的小事。我们从小到不会失败的一步开始，慢慢来。',
+  pickOne: '选一件想养成的事', // the five choices' accessible name (the board's aria-label)
   // The five choices and the first step of each (the board's own list). The last is the person's own: no step.
   firstRunOptions: [
     {key: 'walk', label: '饭后走走', step: '吃完饭，穿上鞋走到楼下'},

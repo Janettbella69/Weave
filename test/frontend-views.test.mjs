@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
+import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
 import {todoModel} from '../hosted/app/workspace/todo.mjs';
 import {CATEGORY_LABEL,goalsModel} from '../hosted/app/workspace/goals-view.mjs';
 import {monthModel,recentNotes,monthBounds} from '../hosted/app/workspace/records.mjs';
@@ -74,6 +74,13 @@ test('formatHeader adds the weekday, long as on the wide board and short as on t
   assert.equal(formatHeader('2026-11-02',{short:true}),'11 月 2 日 · 周一');
   assert.equal(formatHeader('2026-11-08',{short:true}),'11 月 8 日 · 周日');
   assert.equal(formatHeader(''),'');
+});
+
+test('formatHeaderShort is the date of the phone\'s top bar, as on the phone boards',()=>{
+  assert.equal(formatHeaderShort('2026-11-02'),'11 月 2 日 · 周一');
+  assert.deepEqual(['2026-11-03','2026-11-04','2026-11-05','2026-11-06','2026-11-07','2026-11-08'].map(day=>formatHeaderShort(day).split(' · ')[1]),['周二','周三','周四','周五','周六','周日']);
+  assert.equal(formatHeaderShort('2027-01-01'),'1 月 1 日 · 周五');
+  for(const bad of ['','2026-02-30','soon',undefined])assert.equal(formatHeaderShort(bad),'','nothing to show for '+String(bad));
 });
 
 test('formatTime is the clock in the person\'s zone',()=>{

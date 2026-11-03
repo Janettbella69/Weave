@@ -15,7 +15,7 @@ async function workspaceSources(){
 test('the workspace has no English labels or titles',async()=>{
   const sources=await workspaceSources();
   assert.ok(sources.some(([name])=>name==='Workspace.jsx'),'the walk reaches the shell');
-  for(const text of ['YOUR LIFE, REMEMBERED','SMALL COMMITMENTS','NOTICE, ASK','CHANNELS','<h2>Channels</h2>','Personal Agent','>个人 Agent<','>Agent 协作<','Agent 待测试'])
+  for(const text of ['YOUR LIFE, REMEMBERED','SMALL COMMITMENTS','NOTICE, ASK','CHANNELS','<h2>Channels</h2>','Personal Agent','>个人 Agent<','>Agent 协作<','Agent 待测试','反馈：'])
     for(const [name,source] of sources)assert.ok(!source.includes(text),name+' still has '+text);
 });
 
@@ -23,6 +23,32 @@ test('nothing in the workspace writes raw HTML',async()=>{
   const sources=await workspaceSources();
   assert.ok(sources.some(([name])=>name==='Markdown.jsx'),'the walk reaches the components');
   for(const [name,source] of sources)assert.ok(!source.includes('dangerouslySetInnerHTML'),name);
+});
+
+test('Weave\'s replies are drawn by the Markdown component, never as raw HTML',async()=>{
+  const page=await read('app/workspace/pages/ChatPage.jsx');
+  assert.match(page,/^import Markdown from '\.\.\/Markdown';$/m,'the page brings in the safe Markdown renderer');
+  assert.match(page,/<Markdown text=\{[^}]+\}\/>/,'and renders assistant text through it');
+  assert.ok(!page.includes('dangerouslySetInnerHTML'));
+});
+
+test('only timezone.mjs knows the browser\'s zone; the pages use the account\'s',async()=>{
+  const sources=await workspaceSources();
+  assert.ok(sources.some(([name])=>name==='pages/ChatPage.jsx'),'the walk reaches the pages');
+  const readers=sources.filter(([,source])=>source.includes('deviceTimezone')).map(([name])=>name);
+  assert.deepEqual(readers,['timezone.mjs']);
+});
+
+test('the busy flag is on the page, not on the whole workspace',async()=>{
+  const workspace=await read('app/workspace/Workspace.jsx');
+  assert.match(workspace,/<main className="wv-main"[^>]*\saria-busy=\{/);
+  assert.doesNotMatch(workspace,/<div className="wv"[^>]*aria-busy/);
+});
+
+test('a message sent from the first run or a new goal goes through the chat\'s own send',async()=>{
+  const firstRun=await read('app/workspace/pages/FirstRun.jsx'),workspace=await read('app/workspace/Workspace.jsx');
+  assert.match(firstRun,/sendChat\(props,\s*COPY\.firstRunStarter\(option\.label,\s*option\.step\)\)/,'「就这样开始」 sends the sentence of A-4');
+  assert.match(workspace,/const isFirstRun=\(state,pendings\)=>state\.habits\.length===0&&state\.messages\.length===0&&pendings\.length===0;/,'the first run gives way to the chat while a message is on its way');
 });
 
 test('a 401 is not sent to the guest URL when the site is behind the access password',async()=>{

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {COPY} from '../hosted/app/workspace/copy.mjs';
 import {WECHAT_TEXT,COPY_BIND,BIND_HINT,NEW_CODE,NEW_CODE_NOTE,UNBIND_CONFIRM,bindMessage} from '../hosted/app/workspace/wechat-row.mjs';
 import {isValidTimezone} from '../hosted/app/workspace/timezone.mjs';
+import {NAV} from '../hosted/app/workspace/view-route.mjs';
 
 // The wording on the v3 pages, as the v3 boards and the spec (docs/superpowers/specs/2026-11-03-frontend-v3-design.md,
 // section 3 and Appendix A-4) have it. This list is a pin: changing a sentence in copy.mjs means changing it here too,
@@ -10,8 +11,10 @@ import {isValidTimezone} from '../hosted/app/workspace/timezone.mjs';
 const TEXT = {
   // navigation and page titles
   brand: 'Weave', mainNav: '主导航', chat: '聊天', todo: '待办', goals: '目标', records: '记录', settings: '设置', agentHome: '助理主页', backToChat: '返回聊天', connected: '已连接',
+  openAgent: '打开 Weave 的助理主页',
   // chat
   send: '发送', placeholder: '给 Weave 发消息…', deepseek: '聊天内容会发给 DeepSeek 生成回复。', today: '今天', yesterday: '昨天', thinking: '正在想…',
+  conversation: '和 Weave 的对话', messageLabel: '发消息给 Weave',
   // to-do
   todayLabel: '今天', later: '之后', missedYesterday: '昨天没做，今天做一下就不算连着错过。', addHint: '想加别的事？', addLink: '在聊天里跟 Weave 说一声',
   todoEmpty: '还没有每天要做的事。去「目标」定一个，或者在聊天里跟 Weave 说说你想养成什么。', checkFailed: '没记上，再点一次试试。',
@@ -29,7 +32,7 @@ const TEXT = {
   once: '只响一次', daily: '每天', weekly: '每周', monthly: '每月', noneScheduled: '暂时没有安排。',
   memoryIntro: '这些是 Weave 自己记下的关于你的事。哪条不对，直接在聊天里跟它说。', memoryEmpty: 'Weave 还没有记下关于你的事。',
   // the first time the site is opened
-  welcome: '你好，我是 Weave', firstRunIntro: '先选一件最想养成的小事。我们从小到不会失败的一步开始，慢慢来。', firstRunGo: '就这样开始', firstRunChange: '想换个说法，就在下面跟我说。',
+  welcome: '你好，我是 Weave', firstRunIntro: '先选一件最想养成的小事。我们从小到不会失败的一步开始，慢慢来。', pickOne: '选一件想养成的事', firstRunGo: '就这样开始', firstRunChange: '想换个说法，就在下面跟我说。',
   ownHabit: '我想养成…', ownPlaceholder: '比如：每天拉伸 5 分钟', ownDone: '好了', sayIt: '也可以直接跟我说', sayItPlaceholder: '比如：我总是熬夜，想早点睡',
   // a page that did not load
   loadFailed: '没加载出来。', retry: '重试',
@@ -93,6 +96,12 @@ test('a note written by Weave and one written on the web are told apart; an old 
   assert.equal(COPY.latest('11 月 1 日', 'web', 'x'), '最近：11 月 1 日，你在网页上记下「x」');
   assert.equal(COPY.latest('11 月 1 日', 'agent', 'x'), '最近：11 月 1 日，Weave 帮你记下「x」');
   assert.equal(COPY.latest('11 月 1 日', undefined, 'x'), '最近：11 月 1 日，Weave 帮你记下「x」');
+});
+
+test('each tab is named as its page is', () => {
+  // view-route.mjs and copy.mjs both write the five names; the tab and the page title must never drift apart.
+  assert.equal(NAV.length, 5);
+  for (const {id, label} of NAV) assert.equal(label, COPY[id], id);
 });
 
 test('the six zones, in order, are real time zones', () => {

@@ -59,6 +59,9 @@ export function formatHeader(day, {short = false} = {}) {
   return Number.isFinite(ms) ? formatDay(day) + ' · ' + (short ? WEEKDAY_SHORT : WEEKDAY)[new Date(ms).getUTCDay()] : '';
 }
 
+// '11 月 2 日 · 周一': the date in the phone's top bar (v3-Mobile, v3-GoalsMobile).
+export const formatHeaderShort = day => formatHeader(day, {short: true});
+
 // '19:30'
 export function formatTime(instant, timeZone = SERVER_DEFAULT_TIMEZONE) {
   const ms = toMs(instant);
