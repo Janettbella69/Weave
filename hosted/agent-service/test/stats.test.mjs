@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, writeFileSync} from 'node:fs';
+import {validateSnapshot, writeSnapshot} from '../snapshot.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -34,6 +35,24 @@ test('今天还没记不打断连续天数，昨天也没记才断', () => {
   assert.deepEqual(out, {today: '2026-11-02', habits: {
     run: {last7: 2, prev7: 0, streak: 0},
     walk: {last7: 2, prev7: 0, streak: 2},
+  }});
+});
+
+test('直接读 weave.db：今天取 meta 里的，结果带习惯名', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'weave-stats-db-'));
+  mkdirSync(join(root, 'workspace'));
+  const {dbPath} = await writeSnapshot(join(root, 'workspace', 'weave'), validateSnapshot({
+    version: 1, today: '2026-11-02', timezone: 'Asia/Shanghai',
+    tables: {
+      habits: [{habit_id: 'h:walk', name: '走路'}, {habit_id: 'h:read', name: '读书'}],
+      completions: [{habit_id: 'h:walk', date: '2026-11-02'}, {habit_id: 'h:walk', date: '2026-11-01'}, {habit_id: 'h:walk', date: '2026-10-25'}],
+    },
+    files: {},
+  }));
+  const out = JSON.parse(execFileSync('python3', [STATS, dbPath], {encoding: 'utf8'}));
+  assert.deepEqual(out, {today: '2026-11-02', habits: {
+    'h:read': {name: '读书', last7: 0, prev7: 0, streak: 0},
+    'h:walk': {name: '走路', last7: 2, prev7: 1, streak: 2},
   }});
 });
 

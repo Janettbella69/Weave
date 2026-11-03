@@ -46,9 +46,13 @@ status=$(curl -s --max-time 20 -u weave:ci-password "$url/api/status")
 echo "$status" | grep -q '"personId":"u:' || { echo "FAIL 带上密码后单用户模式没进去：$status"; exit 1; }
 echo "PASS 带上密码进得去，单用户模式认出了本人"
 
-internal=$(curl -s --max-time 20 -X POST -H 'Content-Type: application/json' -d '{"args":{},"toolUseId":"t"}' "$url/api/internal/agent/tools/list_habits")
+internal=$(curl -s --max-time 20 -X POST -H 'Content-Type: application/json' -d '{"args":{"name":"x"},"toolUseId":"t"}' "$url/api/internal/agent/tools/save_habit")
 echo "$internal" | grep -q '通行证' || { echo "FAIL 内部接口应该由通行证把关：$internal"; exit 1; }
 echo "PASS 内部接口不被访问密码挡住，由通行证把关"
+
+snapshot=$(curl -s --max-time 20 "$url/api/internal/agent/snapshot")
+echo "$snapshot" | grep -q '通行证' || { echo "FAIL 快照接口应该由通行证把关：$snapshot"; exit 1; }
+echo "PASS 快照接口不被访问密码挡住，由通行证把关"
 
 unknown=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "$url/api/internal/x")
 [ "$unknown" = 401 ] || { echo "FAIL 别的 /api/internal/ 地址没带密码应该是 401：HTTP $unknown"; exit 1; }

@@ -4,7 +4,8 @@
 
 | 文件 | 干什么 |
 | --- | --- |
-| `server.mjs` | `POST /wake`、`POST /forget`、`GET /health`；每人串行、全局并发。旧路 `POST /query` 第 2 步删 |
+| `server.mjs` | `POST /wake`、`POST /forget`、`POST /memory`（读本人的 MEMORY.md）、`GET /health`；每人串行、全局并发。旧路 `POST /query` 第 2 步删 |
+| `snapshot.mjs` | 叫醒前的数据快照：向 Weave 取、写成 SQLite；docker 下放在工作目录外、只读挂到 `/workspace/weave`；写工具成功后同步 |
 | `runner.mjs` | 一次唤醒，也就是架构文档第 2 节那段配置 |
 | `scopes.mjs` | 本人（owner）和打卡群（group）两种范围 |
 | `providers.mjs` | DeepSeek、Kimi、GLM、千问，都是 Anthropic 格式 |

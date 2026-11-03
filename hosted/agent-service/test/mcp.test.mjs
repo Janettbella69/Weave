@@ -32,8 +32,8 @@ test('makeHandler 把参数和 toolUseId 原样交给 rpc；失败时 isError �
   const result = await makeHandler('log_completion', rpc)({habit_id: 'h1', date: '2026-11-01'}, {_meta: {'claudecode/toolUseId': 'toolu_1'}});
   assert.deepEqual(calls, [['log_completion', {habit_id: 'h1', date: '2026-11-01'}, 'toolu_1']]);
   assert.deepEqual(result, {isError: true, content: [{type: 'text', text: '对方还没授权共享时间，请先让对方确认'}]});
-  const ok = await makeHandler('list_habits', async () => ({ok: true, text: '{"habits":[]}'}))({}, {_meta: {'claudecode/toolUseId': 'toolu_2'}});
-  assert.deepEqual(ok, {isError: false, content: [{type: 'text', text: '{"habits":[]}'}]});
+  const ok = await makeHandler('save_habit', async () => ({ok: true, text: '{"habit":{}}'}))({name: '走路'}, {_meta: {'claudecode/toolUseId': 'toolu_2'}});
+  assert.deepEqual(ok, {isError: false, content: [{type: 'text', text: '{"habit":{}}'}]});
 });
 
 test('makeHandler：拿不到 toolUseId 时也给一个不重复的编号，不让后端因为缺编号拒绝', async () => {
@@ -102,10 +102,10 @@ test('send_message 不能选收件人，文字 1–700 字；save_habit 名字�
   assert.equal(save.safeParse({name: 'x'.repeat(31)}).success, false);
 });
 
-test('只读的两个工具标了 readOnlyHint，五个工具都不碰外部世界', () => {
-  assert.deepEqual(Object.keys(TOOL_DEFS).sort(), ['list_habits', 'log_completion', 'query_completions', 'save_habit', 'send_message']);
+test('只剩三个会写东西的工具（读数据走快照），都不碰外部世界', () => {
+  assert.deepEqual(Object.keys(TOOL_DEFS).sort(), ['log_completion', 'save_habit', 'send_message']);
   for (const [name, def] of Object.entries(TOOL_DEFS)) {
     assert.equal(def.annotations.openWorldHint, false, name);
-    assert.equal(def.annotations.readOnlyHint, ['list_habits', 'query_completions'].includes(name), name);
+    assert.equal(def.annotations.readOnlyHint, false, name);
   }
 });

@@ -53,7 +53,7 @@ test('未知工具 404；group 通行证调 log_completion 是 403', async () =>
 test('参数不对是 400：args 不是对象、缺 toolUseId', async () => {
   const s = await setup(), token = await s.cap(s.alice);
   for (const body of [{args: [], toolUseId: 't'}, {args: {}, toolUseId: ''}, {args: {}}]) {
-    const r = await handleAPI(new Request('https://weave.test/api/internal/agent/tools/list_habits', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify(body)}), {db: s.db, secret, now: NOW});
+    const r = await handleAPI(new Request('https://weave.test/api/internal/agent/tools/save_habit', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify(body)}), {db: s.db, secret, now: NOW});
     assert.equal(r.status, 400, JSON.stringify(body));
   }
 });
@@ -83,15 +83,16 @@ test('规则失败返回 200 加 ok:false，把中文原因交给模型（未来
   assert.equal((await s.world()).people[s.alice].completions?.length ?? 0, 0);
 });
 
-test('list_habits 和 query_completions 只读，不留回执', async () => {
+test('只读工具已经去掉：list_habits、query_completions 打过来是 404（数据走叫醒前的快照）', async () => {
   const s = await setup(), token = await s.cap(s.alice);
-  await s.tool('save_habit', {name: '走路'}, {token, toolUseId: 'toolu_a'});
-  const before = (await s.world()).people[s.alice].toolReceipts.length;
-  const listed = await s.tool('list_habits', {}, {token, toolUseId: 'toolu_c'});
-  assert.equal(JSON.parse(listed.data.text).habits[0].name, '走路');
-  const queried = await s.tool('query_completions', {from: '2026-10-27', to: '2026-11-02'}, {token, toolUseId: 'toolu_d'});
-  assert.deepEqual(JSON.parse(queried.data.text), {today: '2026-11-02', completions: []});
-  assert.equal((await s.world()).people[s.alice].toolReceipts.length, before);
+  for (const name of ['list_habits', 'query_completions']) assert.equal((await s.tool(name, {}, {token})).status, 404, name);
+});
+
+test('习惯编号不对时，提示去 weave.db 里查', async () => {
+  const s = await setup();
+  const r = await s.tool('log_completion', {habit_id: 'h:nope', date: '2026-11-01'}, {token: await s.cap(s.alice)});
+  assert.equal(r.data.ok, false);
+  assert.match(r.data.text, /weave\.db/);
 });
 
 test('send_message 只发给通行证上的本人：进本人的 messages 和通知，另一个账号看不到', async () => {

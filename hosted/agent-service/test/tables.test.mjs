@@ -4,7 +4,7 @@ import {scopeFor} from '../scopes.mjs';
 import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
 import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['list_habits', 'save_habit', 'log_completion', 'query_completions'];
+const PRIVATE_TOOLS = ['save_habit', 'log_completion'];
 
 test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
   const s = scopeFor('owner');
@@ -116,4 +116,16 @@ test('renderTrigger：kind、channel、direct、at 不合法直接报错', () =>
   assert.throws(() => renderTrigger({...ok, at: '2026-11-01 20:13'}));
   assert.throws(() => renderTrigger({...ok, direct: 'yes'}));
   assert.throws(() => renderTrigger({...ok, text: 42}));
+});
+
+test('系统提示告诉 Agent：数据在 weave/weave.db，自己写 SQL 查；记录和对外说话用 weave 工具', () => {
+  for (const kind of ['owner', 'group']) {
+    const p = systemPromptFor(scopeFor(kind), '');
+    assert.ok(p.includes('weave/weave.db') && p.includes('SQL') && p.includes('weave 工具'), kind);
+    assert.ok(!p.includes('list_habits') && !p.includes('query_completions'), kind);
+  }
+});
+
+test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL）', () => {
+  assert.deepEqual([...scopeFor('owner').tools].sort(), ['log_completion', 'save_habit', 'send_message']);
 });
