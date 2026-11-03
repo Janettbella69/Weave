@@ -49,9 +49,11 @@ test('compose: its own project, only wx and bridge, no host network, no publishe
   assert.match(composeText, /^name: wechat$/m);
   const services = [...composeText.split(/^volumes:$/m)[0].matchAll(/^ {2}([a-z-]+):$/gm)].map(m => m[1]);
   assert.deepEqual(services, ['wx', 'bridge']);
-  assert.doesNotMatch(composeText, /network_mode: host|^\s*ports:|0\.0\.0\.0/m);
-  assert.doesNotMatch(composeText, /^\s*(networks|external|privileged|pid|ipc|cap_add|devices|extra_hosts):/m);
-  assert.doesNotMatch(composeText, /docker\.sock|weave_|web-state|weave-data/);
+  // The settings, not the comments (they explain what binds where).
+  const settings = composeText.replace(/^\s*#.*$/gm, '');
+  assert.doesNotMatch(settings, /network_mode: host|^\s*ports:|0\.0\.0\.0/m);
+  assert.doesNotMatch(settings, /^\s*(networks|external|privileged|pid|ipc|cap_add|devices|extra_hosts):/m);
+  assert.doesNotMatch(settings, /docker\.sock|weave_|web-state|weave-data/);
   assert.match(composeText, /^volumes:\n {2}wx-data:\n {2}wx-scratch:\n {2}bridge-state:\n?$/m);
 });
 
@@ -311,6 +313,9 @@ if (args[0] === 'compose') {
   if (!existsSync(where + '/bridge.env')) fail('env file ' + where + '/bridge.env not found: no such file or directory', 1);
   if (sub === 'pull') end();
   if (sub === 'up') {
+    // Like Compose with network_mode: service:wx: bringing the bridge up without --no-deps also handles wx, and with
+    // --force-recreate that can re-create the freshly logged-in wx. The scripts must never do that; the tests check the id.
+    if (services.includes('bridge') && !rest.includes('--no-deps') && rest.includes('--force-recreate') && state.exists['wechat-wx-1']) { create('wechat-wx-1'); state.wxRecreatedWithBridge = true; }
     for (const s of services) {
       const n = names[s];
       if (rest.includes('--force-recreate') || !state.exists[n] || (s === 'wx' && process.env.FAKE_WX_RECREATE === '1')) create(n);
@@ -394,7 +399,13 @@ function sandbox({webEnv = `WEAVE_ENCRYPTION_KEY=aa\nWEAVE_AGENT_RUNTIME=sdk\nWE
   return {base, repo, where, bin, logs, home, env, run, events, fakeState, bridgeEnv: join(where, 'bridge.env'), composeEnv: join(where, '.env'), done: () => rmSync(base, {recursive: true, force: true})};
 }
 const everything = r => r.stdout + r.stderr;
-const nothingStarted = events => !events.some(e => /auth login|tokens create|up -d --force-recreate bridge|docker run /.test(e));
+const nothingStarted = events => !events.some(e => /auth login|tokens create|--force-recreate bridge|docker run /.test(e));
+// login.sh must never re-create wx (it would restart the freshly logged-in client): same container id, and no bridge
+// start without --no-deps (the fake docker re-creates wx then, as Compose may).
+const assertWxUntouched = (box, before) => {
+  assert.equal(box.fakeState().ids['wechat-wx-1'], before, 'wx was re-created');
+  assert.ok(!box.fakeState().wxRecreatedWithBridge, 'the bridge was started without --no-deps');
+};
 
 describe('the scripts, run in a sandbox', {concurrency: true}, () => {
   test('up.sh: writes a 600 bridge.env with only the non-secret defaults, pulls both images, starts wx only, and checks the version', async () => {
@@ -493,6 +504,7 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
 
   async function loggedInFlow(box, args = ['--mac-stopped'], extra = {}, input) {
     assert.equal((await box.run('up.sh')).status, 0);
+    box.wxBeforeLogin = box.fakeState().ids['wechat-wx-1'];
     return box.run('login.sh', args, extra, input);
   }
 
@@ -512,7 +524,7 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
       assert.ok(!existsSync(join(box.home, 'weave-wechat-qr.png')), 'the copied QR is removed after the login');
       // New key (read + send only) → tried through stdin → bridge started → its logs show both contacts → old keys revoked.
       const create = at(/^wx .*tokens create weave-bridge/), tried = at(/^docker exec -i wechat-wx-1 wx --json --server http:\/\/127\.0\.0\.1:6179 --token-stdin --account acc-1 account status$/);
-      const start = at(/ up -d --force-recreate bridge$/), watched = events.findIndex((e, i) => i > start && /^docker logs .*wechat-bridge-1$/.test(e)), revoke = at(/^wx .*tokens revoke t-old$/);
+      const start = at(/ up -d --no-deps --force-recreate bridge$/), watched = events.findIndex((e, i) => i > start && /^docker logs .*wechat-bridge-1$/.test(e)), revoke = at(/^wx .*tokens revoke t-old$/);
       assert.ok(create >= 0 && tried > create && start > tried && watched > start && revoke > watched, events.join('\n'));
       assert.match(events[create], /--accounts acc-1 --scopes read --scopes send$/);
       assert.ok(!events.some(e => /tokens revoke (t-other|t-gone|t-new-1)/.test(e)));
@@ -530,6 +542,7 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
       assert.match(r.stdout, /Mac 上原来那次登录多半会被微信顶下线/);
       assert.match(r.stdout, /桥接已启动，连上了 wx 和 Weave/);
       assert.match(r.stdout, /旧的桥接密钥作废了 1 把/);
+      assertWxUntouched(box, box.wxBeforeLogin);
     } finally { box.done(); }
   });
 
@@ -557,7 +570,8 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
       const r = await loggedInFlow(yes, [], {WEAVE_WECHAT_TTY: '1'}, '已停\n');
       assert.equal(r.status, 0, everything(r));
       assert.match(yes.events().find(e => /^docker exec .*auth login/.test(e)), /^docker exec -it wechat-wx-1 wx --server http:\/\/127\.0\.0\.1:6179 --token-file \/var\/lib\/agent-wechat\/api-token --account acc-1 auth login$/);
-      assert.ok(yes.events().some(e => / up -d --force-recreate bridge$/.test(e)));
+      assert.ok(yes.events().some(e => / up -d --no-deps --force-recreate bridge$/.test(e)));
+      assertWxUntouched(yes, yes.wxBeforeLogin);
     } finally { yes.done(); }
   });
 
@@ -577,9 +591,10 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
     const box = sandbox();
     try {
       assert.equal((await loggedInFlow(box)).status, 0);
-      const before = box.events().length;
+      const before = box.events().length, wxBefore = box.fakeState().ids['wechat-wx-1'];
       const r = await box.run('login.sh', ['--mac-stopped']);
       assert.equal(r.status, 0, everything(r));
+      assertWxUntouched(box, wxBefore);
       const events = box.events().slice(before);
       assert.match(r.stdout, /小号已经登录着，跳过扫码/);
       assert.ok(!events.some(e => /auth login/.test(e)));
@@ -638,7 +653,7 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
       assert.match(r.stdout, /同一局域网/);
       assert.match(r.stderr, /同一局域网检查/);
       assert.match(r.stderr, /README 第 2 节/);
-      assert.ok(!box.events().some(e => /tokens create|up -d --force-recreate bridge/.test(e)));
+      assert.ok(!box.events().some(e => /tokens create|--force-recreate bridge/.test(e)));
       assert.ok(!existsSync(join(box.home, 'weave-wechat-qr.png')));
     } finally { box.done(); }
     const expired = sandbox();
@@ -664,7 +679,7 @@ describe('the scripts, run in a sandbox', {concurrency: true}, () => {
       assert.match(r.stderr, /新密钥试用没通过，已经作废它/);
       const events = box.events();
       assert.ok(events.some(e => /^wx .*tokens revoke t-new-1$/.test(e)));
-      assert.ok(!events.some(e => /tokens revoke t-old|up -d --force-recreate bridge/.test(e)));
+      assert.ok(!events.some(e => /tokens revoke t-old|--force-recreate bridge/.test(e)));
       assert.doesNotMatch(readFileSync(box.bridgeEnv, 'utf8'), /^WX_TOKEN=/m);
     } finally { box.done(); }
   });

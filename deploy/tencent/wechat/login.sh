@@ -222,7 +222,9 @@ say "已写入 ${bridge_env}（权限 600，不显示内容）：网站的桥接
 
 say ""
 say "== 4/4 启动桥接"
-dc up -d --force-recreate bridge
+# --no-deps：只重建桥接。不加的话，compose 会连它依赖的 wx（network_mode: service:wx）一起处理，
+# 可能把刚登录好的 wx 也重建一遍。wx 这时一定在跑（脚本开头查过）。
+dc up -d --no-deps --force-recreate bridge
 # 桥接外面那层 bridge-guard.mjs 在第一次连上 wx、第一次连上 Weave 时各打一行。两行都等到（最多 30 秒），
 # 再看它稳稳跑 10 秒、没有重启，才作废旧密钥。不然旧密钥留着，前一套还能用。
 reached_wx=0 reached_weave=0
