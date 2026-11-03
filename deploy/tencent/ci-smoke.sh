@@ -71,6 +71,12 @@ alive=$(curl -s --max-time 20 -o /dev/null -w '%{http_code}' "$url/" || true)
 [ "$bad" = 0 ] && [ "$alive" = 401 ] || { echo "FAIL 带请求体的 POST 有 $bad 次不是 401，网站现在回 HTTP $alive"; exit 1; }
 echo "PASS 带请求体的 POST 连发 60 次都是 401，网站还在"
 
+# 页面每 5 秒拉一次 /api/status。wrangler dev 的代理和网站程序之间有一条闲了约 5 秒就被关掉的连接，轮询正好撞上时转发会失败；
+# 没打补丁的 wrangler 4.92.0 把这个 GET 挂起来，等下一个请求才放出去（Chrome 还把后续轮询扣 20 秒，合起来就是 25 秒）。
+# 按浏览器的节奏轮询 20 次，任何一次超过 1 秒都算没修好（补丁在 hosted/scripts/patch-wrangler-proxy.mjs）。
+# 没打补丁时本机大约三分之一的轮询会卡 5 秒，20 次几乎必然露馅。
+node ../../hosted/scripts/check-status-stall.mjs --url "$url" --auth weave:ci-password --polls 20 || { echo "FAIL 页面轮询 /api/status 出现卡顿"; exit 1; }
+
 # 关掉后这个地址交给网站本身（没带密码就是 401）。只要不返回 200（不吐数据）就算关着；短超时是为了出问题时不卡住 CI。
 explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }

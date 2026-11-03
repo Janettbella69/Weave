@@ -50,6 +50,9 @@ fi
 
 node ./scripts/notion-oauth-proxy.mjs &
 
+# 开发代理的补丁没打上时，在日志里说清楚（不拦着启动：拦住只会让网站整个起不来）。
+node ./scripts/patch-wrangler-proxy.mjs --check || echo "警告：wrangler 开发代理没有打补丁，页面轮询可能偶尔卡 5 到 25 秒（见 scripts/patch-wrangler-proxy.mjs）。" >&2
+
 exec node ./node_modules/wrangler/bin/wrangler.js \
   dev --env-file /app/.dev.vars --config dist/server/wrangler.json --local --persist-to "$state_dir" \
   --ip 0.0.0.0 --port "${PORT:-4317}" --inspector-port 0
