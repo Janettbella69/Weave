@@ -56,10 +56,14 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
 }
 
 // Waits until a condition holds; used when a wake is deliberately left running.
-export async function until(condition, label = 'condition') {
-  for (let i = 0; i < 200; i++) {
-    if (condition()) return;
-    await new Promise(resolve => setImmediate(resolve));
+// It waits on the clock, never on a number of event-loop turns: a tick goes through WebCrypto (hash, HMAC), which
+// finishes on another thread, and on a slow CI runner 200 setImmediate turns were used up in about 6 ms before the
+// first result came back ("timed out waiting for the first wake"). The limit is only there so that a real bug fails
+// the test instead of hanging it.
+export async function until(condition, label = 'condition', timeoutMs = 10_000) {
+  const end = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= end) throw Error('timed out waiting for ' + label);
+    await new Promise(resolve => setTimeout(resolve, 1));
   }
-  throw Error('timed out waiting for ' + label);
 }
