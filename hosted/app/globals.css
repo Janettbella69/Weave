@@ -240,7 +240,8 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 }
 
 /* The bar at the top of a phone (Workspace.jsx): Weave, a link to the assistant's home page, and the date. The chat and
-   the assistant's home page have their own header instead, and a wide screen has the navigation column. */
+   the assistant's home page have their own header instead (the first-run screen, which has none, gets the bar), and a
+   wide screen has the navigation column. */
 .wv-topbar{display:none}
 @media(max-width:719.98px){
   .wv-topbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 16px;border-bottom:1px solid var(--wv-line)}
@@ -268,15 +269,18 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-proactive{align-self:flex-start;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--wv-secondary)}
 .wv-chat-compose{flex:none;padding:8px 24px 20px}
 .wv-chat-note{margin-left:20px;font-size:12px;color:var(--wv-small)}
-/* What Weave writes in Markdown (Markdown.jsx), inside its bubble. A code block scrolls sideways inside the bubble. */
+/* What Weave writes in Markdown (Markdown.jsx), inside its bubble. A code block scrolls sideways inside the bubble.
+   Blocks are 8px apart and the first has none above it. A list or a code block takes that gap too: its own rules below
+   set only its bottom and side margins, so they never override the top one. */
 .wv-bubble>*+*{margin-top:8px}
-.wv-bubble :is(ul,ol){margin:0;padding-left:1.4em}
+.wv-bubble>:first-child{margin-top:0}
+.wv-bubble :is(ul,ol){margin-right:0;margin-bottom:0;margin-left:0;padding-left:1.4em}
 .wv-bubble li+li,.wv-bubble li>:is(ul,ol){margin-top:2px}
 .wv-bubble .md-heading{font-size:17px}
 .wv-bubble a{color:var(--wv-link)}
 .wv-bubble a:hover{color:var(--wv-on-blue)}
 .wv-bubble code{padding:1px 5px;border-radius:6px;background:#FFFFFF;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}
-.wv-bubble pre{max-width:100%;margin:0;padding:10px 14px;border-radius:12px;background:#FFFFFF;overflow-x:auto;font-size:13px;line-height:1.5}
+.wv-bubble pre{max-width:100%;margin-right:0;margin-bottom:0;margin-left:0;padding:10px 14px;border-radius:12px;background:#FFFFFF;overflow-x:auto;font-size:13px;line-height:1.5}
 .wv-bubble pre code{padding:0;border-radius:0;background:none;font-size:inherit;overflow-wrap:normal;white-space:pre}
 .wv-bubble hr{margin:12px 0;border:0;border-top:1px solid #DADADA}
 @media(max-width:719.98px){

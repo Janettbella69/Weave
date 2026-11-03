@@ -3,7 +3,7 @@ import {useEffect, useId, useRef, useState} from 'react';
 import {isReplying} from '../chat-pending.mjs';
 import {COPY} from '../copy.mjs';
 import {formatDay} from '../dates.mjs';
-import {CATEGORY_LABEL, goalsModel} from '../goals-view.mjs';
+import {CATEGORY_LABEL, goalWordsLimit, goalsModel} from '../goals-view.mjs';
 import Composer from '../ui/Composer';
 import {Briefcase, ChevronRight, Heart, JapaneseYen, Laptop, Palette, SquareCheck, Users} from '../ui/Icons';
 import {sendChat} from './ChatPage';
@@ -63,7 +63,8 @@ export default function GoalsPage(props) {
             <div className="wv-bubble is-assistant">{COPY.goalIntro(CATEGORY_LABEL[picked])}</div>
           </div>
           <div className="wv-goal-talk-compose">
-            <Composer label={COPY.goalLabel} placeholder={COPY.goalPlaceholder} value={text} onChange={setText} onSend={send} disabled={!canSend}/>
+            {/* The starter goes in front of these words, so the box keeps room for it (goals-view.mjs). */}
+            <Composer label={COPY.goalLabel} placeholder={COPY.goalPlaceholder} value={text} onChange={setText} onSend={send} disabled={!canSend} maxLength={goalWordsLimit(picked)}/>
           </div>
         </div> : <ul ref={list} className="wv-categories">
           {Object.entries(CATEGORY_LABEL).map(([key, label]) => {

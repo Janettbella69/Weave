@@ -1,7 +1,7 @@
 'use client';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {apiRequest,normalizeStatus,unauthorizedAction,reloadAllowed} from './api-client.mjs';
-import {readView,viewSearch} from './view-route.mjs';
+import {readView,viewSearch,hasTopBar} from './view-route.mjs';
 import {NOTION_TEXT,readNotionReturn,resolveNotionReturn,waitForNotionPages} from './notion-return.mjs';
 import {beginPending,finishPending,dropSettled} from './chat-pending.mjs';
 import {formatHeaderShort} from './dates.mjs';
@@ -48,9 +48,6 @@ const PAGES={chat:ChatPage,todo:TodoPage,goals:GoalsPage};
 // message is on its way: then the chat shows it, with the thinking bubble, at once.
 const FIRST_RUN=FirstRun;
 const isFirstRun=(state,pendings)=>state.habits.length===0&&state.messages.length===0&&pendings.length===0;
-// On a phone, every page but the chat and the assistant's home page (each has a header of its own) has a bar at the top:
-// Weave, which opens the assistant's home page, and the person's date (v3-Mobile, v3-GoalsMobile).
-const hasTopBar=view=>!!view&&view!=='chat'&&view!=='agent';
 
 export default function Workspace({authKind='guest'}){
  // `view` stays null until the address has been read, after the first render, so the server and the browser draw the same.
@@ -143,12 +140,14 @@ export default function Workspace({authKind='guest'}){
  }),[pendings,draft,refresh]);
 
  const retry=()=>{setLoadFailed(false);refresh().catch(()=>setLoadFailed(true));};
- const Page=state&&(view==='chat'&&FIRST_RUN&&isFirstRun(state,pendings)?FIRST_RUN:PAGES[view]);
+ const firstRun=!!state&&view==='chat'&&!!FIRST_RUN&&isFirstRun(state,pendings);
+ const Page=state&&(firstRun?FIRST_RUN:PAGES[view]);
  // Until the first status arrives the navigation stands alone, with an empty page next to it.
  return <div className="wv">
   <Nav view={view} onNavigate={navigate} name={state?state.profile.name:''}/>
   <div className="wv-body">
-   {hasTopBar(view)&&<header className="wv-topbar">
+   {/* On a phone: the bar at the top (view-route.mjs says which pages have it; the first run does, the chat does not) */}
+   {hasTopBar(view,{firstRun})&&<header className="wv-topbar">
     <ViewLink view="agent" navigate={navigate} className="wv-topbar-brand" aria-label={COPY.openAgent}><Avatar size={32}/><span>{COPY.brand}</span></ViewLink>
     {state&&state.today&&<span className="wv-topbar-date">{formatHeaderShort(state.today)}</span>}
    </header>}

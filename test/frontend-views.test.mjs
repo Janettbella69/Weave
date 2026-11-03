@@ -4,7 +4,8 @@ import {execFileSync} from 'node:child_process';
 import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
 import {todoModel} from '../hosted/app/workspace/todo.mjs';
 import {habitKey,reminderKey,withChecks,settleChecks} from '../hosted/app/workspace/todo-checks.mjs';
-import {CATEGORY_LABEL,goalsModel} from '../hosted/app/workspace/goals-view.mjs';
+import {CATEGORY_LABEL,goalsModel,goalWordsLimit} from '../hosted/app/workspace/goals-view.mjs';
+import {MESSAGE_MAX_LENGTH} from '../hosted/app/workspace/chat-input.mjs';
 import {monthModel,recentNotes,monthBounds} from '../hosted/app/workspace/records.mjs';
 import {withSeparators,isProactive,proactiveLabel} from '../hosted/app/workspace/chat-view.mjs';
 import {retryOnConflict} from '../hosted/app/workspace/retry.mjs';
@@ -326,6 +327,19 @@ test('goalsModel: a goal with no habit yet is a card with no lines; the start da
   assert.equal(goalsModel({goals,habits:[],completions:[],today:TODAY,tz:LA}).cards[0].startedDay,'2026-10-12');
   assert.equal(goalsModel({goals,habits:[],completions:[],today:TODAY}).cards[0].startedDay,'2026-10-13','Beijing time when nothing else is said');
   assert.equal(goalsModel({goals:[goal('g:2','x','nonsense')],habits:[],completions:[],today:TODAY,tz:SH}).cards[0].categoryLabel,CATEGORY_LABEL.other,'a category nobody knows is 其他');
+});
+
+test('goalWordsLimit: a new goal\'s words leave room for the starter, so the message never passes what the chat takes',()=>{
+  // The words go to POST /api/chat with COPY.goalStarter in front; the chat refuses more than 4000 characters.
+  assert.equal(MESSAGE_MAX_LENGTH,4000);
+  for(const [category,label] of Object.entries(CATEGORY_LABEL)){
+    const max=goalWordsLimit(category);
+    assert.ok(max>0&&max<MESSAGE_MAX_LENGTH,category);
+    assert.equal(COPY.goalStarter(label,'字'.repeat(max)).length,MESSAGE_MAX_LENGTH,category+': the fullest box makes a message of exactly the chat\'s limit');
+    assert.equal(COPY.goalStarter(label,'字'.repeat(max+1)).length,MESSAGE_MAX_LENGTH+1,category+': one more character would be refused');
+  }
+  assert.ok(goalWordsLimit('relationships')<goalWordsLimit('health'),'a longer category name leaves less room');
+  assert.equal(goalWordsLimit('nonsense'),goalWordsLimit('other'),'a category nobody knows is 其他, as on the cards');
 });
 
 // ---- 记录 ----

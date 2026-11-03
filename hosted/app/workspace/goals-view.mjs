@@ -1,5 +1,6 @@
 // 目标 (goals): the cards of the goals page, worked out from the status answer. Pure: the page passes in `today` (the
 // person's own day) and `tz` (profile.timezone); nothing here reads the clock.
+import {MESSAGE_MAX_LENGTH} from './chat-input.mjs';
 import {COPY} from './copy.mjs';
 import {addDays, dayRange, localDay, weekStart} from './dates.mjs';
 import {doneDaysByHabit, newestFirst, sourceOf} from './records.mjs';
@@ -61,4 +62,11 @@ export function goalsModel({goals = [], habits = [], completions = [], today = '
     ));
   const loose = habits.filter(habit => !habit.goalId || !listed.has(habit.goalId));
   return {cards, ungrouped: loose.length ? card({goalId: null, title: COPY.ungrouped, category: '', categoryLabel: '', startedDay: ''}, loose) : null};
+}
+
+// How much the box of a new goal takes. What the person writes goes to the chat with the starter in front
+// (COPY.goalStarter, with the category's name), and the chat takes MESSAGE_MAX_LENGTH characters at most, so the box
+// leaves room for the starter of the category that was picked.
+export function goalWordsLimit(category) {
+  return MESSAGE_MAX_LENGTH - COPY.goalStarter(labelOf(category), '').length;
 }

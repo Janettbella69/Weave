@@ -25,3 +25,12 @@ export function readView(search) {
 export function viewSearch(view) {
   return view !== 'chat' && VIEWS.includes(view) ? '?view=' + view : '';
 }
+
+// On a phone, the shell draws a bar at the top of a page (Weave, which opens the assistant's home page, and the date;
+// v3-Mobile, v3-GoalsMobile): on every page but the chat and the assistant's home page, which have a header of their
+// own. The first-run screen stands in for the chat and has no header, so it gets the bar too (`firstRun`). Nothing has
+// the bar before the address has been read, while the view is still null.
+export function hasTopBar(view, {firstRun = false} = {}) {
+  if (!VIEWS.includes(view) || view === 'agent') return false;
+  return view !== 'chat' || firstRun;
+}

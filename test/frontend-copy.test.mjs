@@ -73,6 +73,16 @@ test('a new goal is talked over in the chat, with its category',async()=>{
   assert.match(goals,/navigate\('chat'\)/);
 });
 
+test('the goal box takes no more than the chat can, with the starter in front',async()=>{
+  // goalWordsLimit is tested in frontend-views.test.mjs; here: the page uses it, the box applies it, and the number is
+  // the server's own (POST /api/chat refuses more than 4000 characters).
+  const goals=await read('app/workspace/pages/GoalsPage.jsx'),composer=await read('app/workspace/ui/Composer.jsx'),api=await read('lib/weave/api.mjs');
+  assert.match(goals,/<Composer [^>]*maxLength=\{goalWordsLimit\(picked\)\}/);
+  assert.match(composer,/maxLength = MESSAGE_MAX_LENGTH/,'every other box keeps the chat\'s own limit');
+  assert.match(composer,/<textarea [^>]*maxLength=\{maxLength\}/);
+  assert.match(api,/if\(!text\|\|text\.length>4000\)domain\.fail\(/);
+});
+
 test('a 401 is not sent to the guest URL when the site is behind the access password',async()=>{
   const workspace=await read('app/workspace/Workspace.jsx');
   assert.ok(workspace.includes("unauthorizedAction(response.headers)==='guest'"));

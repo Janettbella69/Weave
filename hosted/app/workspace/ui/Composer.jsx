@@ -1,6 +1,6 @@
 'use client';
 import {useId, useLayoutEffect, useRef} from 'react';
-import {shouldSendOnEnter} from '../chat-input.mjs';
+import {MESSAGE_MAX_LENGTH, shouldSendOnEnter} from '../chat-input.mjs';
 import {COPY} from '../copy.mjs';
 import {ArrowUp} from './Icons';
 
@@ -12,7 +12,9 @@ const MAX_HEIGHT = 200;
 // Enter sends and Shift+Enter starts a new line; while an input method is composing, Enter only confirms the candidate.
 // `label` names the box for screen readers; it is not shown unless `showLabel` is set (the first run writes it above the
 // box). `disabled` stops sending; typing still works. Children show under the box (the chat's line about DeepSeek).
-export default function Composer({label, showLabel = false, placeholder, value, onChange, onSend, disabled = false, children}) {
+// `maxLength` is what the box takes: what the chat takes, unless the caller puts words of its own in front of the text
+// (a new goal's starter) and so leaves less room.
+export default function Composer({label, showLabel = false, placeholder, value, onChange, onSend, disabled = false, maxLength = MESSAGE_MAX_LENGTH, children}) {
   const id = useId(), box = useRef(null), composing = useRef(false);
   const text = value.trim(), blocked = disabled || !text;
   // The box follows its text: it grows while the person types, shrinks when the caller clears it, and fits a text that
@@ -30,7 +32,7 @@ export default function Composer({label, showLabel = false, placeholder, value, 
   return <form className="wv-composer" onSubmit={submit}>
     <label className={showLabel ? 'wv-composer-label' : 'wv-sr-only'} htmlFor={id}>{label}</label>
     <div className="wv-composer-box">
-      <textarea id={id} ref={box} rows={1} maxLength={4000} value={value} placeholder={placeholder} enterKeyHint="send"
+      <textarea id={id} ref={box} rows={1} maxLength={maxLength} value={value} placeholder={placeholder} enterKeyHint="send"
         onChange={event => onChange(event.target.value)}
         onCompositionStart={() => { composing.current = true; }}
         onCompositionEnd={() => { setTimeout(() => { composing.current = false; }, 0); }}

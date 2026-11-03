@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {VIEWS,NAV,readView,viewSearch} from '../hosted/app/workspace/view-route.mjs';
+import {VIEWS,NAV,readView,viewSearch,hasTopBar} from '../hosted/app/workspace/view-route.mjs';
 
 test('the view comes from ?view= and falls back to chat',()=>{
   assert.equal(readView('?view=todo'),'todo');
@@ -28,4 +28,13 @@ test('the navigation has five pages in order; the agent home is reached from els
   assert.deepEqual(NAV.map(n=>n.label),['聊天','待办','目标','记录','设置']);
   assert.ok(NAV.every(n=>VIEWS.includes(n.id)),'every tab is a view');
   assert.ok(!NAV.some(n=>n.id==='agent'),'no tab for the agent home');
+});
+
+test('on a phone, the shell\'s top bar is on every page with no header of its own, the first run included',()=>{
+  for(const view of ['todo','goals','records','settings'])assert.equal(hasTopBar(view),true,view);
+  assert.equal(hasTopBar('chat'),false,'the chat has its own header');
+  assert.equal(hasTopBar('chat',{firstRun:true}),true,'the first run stands in for the chat and has no header');
+  assert.equal(hasTopBar('agent'),false,'the assistant\'s home page has its own way back');
+  assert.equal(hasTopBar('agent',{firstRun:true}),false);
+  for(const view of [null,undefined,'','calendar'])assert.equal(hasTopBar(view,{firstRun:true}),false,'nothing before the address is read: '+String(view));
 });
