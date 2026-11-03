@@ -5,7 +5,7 @@ import {Store,withWorld} from './store.mjs';
 import {fail} from './domain.mjs';
 import {SAFETY_RULES} from './model.mjs';
 import {REPLIES,TICK_BUDGET_MS,START_BY_MS,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
-import {putPhoto,takePhoto,dropPhoto,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
+import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
 
 const stamp=now=>new Date(now).toISOString();
 const bindPattern=/^绑定\s*(?:weave\s*)?([a-f0-9]{48})$/i;
@@ -16,9 +16,12 @@ const ORPHAN_MS=10*60000,MAX_WAKES_PER_TICK=5,GROUP_RECEIPTS=50;
 // 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）：一条在等照片的消息最多等多久。
 // 平时由桥接说「照片来了」或「没有照片」来放行（/photo），这个上限只防桥接中途掉线。
 const PHOTO_HOLD_MS=30000;
+// 看图还要桥接那边也开着才算数：桥接开着时每个请求都带 X-Weave-Photos: on，这里记下最后一次听到的时间（最多一分钟写一次）；
+// 5 分钟没再听到就当关了，桥接的请求不带它就马上当关了。这样只开了网站、桥接还没开时，不说照片的事，也不等照片。
+const BRIDGE_PHOTOS='runtime:wechat-photos',BRIDGE_PHOTOS_TTL=5*60000;
 export const GROUP_ENABLED_TEXT='已开启打卡助理。我会读这个群的消息，只用来了解大家的进度，不会写进任何人的个人记忆。不想被记的话，在消息开头写「别记」。任何人 @我 说「关闭打卡群」，我就停止读取并删除这个群的记录。';
 // 草稿文案，待确认。看图打开时接在 GROUP_ENABLED_TEXT 后面；关着时开启群说的话一字不变。
-export const GROUP_PHOTO_TEXT='先发照片、再 @我 说你的问题，我会把你刚发的那张照片和这条消息一起交给模型看；照片用完就删，不存进群记录。';
+export const GROUP_PHOTO_TEXT='打开看图后：你 @我 之前 60 秒内、或 @我 之后 10 秒内你自己发的一张照片，会和这条消息一起发给模型（DeepSeek）看；照片用完就删，不存进群记录。';
 export const GROUP_DENIED_TEXT='只有已绑定 Weave 的成员才能开启打卡助理。';
 export const GROUP_CLOSED_TEXT='已关闭打卡助理，并删除了这个群的记录。';
 export const GROUP_SYSTEM=`你是住在微信打卡群里的 Weave 助理。用简洁、温暖的中文回复被 @ 的这条消息，不超过 150 字。
@@ -51,7 +54,7 @@ const isStale=(message,now)=>message.createdAt!==null&&now-message.createdAt>STA
 
 function queueOut(world,item,now){const id='out:'+crypto.randomUUID();world.wechat[id]={id,direction:'outbound',status:'queued',createdAt:stamp(now),...item};return id;}
 async function queueGroupText(world,message,text,secret,now,aad){
-  queueOut(world,{text,source:'group',target:await seal(message.threadId,secret,aad),groupAad:aad},now);
+  return queueOut(world,{text,source:'group',target:await seal(message.threadId,secret,aad),groupAad:aad},now);
 }
 // 看图：刚排进队的这一轮先不开始，等桥接把照片交过来（'upload'）或在 10 秒内等这个人的照片（'watch'）。
 // 返回给桥接的提示；没有 photo（开关关着、桥接没说）就什么都不改。
@@ -62,6 +65,23 @@ function holdForPhoto(entry,message,now){
 }
 // 等照片等过了上限：照常开始，没有照片。
 const overdue=(entry,now)=>entry.status==='awaiting-photo'&&!(entry.photoUntil>now);
+// 群里只有在这个群被告知过以后才用照片：开启时那段话带着照片的说明，或者看图打开以前就开启的群，第一次有人 @ 它时单独发一次。
+// 说明要等桥接回执说发出去了（receiveReceipt 记下 photosToldAt）才算；在那以前，这一句照常回答、不等照片。
+async function holdGroupForPhoto(world,group,entry,message,{secret,now,aad}){
+  if(!message.photo)return {};
+  if(group.photosToldAt)return holdForPhoto(entry,message,now);
+  if(!group.photoNotice)group.photoNotice=await queueGroupText(world,message,GROUP_PHOTO_TEXT,secret,now,aad);
+  return {};
+}
+const bridgeSaysPhotos=(world,now)=>{const at=world.runtime?.[BRIDGE_PHOTOS]?.seenAt;return typeof at==='number'&&now-at<=BRIDGE_PHOTOS_TTL;};
+// 隐私说明那一页用：服务器开关、Agent SDK 路线、桥接最近说过它也开着，三样都有才显示照片那一条。
+export async function wechatPhotosShown({env,db,now=Date.now()}){
+  if(env?.WEAVE_WECHAT_IMAGES!=='1'||env?.WEAVE_AGENT_RUNTIME!=='sdk'||!db)return false;
+  try{
+    const row=(await db.prepare('SELECT document FROM weave_documents WHERE id = ?').bind(BRIDGE_PHOTOS).all()).results?.[0];
+    return bridgeSaysPhotos({runtime:{[BRIDGE_PHOTOS]:row?JSON.parse(row.document):undefined}},now);
+  }catch{return false;}
+}
 
 export async function startBinding(world,ownerId,now=Date.now()){
   world.runtime??={};
@@ -120,7 +140,9 @@ async function ingestGroup(world,message,{secret,now,images=false,dropped}){
     const ownerId=world.runtime[mappingKey(await hash(message.sender))]?.ownerId;
     if(!ownerId||!world.people[ownerId]){await queueGroupText(world,message,GROUP_DENIED_TEXT,secret,now,aad);return {accepted:true,denied:true};}
     world.runtime[key]={ownerId,target:await seal(message.threadId,secret,aad),enabledAt:now};
-    await queueGroupText(world,message,images?GROUP_ENABLED_TEXT+GROUP_PHOTO_TEXT:GROUP_ENABLED_TEXT,secret,now,aad);
+    const opening=await queueGroupText(world,message,images?GROUP_ENABLED_TEXT+GROUP_PHOTO_TEXT:GROUP_ENABLED_TEXT,secret,now,aad);
+    // 照片的说明跟开启的话一起发：桥接回执说发出去了，这个群才开始用照片。
+    if(images)world.runtime[key].photoNotice=opening;
     return {accepted:true,enabled:true};
   }
   // An unenabled group is dropped here: nothing about it is stored, not even a dedupe marker.
@@ -147,9 +169,9 @@ async function ingestGroup(world,message,{secret,now,images=false,dropped}){
   group.replyCount++;
   const entryId='in:'+seenId;
   world.wechat[entryId]={id:entryId,direction:'inbound',source:'group',groupAad:aad,ownerId:group.ownerId,payload:await seal(JSON.stringify({text,sender:message.sender,threadId:message.threadId,label:`成员${member+1}`}),secret,aad),status:'queued',createdAt:stamp(now)};
-  return {accepted:true,queued:true,...holdForPhoto(world.wechat[entryId],message,now)};
+  return {accepted:true,queued:true,...await holdGroupForPhoto(world,group,world.wechat[entryId],message,{secret,now,aad})};
 }
-// images：看图打开（服务器开关 + Agent SDK 路线）。dropped：关群时删掉的消息带着的照片 id，存完 world 再删照片。
+// images：看图打开（服务器开关 + Agent SDK 路线 + 桥接说它也开着）。dropped：关群时删掉的消息带着的照片 id，存完 world 再删照片。
 export async function ingest(world,input,{secret,now=Date.now(),images=false,dropped}){
   const message=normalize(input,images);
   if(!message)return {accepted:true,ignored:true};
@@ -357,6 +379,9 @@ export function receiveReceipt(world,{id,state},now=Date.now()){
   else if(state==='failed'||state==='cancelled')entry.status='failed';
   else return {ok:false};
   delete entry.leaseUntil;
+  // 看图的群说明：发出去了，这个群从现在起用照片；没发出去（失败、取消、要人工确认），下一次有人 @ 它时再发。
+  const group=entry.groupAad?world.runtime?.[entry.groupAad]:undefined;
+  if(group?.photoNotice===id){if(entry.status==='sent')group.photosToldAt=now;delete group.photoNotice;}
   if(entry.source==='group'){delete entry.text;delete entry.target;delete entry.mentions;}
   return {ok:true};
 }
@@ -380,7 +405,8 @@ function fastReplyHints(world,known){
 //   没照片  JSON {for, none}：桥接没等到照片，或者读不出来、不合规定。这一轮马上照常开始。
 // 回答 {accepted, attached, wake:true}：那条消息排进队了（wake 让桥接马上跑一次 tick）；{accepted, ignored} 是那条消息不在等照片了
 // （已经开始、群关了、id 不对），照片没有存。门槛（已绑定的本人、开启的群、不是「别记」、@ 了它）在消息进来时已经过了，
-// 这里在存任何东西之前再确认两件事：那条消息还在等照片，照片和那条消息是同一个聊天里同一个人发的。
+// 这里在存任何东西之前再确认两件事：那条消息还在等照片，桥接报上来的聊天和发照片的人跟那条消息对得上。后一条只是防桥接出错：
+// 照片到底是谁、在哪个聊天里发的，只有桥接知道，这里没法独立核实。
 const PHOTO_HEADERS={for:'x-weave-for',thread:'x-weave-thread',sender:'x-weave-sender'};
 async function readPhotoBody(request){
   const reader=request.body?.getReader();if(!reader)return new Uint8Array(0);
@@ -410,8 +436,8 @@ async function receivePhoto(request,{db,secret,readBody,now}){
   const entryId='in:'+await hash(forId),before=await new Store(db,{strict:true}).load(),entry=before.wechat?.[entryId];
   if(!waitingForPhoto(entry))return {accepted:true,ignored:true};
   if(bytes&&!await fromSamePerson(before,entry,{thread,sender,secret})){bytes=null;problem='not_paired';}
-  const photo=bytes?await putPhoto(db,{bytes,mediaType:type},{secret,now}):null;
-  let attached=false,released=false;
+  const photo=bytes?await putPhoto(db,{bytes,mediaType:type,owner:entry.ownerId},{secret,now}):null;
+  let attached=false,released=false,committed=false;
   try{
     await withWorld(db,async world=>{
       attached=false;released=false;
@@ -420,7 +446,11 @@ async function receivePhoto(request,{db,secret,readBody,now}){
       current.status='queued';delete current.photoUntil;released=true;
       if(photo){current.photo=photo;attached=true;}
     });
-  }finally{if(photo&&!attached)await dropPhoto(db,photo);}
+    committed=true;
+  }finally{
+    // 只有 world 真的写进去、照片 id 挂在那条消息上，照片才留着；别的情况（包括写 world 一直冲突、最后放弃）都马上删掉。
+    if(photo&&!(committed&&attached))await dropPhoto(db,photo);
+  }
   if(!released)return {accepted:true,ignored:true};
   console.log(attached?`微信照片已收下（${type}，${bytes.length} 字节），这一轮开始时用：${entryId}`:`这条消息不带照片（${problem}），照常回答：${entryId}`);
   return {accepted:true,attached,wake:true};
@@ -441,10 +471,20 @@ export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Dat
     // A heartbeat at most once a minute: the bridge polls often and D1 writes are not free.
     const seen=world.runtime['runtime:wechat-bridge']?.lastSeenAt;
     if(typeof seen!=='number'||now-seen>60000)world.runtime['runtime:wechat-bridge']={id:'runtime:wechat-bridge',lastSeenAt:now};
+    // 看图：服务器开着，还要桥接说它也开着（X-Weave-Photos: on）才算数。服务器开关关着时这里什么都不做。
+    let photos=false;
+    if(images){
+      const says=request.headers.get('x-weave-photos')==='on',mark=world.runtime[BRIDGE_PHOTOS];
+      if(says&&!(typeof mark?.seenAt==='number'&&now-mark.seenAt<=60000))world.runtime[BRIDGE_PHOTOS]={id:BRIDGE_PHOTOS,seenAt:now};
+      else if(!says&&mark)delete world.runtime[BRIDGE_PHOTOS];
+      photos=bridgeSaysPhotos(world,now);
+    }
     let result;
     if(path==='/api/internal/wechat/events'){
       const known=new Set(Object.keys(world.wechat??{}));
-      result=await ingest(world,input,{secret,now,images,dropped});
+      // 看图开着时，每个事件顺便清一遍过期的照片（定时任务和存照片时也清）。
+      if(images)await sweepPhotos(db,now);
+      result=await ingest(world,input,{secret,now,images:photos,dropped});
       Object.assign(result,fastReplyHints(world,known));
     }
     else if(path==='/api/internal/wechat/claim')result={jobs:await claimOutbound(world,{secret,now})};

@@ -37,15 +37,17 @@ export function toBase64(bytes) {
 }
 const fromBase64 = text => Uint8Array.from(atob(text), c => c.charCodeAt(0));
 
-const ensureTable = db => db.prepare(`CREATE TABLE IF NOT EXISTS ${TABLE} (id TEXT NOT NULL, seq INTEGER NOT NULL, media_type TEXT NOT NULL, iv TEXT NOT NULL, data TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (id, seq))`).run();
+// owner：这张照片算谁的（那条消息的 ownerId，群里是开启这个群的人），删账号时按它一起删。
+const ensureTable = db => db.prepare(`CREATE TABLE IF NOT EXISTS ${TABLE} (id TEXT NOT NULL, seq INTEGER NOT NULL, owner TEXT NOT NULL, media_type TEXT NOT NULL, iv TEXT NOT NULL, data TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (id, seq))`).run();
 
 // 存一张已经查过的照片，返回它的 id。只有 id 会写进 world 里那一条消息。
-export async function putPhoto(db, {bytes, mediaType}, {secret, now}) {
+export async function putPhoto(db, {bytes, mediaType, owner}, {secret, now}) {
+  if (typeof owner !== 'string' || !owner) throw Error('照片要记下是谁的');
   await ensureTable(db);
   await sweepPhotos(db, now);
   const id = crypto.randomUUID(), sealed = await sealBytes(bytes, secret, aad(id)), text = toBase64(sealed.data), rows = [];
   for (let i = 0; i < text.length; i += CHUNK) {
-    rows.push(db.prepare(`INSERT INTO ${TABLE} (id, seq, media_type, iv, data, expires_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(id, rows.length, mediaType, sealed.iv, text.slice(i, i + CHUNK), now + PHOTO_TTL_MS));
+    rows.push(db.prepare(`INSERT INTO ${TABLE} (id, seq, owner, media_type, iv, data, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(id, rows.length, owner, mediaType, sealed.iv, text.slice(i, i + CHUNK), now + PHOTO_TTL_MS));
   }
   await db.batch(rows);
   return id;
@@ -69,7 +71,11 @@ export async function takePhoto(db, id, {secret, now}) {
 export async function dropPhoto(db, id) {
   try { await db.prepare(`DELETE FROM ${TABLE} WHERE id = ?`).bind(id).run(); } catch { /* no table: nothing stored */ }
 }
-// 到期的照片（没被任何一轮用掉的）。每次定时任务和每次存照片前跑一次。
+// 删账号时：这个人的照片（私聊的，和他开启的群里的）一张不留。
+export async function dropOwnerPhotos(db, owner) {
+  try { await db.prepare(`DELETE FROM ${TABLE} WHERE owner = ?`).bind(owner).run(); } catch { /* no table: nothing stored */ }
+}
+// 到期的照片（没被任何一轮用掉的）。每次定时任务、看图开着时的每个事件、每次存照片前跑一次。
 export async function sweepPhotos(db, now) {
   try { await db.prepare(`DELETE FROM ${TABLE} WHERE expires_at <= ?`).bind(now).run(); } catch { /* no table: nothing stored */ }
 }

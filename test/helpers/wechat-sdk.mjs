@@ -17,7 +17,8 @@ export const ok = data => Response.json(data);
 export const reply = text => ok({outcome: 'success', reply: text, sessionId: 's-1', tools: []});
 
 // images: the server's WEAVE_WECHAT_IMAGES switch (docs/superpowers/specs/2026-11-03-wechat-images-design.md); off by default.
-export async function setup({runtime = 'sdk', agent = async () => reply('收到'), images = false} = {}) {
+// bridgePhotos: the bridge's own switch, which it announces with X-Weave-Photos: on on every request; follows images unless given.
+export async function setup({runtime = 'sdk', agent = async () => reply('收到'), images = false, bridgePhotos = images} = {}) {
   const db = new D1(), store = new Store(db), world = await store.load(), id = 'u:' + await hash('alice');
   ensurePerson(world, {userId: id, displayName: 'Alice'});
   await store.save(world);
@@ -35,7 +36,7 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
     const r = await handleAPI(new Request('https://weave.example/api/' + path, {method: data === undefined ? 'GET' : 'POST', headers: data ? {Origin: 'https://weave.example', 'Content-Type': 'application/json', ...headers} : headers, body: data ? JSON.stringify(data) : undefined}), {...options(), identity: identity ? {userId: identity, displayName: identity, email: identity + '@example.test'} : null});
     return {status: r.status, data: await r.json()};
   };
-  const bridge = (path, data) => call(null, 'internal/wechat/' + path, data, {Authorization: 'Bearer ' + bridgeToken});
+  const bridge = (path, data) => call(null, 'internal/wechat/' + path, data, {Authorization: 'Bearer ' + bridgeToken, ...(bridgePhotos ? {'X-Weave-Photos': 'on'} : {})});
   // The bridge handing over a photo: the bytes as the body, the message it belongs to and who sent it in headers.
   const photo = async (forId, bytes, {type = 'image/jpeg', thread = 'wxid-alice', sender = thread} = {}) => {
     const r = await handleAPI(new Request('https://weave.example/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': type, Authorization: 'Bearer ' + bridgeToken, 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: bytes}), {...options(), identity: null});
@@ -57,6 +58,9 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
     read: () => new Store(db).load(),
     agent: fn => { state.agent = fn; },
     images: on => { images = on; },
+    bridgePhotos: on => { bridgePhotos = on; },
+    // Claims every queued message and reports it sent, the way the bridge does after WeChat took it.
+    async deliverAll(state = 'accepted') { const jobs = (await bridge('claim', {})).data.jobs; for (const job of jobs) await bridge('receipt', {id: job.id, state}); return jobs; },
     setNow(value) { now = value; },
     get now() { return now; },
   };

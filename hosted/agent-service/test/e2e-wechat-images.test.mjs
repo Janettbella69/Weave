@@ -42,8 +42,9 @@ async function start() {
   });
   const options = () => ({db, secret, wechat: {token: BRIDGE, images: true}, agentServiceUrl: agent.url, agentServiceToken: TOKEN, agentRuntime: 'sdk'});
   const web = async (path, data) => (await handleAPI(new Request('https://weave.test/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://weave.test'}, body: JSON.stringify(data)}), {...options(), identity: {userId: 'alice', displayName: 'Alice', email: 'alice@example.test'}})).json();
-  const bridge = async (path, data) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + BRIDGE}, body: JSON.stringify(data)}), options())).json();
-  const photo = async (forId, thread, sender) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': 'image/png', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: PHOTO}), options())).json();
+  // The bridge with its own switch on says so on every request (X-Weave-Photos: on).
+  const bridge = async (path, data) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Photos': 'on'}, body: JSON.stringify(data)}), options())).json();
+  const photo = async (forId, thread, sender) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': 'image/png', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Photos': 'on', 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: PHOTO}), options())).json();
   let seq = 0;
   const message = (body, over = {}) => ({id: 'msg_' + (++seq), threadId: 'wxid-alice', senderId: 'wxid-alice', type: 1, direction: 'incoming', body, createdAt: new Date().toISOString(), mentions: {self: false}, ...over});
   const group = (sender, body, mentioned = false, over = {}) => message(body, {threadId: ROOM, senderId: sender, mentions: {self: mentioned}, ...over});
@@ -77,7 +78,8 @@ test('a check-in group photo end to end: photo first, then the same person\'s @;
     await h.web('settings', {model: 'deepseek-v4-pro'});
     assert.equal((await new Store(h.db).load()).people[h.alice].settings.model, 'deepseek-v4-pro', 'setup: the owner picked v4-pro');
     await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
-    await h.bridge('claim', {});
+    // The opening text carries the photo notice; the group uses photos once the bridge reports it sent.
+    for (const job of (await h.bridge('claim', {})).jobs) await h.bridge('receipt', {id: job.id, state: 'accepted'});
     const ask = h.group('wxid-bob', '@助理 这顿大概多少卡', true, {photo: 'ready'});
     assert.equal((await h.bridge('events', ask)).photo, 'upload');
     assert.equal((await h.photo(ask.id, ROOM, 'wxid-bob')).attached, true);

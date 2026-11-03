@@ -20,6 +20,12 @@ const worldDump = h => JSON.stringify(h.db.sql.prepare('SELECT document FROM wea
 const assertNoPhotoInWorld = h => { const dump = worldDump(h); assert.ok(!dump.includes(PHOTO64.slice(0, 64)) && !dump.includes(Buffer.from(PHOTO).toString('hex').slice(0, 64)), 'a photo is in the world'); };
 const keysOf = data => Object.keys(data).sort();
 const entryOf = async (h, messageId) => (await h.read()).wechat['in:' + await hash(messageId)];
+// Opens a check-in group while photos are on and delivers the opening text (it carries the photo notice), so photos may be used there.
+async function openToldGroup(h) {
+  await h.bind();
+  await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
+  await h.deliverAll();
+}
 
 test('flag off: photo:\'ready\' and \'watch\' on /events change nothing; the answer, the queue and the wake body are exactly as for plain text', async () => {
   for (const photo of ['ready', 'watch']) {
@@ -148,7 +154,7 @@ test('a photo from someone else, or from another chat, is not stored; that turn 
 
 test('group, photo first: an @ in an enabled group with photo:\'ready\' gets its photo into a group-scope wake; nothing of it is kept anywhere', async () => {
   const h = await setup({images: true, agent: async () => reply('看起来是一份沙拉')});
-  await h.enableGroup();
+  await openToldGroup(h);
   await h.bridge('events', h.group('wxid-bob', '今天走了八千步', false, {photo: 'ready'}));
   const ask = h.group('wxid-bob', '@助理 这顿多少卡', true, {photo: 'ready'});
   assert.deepEqual((await h.bridge('events', ask)).data, {accepted: true, queued: true, photo: 'upload'});
@@ -188,7 +194,7 @@ test('a group that is not enabled: an @ with a photo is dropped, nothing is stor
 
 test('group: 别记 with a photo, and chatter without an @, get no photo hint and store no photo', async () => {
   const h = await setup({images: true});
-  await h.enableGroup();
+  await openToldGroup(h);
   const skip = await h.bridge('events', h.group('wxid-bob', '@助理 别记 这顿吃多了', true, {photo: 'ready'}));
   assert.equal(skip.data.skipped, true);
   assert.ok(!('photo' in skip.data));
@@ -201,7 +207,7 @@ test('group: 别记 with a photo, and chatter without an @, get no photo hint an
 
 test('closing the group while a photo waits deletes the waiting message and its photo', async () => {
   const h = await setup({images: true});
-  await h.enableGroup();
+  await openToldGroup(h);
   const ask = h.group('wxid-bob', '@助理 这顿多少卡', true, {photo: 'watch'});
   await h.bridge('events', ask);
   // the photo arrived, but the turn has not started yet
@@ -268,12 +274,12 @@ test('one photo per turn: a second photo for the same message is not taken, and 
 
 test('the store: a photo is sealed, comes back once, and an unused one is gone after 10 minutes (swept on the next tick)', async () => {
   const h = await setup({images: true});
-  const id = await putPhoto(h.db, {bytes: PHOTO, mediaType: 'image/jpeg'}, {secret, now: h.now});
+  const id = await putPhoto(h.db, {bytes: PHOTO, mediaType: 'image/jpeg', owner: h.id}, {secret, now: h.now});
   const stored = JSON.stringify(h.db.sql.prepare('SELECT * FROM weave_wechat_photos').all());
   assert.ok(!stored.includes(PHOTO64.slice(0, 64)), 'stored in the clear');
   assert.deepEqual(await takePhoto(h.db, id, {secret, now: h.now}), {mediaType: 'image/jpeg', data: PHOTO64, bytes: PHOTO.length});
   assert.equal(await takePhoto(h.db, id, {secret, now: h.now}), null, 'a photo can be taken once');
-  const late = await putPhoto(h.db, {bytes: PHOTO, mediaType: 'image/jpeg'}, {secret, now: h.now});
+  const late = await putPhoto(h.db, {bytes: PHOTO, mediaType: 'image/jpeg', owner: h.id}, {secret, now: h.now});
   h.setNow(h.now + PHOTO_TTL_MS);
   await h.tick();
   assert.equal(photoRows(h), 0);
@@ -283,7 +289,7 @@ test('the store: a photo is sealed, comes back once, and an unused one is gone a
 test('a big photo is split over several rows and comes back whole', async () => {
   const h = await setup({images: true});
   const big = jpeg(PHOTO_MAX_BYTES, 9);
-  const id = await putPhoto(h.db, {bytes: big, mediaType: 'image/jpeg'}, {secret, now: h.now});
+  const id = await putPhoto(h.db, {bytes: big, mediaType: 'image/jpeg', owner: h.id}, {secret, now: h.now});
   assert.ok(photoRows(h) >= 3, 'rows: ' + photoRows(h));
   const back = await takePhoto(h.db, id, {secret, now: h.now});
   assert.equal(back.bytes, big.length);

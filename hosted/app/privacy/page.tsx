@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { wechatPhotosShown } from "../../lib/weave/wechat.mjs";
 
 export const metadata: Metadata = {
   title: "隐私说明 · Weave",
@@ -8,12 +9,13 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-// 微信看图（服务器的 WEAVE_WECHAT_IMAGES=1，并且走 Agent SDK 路线）打开时才多一条说明；关着时这一页一字不变。
+// 微信看图真的打开了（服务器的 WEAVE_WECHAT_IMAGES=1、走 Agent SDK 路线、桥接最近说过它也开着）才多一条说明；
+// 少一样，这一页就一字不变。
 async function photosOn(): Promise<boolean> {
   try {
     const { env } = await import("cloudflare:workers");
-    const config = env as unknown as Record<string, string | undefined>;
-    return config.WEAVE_WECHAT_IMAGES === "1" && config.WEAVE_AGENT_RUNTIME === "sdk";
+    const config = env as unknown as Cloudflare.Env;
+    return await wechatPhotosShown({ env: config, db: config.DB, now: Date.now() });
   } catch {
     return false;
   }
@@ -76,7 +78,7 @@ export default async function PrivacyPage() {
             {/* 草稿文案，待确认。只在看图打开时显示。 */}
             {photos ? (
               <li>
-                打开看图后：有人 @助理（私聊里是发一句话）时，同一个人在同一个聊天里、这之前 60 秒内或之后 10 秒内发的一张照片，会和这句话一起发给 DeepSeek 看。照片加密暂存，最长 10 分钟，这一轮开始时就删除，不进聊天记录、群记录或 Agent 的记忆。没有配上 @ 的照片不会离开运行微信的那台电脑。
+                打开看图后：有人 @助理（私聊里是发一句话）时，同一个人在同一个聊天里、这之前 60 秒内或之后 10 秒内发的一张照片，会和这句话一起发给 DeepSeek 看。照片发出前会去掉拍摄时间、地点、设备这类附加信息，加密暂存最长 10 分钟，这一轮开始时就删除。照片本身不进聊天记录、群记录或 Agent 的记忆，但助理看过照片后的回复会和平常一样保存。没有配上的照片不会离开运行微信的那台电脑。
               </li>
             ) : null}
           </ul>
