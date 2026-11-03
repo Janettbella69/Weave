@@ -12,6 +12,8 @@
 
 **试点怎么部署：** 在你自己的 Mac 上跑 wx 守护进程和桥接（两个 launchd 任务），步骤、验证、回退和该警惕的征兆都在 [`deploy/wechat-mac/README.md`](../deploy/wechat-mac/README.md)。下面「启动」一节是手动做法的原理。
 
+**搬到服务器上（试点）：** 这两个程序也可以跑在网站所在的服务器上（两个容器，和 Azora 共用一台机器），你的 Mac 就不在链路里了；代价是小号收到的消息和图片都存在那台服务器上。步骤、退回 Mac 的办法，和隐私说明要补的话（草稿，待确认），在 [`deploy/tencent/wechat/README.md`](../deploy/tencent/wechat/README.md)。
+
 ## 谁来回答
 
 微信消息由 Agent 回答，走和网页聊天同一条 Agent SDK 的路，开关是网站的 `WEAVE_AGENT_RUNTIME=sdk`（`deploy/tencent/setup-env.sh` 已经写进 `web.env`）。不开这个开关，微信消息还是走旧的直连模型的路。

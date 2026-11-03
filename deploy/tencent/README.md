@@ -85,6 +85,8 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
 
+想把这两个程序也搬到这台服务器上（试点，自己的 compose 项目 `wechat`，不碰 `weave` 和 Azora）：见 [`wechat/README.md`](wechat/README.md)。
+
 ## 以后更新
 
 ```
