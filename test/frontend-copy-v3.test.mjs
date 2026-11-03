@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import {COPY} from '../hosted/app/workspace/copy.mjs';
 import {WECHAT_TEXT,COPY_BIND,BIND_HINT,NEW_CODE,NEW_CODE_NOTE,UNBIND_CONFIRM,bindMessage} from '../hosted/app/workspace/wechat-row.mjs';
 import {isValidTimezone} from '../hosted/app/workspace/timezone.mjs';
@@ -32,10 +33,22 @@ const TEXT = {
   // settings, carried over word for word from the settings page the v3 one replaces (not on the boards)
   changePage: '更换页面', pickPage: '选择用于 Weave 长期记忆的页面', choosePage: '选择此页面', deleteConfirm: '确定要永久删除账号吗？你的聊天、计划和日程都会被删除，无法恢复。',
   // the assistant's home page
-  remindersTab: '提醒', memoryTab: '记忆', notLive: '主动提醒还没开通。现在 Weave 只会在你交代的时间提醒你一次；开通以后，它会按下面的安排主动来找你。',
+  remindersTab: '提醒', memoryTab: '记忆',
   once: '只响一次', daily: '每天', weekly: '每周', monthly: '每月', noneScheduled: '暂时没有安排。',
   memoryIntro: '这些是 Weave 自己记下的关于你的事。哪条不对，直接在聊天里跟它说。', memoryEmpty: 'Weave 还没有记下关于你的事。',
   agentTabs: '助理主页的栏目',
+  // its reminders tab in block two (docs/superpowers/specs/2026-11-03-proactive-wake-design.md, section 4.9): the three
+  // buttons are the board's, the rest are drafts for the owner to confirm
+  proactiveIntro: 'Weave 会按下面的安排来找你；没有值得说的，就不打扰。', levelOff: '现在不主动找你。你让 Weave 设的提醒照常响。',
+  moreOften: '多找我一点', lessOften: '少找我一点', stopProactive: '别主动找我',
+  quietIgnored: '你最近两次没回，Weave 先不主动问了；你说一句话就恢复。', quietInactive: '你这周没来，Weave 先不主动问了；你说一句话就恢复。',
+  checkTitle: '看看你今天的进展', pause: '暂停', resume: '恢复', paused: '已暂停',
+  // the panel beside the chat on a wide screen, and its 动态 tab (drafts)
+  agentPanel: 'Weave 的助理主页', closePanel: '收起助理主页', activityTab: '动态', activityEmpty: 'Weave 还没主动做过什么。',
+  activityMessage: '主动问了你一句', activityReminder: '到点提醒了你', activityCheck: '看了看你今天的进展', activityFollowup: '按约好的来看看',
+  activityQuiet: '没什么要说的，就没打扰你', activityJevQuiet: '判断现在不用打扰你', activityCompletionDetail: '在聊天里记的',
+  // the memory tab shows Weave's memory as the file it is (the owner's rule): the file's own name
+  memoryFile: 'MEMORY.md',
   // the first time the site is opened
   welcome: '你好，我是 Weave', firstRunIntro: '先选一件最想养成的小事。我们从小到不会失败的一步开始，慢慢来。', pickOne: '选一件想养成的事', firstRunGo: '就这样开始', firstRunChange: '想换个说法，就在下面跟我说。',
   ownHabit: '我想养成…', ownPlaceholder: '比如：每天拉伸 5 分钟', ownDone: '好了', sayIt: '也可以直接跟我说', sayItPlaceholder: '比如：我总是熬夜，想早点睡',
@@ -68,6 +81,23 @@ const CALLS = [
   ['outOf', [0], '/ 0 天'],
   ['notionPage', ['习惯日记'], '用到的页面：习惯日记'],
   ['removeReminder', ['给妈妈打个电话'], '删除：给妈妈打个电话'],
+  ['levelLine', [2, 2], '每天看 2 次你的进展，最多主动说 2 句。'],
+  ['levelLine', [4, 4], '每天看 4 次你的进展，最多主动说 4 句。'],
+  ['quietHours', ['09:00', '21:00'], '21:00–09:00 不打扰。'],
+  ['checkMeta', [['10:00', '19:30']], '10:00、19:30 · Weave 自己安排的'],
+  ['checkMeta', [['19:30']], '19:30 · Weave 自己安排的'],
+  ['wakeMeta', ['19:30'], '19:30 · Weave 会来问问'],
+  ['wakeMeta', ['明天 10:00'], '明天 10:00 · Weave 会来问问'],
+  ['weeklyAt', [3, '19:30'], '每周三 19:30'],
+  ['weeklyAt', [0, '08:00'], '每周日 08:00'],
+  ['weeklyAt', [6, '21:00'], '每周六 21:00'],
+  ['monthlyAt', [3, '08:00'], '每月 3 号 08:00'],
+  ['monthlyAt', [31, '19:30'], '每月 31 号 19:30'],
+  ['pauseLabel', ['每天喝水'], '暂停：每天喝水'],
+  ['resumeLabel', ['每天喝水'], '恢复：每天喝水'],
+  ['activityDay', [11, 1], '11 月 1 日'],
+  ['activityDay', [10, 31], '10 月 31 日'],
+  ['activityCompletion', ['饭后走走'], '帮你记了一次：饭后走走'],
   ['firstRunPick', ['饭后走走'], '好，就从「饭后走走」开始。'],
   ['firstRunStep', ['吃完饭，穿上鞋走到楼下'], '第一步可以小到：吃完饭，穿上鞋走到楼下。'],
   ['firstRunStarter', ['饭后走走', '吃完饭，穿上鞋走到楼下'], '我想从「饭后走走」开始，第一步：吃完饭，穿上鞋走到楼下。'],
@@ -77,11 +107,16 @@ const CALLS = [
 // engine's name, which the spec (section 1, item 6) keeps off the screen.
 const FORBIDDEN = ['YOUR LIFE, REMEMBERED', 'SMALL COMMITMENTS', 'NOTICE, ASK', 'CHANNELS', '<h2>Channels</h2>', 'Personal Agent', '>个人 Agent<', '>Agent 协作<', 'Agent 待测试', '反馈：', 'Hermes'];
 
+// The functions that are not given words: checkMeta takes the list of check times, weeklyAt a weekday's number. The
+// walk below calls them with their examples in CALLS instead.
+const NOT_WORDS = new Set(['checkMeta', 'weeklyAt']);
+const examplesOf = key => (NOT_WORDS.has(key) ? CALLS.filter(([name]) => name === key).map(([, args]) => args) : [['甲', '乙', '丙']]);
+
 // Every piece of text in COPY: the strings, the strings inside lists and objects, a function's source (which has its
 // fixed words) and what it returns for some arguments.
 function* texts(value, path) {
   if (typeof value === 'string') yield [path, value];
-  else if (typeof value === 'function') { yield [path + ' (source)', String(value)]; yield [path + ' (result)', String(value('甲', '乙', '丙'))]; }
+  else if (typeof value === 'function') { yield [path + ' (source)', String(value)]; for (const args of examplesOf(path.split('.').pop())) yield [path + ' (result)', String(value(...args))]; }
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) yield* texts(item, path + '.' + key);
 }
 
@@ -170,6 +205,21 @@ test('nothing on the pages is a code word, an old title or the engine\'s name', 
     assert.ok(!/undefined|NaN|\[object|\{\{/.test(text), path + ' has a hole in it: ' + text);
   }
   for (const text of [COPY_BIND, BIND_HINT, NEW_CODE, NEW_CODE_NOTE, UNBIND_CONFIRM, bindMessage('x')]) for (const word of FORBIDDEN) assert.ok(!text.includes(word), text);
+});
+
+test('block two\'s new sentences each carry the draft mark; the dial\'s three buttons, from the board, do not', async () => {
+  // The owner confirms the marked sentences before they ship (proactive design, Appendix A); a lost mark hides one.
+  const lines = (await readFile(new URL('../hosted/app/workspace/copy.mjs', import.meta.url), 'utf8')).split('\n');
+  const marked = key => {
+    const at = lines.findIndex(line => line.trimStart().startsWith(key + ':'));
+    assert.ok(at > 0, key + ' is in copy.mjs');
+    return lines[at - 1].trim() === '// 草稿文案，待确认。（第二块）';
+  };
+  const drafts = ['proactiveIntro', 'levelOff', 'levelLine', 'quietHours', 'quietIgnored', 'quietInactive', 'checkTitle', 'checkMeta', 'wakeMeta', 'weeklyAt', 'monthlyAt', 'pause', 'resume', 'paused', 'pauseLabel', 'resumeLabel',
+    'agentPanel', 'closePanel', 'activityTab', 'activityEmpty', 'activityDay', 'activityMessage', 'activityReminder', 'activityCheck', 'activityFollowup', 'activityQuiet', 'activityJevQuiet', 'activityCompletion', 'activityCompletionDetail'];
+  for (const key of drafts) assert.ok(marked(key), key + ' is marked');
+  for (const key of ['moreOften', 'lessOften', 'stopProactive']) assert.ok(!marked(key), key + ' is the board\'s');
+  assert.equal(lines.filter(line => line.trim() === '// 草稿文案，待确认。（第二块）').length, drafts.length, 'no other line has the mark');
 });
 
 test('the approved WeChat sentences have one home: wechat-row.mjs, not here', () => {

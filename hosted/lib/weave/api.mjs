@@ -76,7 +76,7 @@ async function internalTick(request,{tick,agentRuntime,agentServiceUrl,agentServ
   catch(error){console.error('Weave tick failed:',error instanceof Error?error.message:'unknown');return json({error:'这次没有跑完，下一分钟再试'},503);}
 }
 
-export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,agentRuntime,jev=null,now=Date.now()}){
+export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,agentRuntime,jev,now=Date.now()}){
   try{
     const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;

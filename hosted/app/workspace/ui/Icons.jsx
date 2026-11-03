@@ -13,8 +13,11 @@ export {
   ChevronDown,                // the zone choice in settings
   ChevronLeft, ChevronRight,
   Clock,                      // 「HH:MM · Weave 主动来问」, and the reminders tab
+  FileText,                   // MEMORY.md, the file that is Weave's memory
+  List,                       // the 动态 tab (what Weave did on its own)
   NotepadText,                // the memory tab
   Trash2,                     // deleting a reminder
+  X,                          // closing Weave's panel beside the chat
   Zap,                        // 「已连接」
   // the goal categories, in their order: health, relationships, finance, career, interests, productivity
   Heart, Users, JapaneseYen, Briefcase, Palette, Laptop,

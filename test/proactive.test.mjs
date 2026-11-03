@@ -310,7 +310,7 @@ test('网页：状态里有排期和档位；删掉、暂停、恢复（恢复�
   const id = JSON.parse((await s.tool('set_reminder', {text: '吃药', due_at: '2030-01-01T08:00:00+08:00', repeat: 'weekly'}, chat, 't1')).data.text).schedule.schedule_id;
   const status = (await s.call('alice', 'status')).data;
   assert.deepEqual(status.proactive, {level: 'normal', activeStart: '09:00', activeEnd: '21:00', timezone: 'Asia/Shanghai', checkTimes: ['10:00', '19:30'], messageCap: 2, sentToday: 0, wakeCap: 4, wakesToday: 0, quietReason: 'inactive'});
-  assert.deepEqual(status.schedules, [{id, kind: 'reminder', text: '吃药', repeat: 'weekly', nextAt: new Date(at(1, '08:00')).toISOString(), status: 'scheduled', origin: 'chat', lastRunAt: null, lastOutcome: null}]);
+  assert.deepEqual(status.schedules, [{id, kind: 'reminder', text: '吃药', repeat: 'weekly', nextAt: new Date(at(1, '08:00')).toISOString(), anchorDay: 1, status: 'scheduled', origin: 'chat', lastRunAt: null, lastOutcome: null}]);
   assert.equal((await s.call('alice', 'schedules/pause', {id, paused: true})).data.schedule.status, 'paused');
   s.setNow(at(10, '07:00'));
   const resumed = (await s.call('alice', 'schedules/pause', {id, paused: false})).data.schedule;

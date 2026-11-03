@@ -384,7 +384,8 @@ export function publicSchedules(person) {
   const list = schedulesOf(person), finished = list.filter(s => !isActive(s)).slice(-20);
   return [...list.filter(isActive), ...finished].map(publicSchedule);
 }
-export const publicSchedule = s => ({id: s.id, kind: s.kind, text: s.text, repeat: s.repeat, nextAt: s.nextAt, status: s.status, origin: s.origin ?? null, lastRunAt: s.lastRunAt ?? null, lastOutcome: s.lastOutcome ?? null});
+// anchorDay：每月重复的那一天（几号）。31 号的遇到小月按月底提醒，网页上仍写「每月 31 号」。
+export const publicSchedule = s => ({id: s.id, kind: s.kind, text: s.text, repeat: s.repeat, nextAt: s.nextAt, anchorDay: s.anchorDay ?? null, status: s.status, origin: s.origin ?? null, lastRunAt: s.lastRunAt ?? null, lastOutcome: s.lastOutcome ?? null});
 export function publicProactive(person, now) {
   const p = proactiveOf(person, now), limits = limitsFor(p.level), {activeStart, activeEnd} = proactiveState(person);
   return {

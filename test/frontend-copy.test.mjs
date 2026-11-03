@@ -100,15 +100,60 @@ test('the settings page keeps export, the privacy page and deleting the account 
 
 test('the assistant\'s home page: reminders in the account\'s zone, memory read when its tab opens and drawn as Markdown',async()=>{
   const page=await read('app/workspace/pages/AgentPage.jsx');
+  const tab=await read('app/workspace/pages/ProactiveReminders.jsx'),view=await read('app/workspace/proactive-view.mjs');
   assert.match(page,/const tz = state\.profile\.timezone, today = state\.today/);
-  assert.match(page,/formatDue\([^)]*, tz, today\)/,'when a reminder is due, next to the person\'s day');
-  assert.match(page,/upcomingReminders\(\{/);
-  assert.match(page,/api\('reminders\/cancel', \{id: /);
+  assert.match(page,/<ProactiveReminders state=\{state\} api=\{api\} act=\{act\} refresh=\{refresh\} tz=\{tz\} today=\{today\}\/>/,'the 提醒 tab gets the account\'s zone and day');
+  assert.ok(!/function Reminders\(|REPEATING|notLive/.test(page),'the block-one tab is gone');
+  assert.match(tab,/reminderGroups\(\{[^}]*\bnow, tz, today\}\)/);
+  assert.match(view,/formatDue\([^)]*, tz, today\)/,'when a one-off row is due, next to the person\'s day');
+  assert.match(view,/upcomingReminders\(\{/,'the one-off reminders by the same rule as 待办\'s 之后');
+  assert.match(view,/removeAction: 'reminders\/cancel'/);assert.match(view,/removeAction: 'schedules\/cancel'/);
+  // every change waits for the ones before it, and a clash with Weave writing at the same moment is tried once more
+  assert.match(tab,/retryOnConflict\(\(\) => api\(item\.removeAction, \{id: item\.id\}\), refresh\)/);
+  assert.match(tab,/api\('schedules\/pause', \{id: item\.id, paused: !item\.paused\}\)/);
+  assert.match(tab,/api\('proactive\/level', \{level\}\)/);
+  assert.match(tab,/answer = await retryOnConflict\(change, refresh\);/);
+  assert.equal(tab.split('act(async').length-1,2,'the delete, and the press of the dial or of a pause button');
   assert.match(page,/api\('agent-memory'\)/);
   assert.match(page,/^import Markdown from '\.\.\/Markdown';$/m);
   assert.match(page,/<Markdown text=\{[^}]+\}\/>/);
-  assert.match(page,/aria-pressed=\{tab === 'reminders'\}/);assert.match(page,/aria-pressed=\{tab === 'memory'\}/);
+  // three tabs, 动态 first and open at first
+  assert.match(page,/const TABS = \[\['activity', COPY\.activityTab, List\], \['reminders', COPY\.remindersTab, Clock\], \['memory', COPY\.memoryTab, NotepadText\]\];/);
+  assert.match(page,/useState\('activity'\)/);
+  assert.match(page,/aria-pressed=\{tab === id\}/);
+  assert.match(page,/<ActivityList state=\{state\} tz=\{tz\} today=\{today\}\/>/,'动态 in the account\'s zone and day');
   assert.match(page,/<ViewLink view="chat"/,'its own way back to the chat');
+});
+
+test('the memory tab is the file MEMORY.md, read-only: its name on top and what is in it as Markdown, nothing of our own',async()=>{
+  const page=await read('app/workspace/pages/AgentPage.jsx');
+  const memory=page.slice(page.indexOf('function Memory('));
+  assert.ok(memory.length>0&&memory.length<page.length,'the memory tab is found');
+  assert.match(memory,/<h2 id=\{fileId\} className="wv-memory-file-name"><FileText [^>]*\/>\{COPY\.memoryFile\}<\/h2>/);
+  assert.match(memory,/<div className="wv-memory-text"><Markdown text=\{memory\.text\}\/><\/div>/,'the file\'s text as it is, through Markdown');
+  assert.match(memory,/COPY\.memoryIntro/);assert.match(memory,/COPY\.memoryEmpty/);assert.match(memory,/COPY\.retry/);
+  // one read and no writes: the page asks for the file and nothing else, and has no box to type in
+  assert.deepEqual([...page.matchAll(/api\('([^']+)'/g)].map(match=>match[1]),['agent-memory']);
+  assert.ok(!/<textarea|<input|contentEditable|\.split\(/.test(memory),'no editing, and no memory cut up into items of our own');
+});
+
+test('on a wide screen the assistant\'s home page is a panel beside the chat; elsewhere the avatar opens it as a view',async()=>{
+  const chat=await read('app/workspace/pages/ChatPage.jsx'),side=await read('app/workspace/pages/AgentSide.jsx'),page=await read('app/workspace/pages/AgentPage.jsx');
+  // one body in two places
+  assert.match(page,/export function AgentBody\(/);
+  assert.match(page,/<AgentBody state=\{state\} api=\{api\} act=\{act\} refresh=\{refresh\}\/>/);
+  assert.match(side,/<AgentBody state=\{state\} api=\{api\} act=\{act\} refresh=\{refresh\} compact\/>/);
+  // the avatar: where there is room, a button that shows or hides the panel in place; elsewhere the link to the view,
+  // which the back gesture leaves
+  assert.match(chat,/side\.wide\s*\? <button [^>]*aria-expanded=\{side\.open\}[^>]*onClick=\{side\.toggle\}/);
+  assert.match(chat,/: <ViewLink view="agent" navigate=\{navigate\} className="wv-agent-link" aria-label=\{COPY\.openAgent\}>/);
+  assert.match(chat,/\{side\.shown && <AgentSide side=\{side\} /);
+  assert.ok(!/navigate|pushState|replaceState|location/.test(side),'the panel opens nothing and changes no address');
+  // one width for the script and the styles; the closed panel is remembered with the storage behind try/catch
+  assert.match(await read('app/workspace/side-panel.mjs'),/PANEL_MEDIA = '\(min-width: 1200px\)'/);
+  assert.match(await read('app/globals.css'),/\.wv-side\{display:none\}\s*@media\(min-width:1200px\)\{\s*\.wv-side\{/);
+  assert.match(side,/readPanelOpen\(storage\(\)\)/);assert.match(side,/writePanelOpen\(storage\(\), next\)/);
+  assert.match(side,/try \{ return typeof window === 'undefined' \? null : window\.localStorage; \} catch \{ return null; \}/);
 });
 
 test('every view has its page now, and the assistant\'s home page is not a tab',async()=>{
