@@ -1,7 +1,8 @@
 // Dates as the pages write them. A day is a 'YYYY-MM-DD' string in the person's own time zone (profile.timezone), the
 // same form as `today` in the status answer; calendar arithmetic on it needs no zone. Nothing here reads the clock or
-// the browser's zone: the page passes in the zone, the day and the time it wants to talk about.
-import {wallClockIn} from './timezone.mjs';
+// the browser's zone: the page passes in the zone, the day and the time it wants to talk about. A function that takes a
+// zone and is not given one uses Beijing time (the zone every new account starts with), never the machine's.
+import {SERVER_DEFAULT_TIMEZONE, wallClockIn} from './timezone.mjs';
 
 const DAY_MS = 86400000;
 const WEEKDAY = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -22,7 +23,7 @@ function dayMs(day) {
 }
 
 // The day on the wall in `timeZone` at this moment; '' when there is no moment.
-export function localDay(instant, timeZone) {
+export function localDay(instant, timeZone = SERVER_DEFAULT_TIMEZONE) {
   const ms = toMs(instant);
   return Number.isFinite(ms) ? wallClockIn(ms, timeZone).slice(0, 10) : '';
 }
@@ -59,13 +60,13 @@ export function formatHeader(day, {short = false} = {}) {
 }
 
 // '19:30'
-export function formatTime(instant, timeZone) {
+export function formatTime(instant, timeZone = SERVER_DEFAULT_TIMEZONE) {
   const ms = toMs(instant);
   return Number.isFinite(ms) ? wallClockIn(ms, timeZone).slice(11, 16) : '';
 }
 
 // When something is due, next to `today` (the person's day): '今天 20:00', '明天 20:00' or '11 月 4 日 20:00'.
-export function formatDue(instant, timeZone, today) {
+export function formatDue(instant, timeZone = SERVER_DEFAULT_TIMEZONE, today) {
   const day = localDay(instant, timeZone);
   if (!day) return '';
   return (day === today ? '今天' : day === addDays(today, 1) ? '明天' : formatDay(day)) + ' ' + formatTime(instant, timeZone);

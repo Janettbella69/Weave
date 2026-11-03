@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatTime,formatDue} from '../hosted/app/workspace/dates.mjs';
 import {todoModel} from '../hosted/app/workspace/todo.mjs';
 import {CATEGORY_LABEL,goalsModel} from '../hosted/app/workspace/goals-view.mjs';
@@ -366,6 +367,76 @@ test('monthModel: months of different shapes are padded to whole weeks',()=>{
   assert.deepEqual(monthModel({habit:walk,completions:[],month:'2026-13',today:TODAY,tz:SH}).cells,[]);
 });
 
+// /api/status carries the records of today and of the 61 days before it. With today = 2026-12-20 that is 2026-10-20 to 2026-12-20.
+// A day before it may have records the page was not sent, so it cannot be called a miss.
+const WINDOW_TODAY='2026-12-20';
+const windowDays=(from,to)=>{const days=[];for(let day=from;day<=to;day=addDays(day,1))days.push(day);return days;};
+const kindsOf=model=>model.cells.filter(c=>c.label).map(c=>c.kind);
+const repeat=(kind,n)=>Array(n).fill(kind);
+
+test('monthModel: days before the status window are unknown, not missed, and are not counted',()=>{
+  const walk=habit('h:walk','走路',{createdAt:'2026-08-01T03:00:00.000Z'});
+  const everyDay=windowDays('2026-10-20',WINDOW_TODAY).map(day=>done('h:walk',day));
+  assert.equal(everyDay.length,62,'today and the 61 days before it');
+  const month=(name,completions=everyDay)=>monthModel({habit:walk,completions,month:name,today:WINDOW_TODAY,tz:SH});
+
+  const october=month('2026-10');
+  assert.deepEqual(kindsOf(october),[...repeat('unknown',19),...repeat('done',12)],'1 to 19 October are before the window; the 20th is its first day');
+  assert.deepEqual(october.stats,{done:12,elapsed:12,longest:12,doubleMisses:0},'only the days the page knows about (it used to say 12 / 31 days and one double miss)');
+  assert.deepEqual(october.cells[3],{label:'1',kind:'unknown',day:'2026-10-01'});
+  assert.deepEqual(october.cells[3+19],{label:'20',kind:'done',day:'2026-10-20'});
+
+  const september=month('2026-09');
+  assert.deepEqual(kindsOf(september),repeat('unknown',30),'a whole month before the window, the habit already begun');
+  assert.deepEqual(september.stats,{done:0,elapsed:0,longest:0,doubleMisses:0});
+
+  const november=month('2026-11');
+  assert.deepEqual(kindsOf(november),repeat('done',30));
+  assert.deepEqual(november.stats,{done:30,elapsed:30,longest:30,doubleMisses:0});
+
+  const december=month('2026-12');
+  assert.deepEqual(kindsOf(december),[...repeat('done',20),...repeat('future',11)]);
+  assert.deepEqual(december.stats,{done:20,elapsed:20,longest:20,doubleMisses:0});
+
+  // a record is a record, wherever it is: one from before the window still shows, and does not join the run after it
+  const early=month('2026-10',[done('h:walk','2026-10-05'),...everyDay]);
+  assert.equal(early.cells[3+4].kind,'done');
+  assert.deepEqual(early.stats,{done:13,elapsed:13,longest:12,doubleMisses:0});
+});
+
+test('monthModel: the first day of the window is known; the unknown days before it make no run and no double miss',()=>{
+  const walk=habit('h:walk','走路',{createdAt:'2026-08-01T03:00:00.000Z'});
+  const without=(...skipped)=>windowDays('2026-10-20',WINDOW_TODAY).filter(day=>!skipped.includes(day)).map(day=>done('h:walk',day));
+  const stats=completions=>monthModel({habit:walk,completions,month:'2026-10',today:WINDOW_TODAY,tz:SH}).stats;
+  assert.deepEqual(stats(without('2026-10-20')),{done:11,elapsed:12,longest:11,doubleMisses:0},'a miss on the first day of the window, next to 19 unknown days, is one miss');
+  assert.deepEqual(stats(without('2026-10-20','2026-10-21')),{done:10,elapsed:12,longest:10,doubleMisses:1},'two misses in the window are two in a row');
+  assert.deepEqual(stats(without('2026-10-25','2026-10-26')),{done:10,elapsed:12,longest:5,doubleMisses:1});
+  // the window starts on the 1st: nothing of that month is unknown
+  const everyDay=windowDays('2026-10-01','2026-12-01').map(day=>done('h:walk',day));
+  const edge=month=>monthModel({habit:walk,completions:everyDay,month,today:'2026-12-01',tz:SH});
+  assert.deepEqual(kindsOf(edge('2026-10')),repeat('done',31));
+  assert.deepEqual(kindsOf(edge('2026-09')),repeat('unknown',30));
+  assert.deepEqual(monthModel({habit:walk,completions:[],month:'2026-10',today:'',tz:SH}).stats,{done:0,elapsed:0,longest:0,doubleMisses:0},'without today there is no window to measure from');
+});
+
+test('monthModel: a habit created inside the window is not changed by it',()=>{
+  const month=(habit,completions,name)=>monthModel({habit,completions,month:name,today:WINDOW_TODAY,tz:SH});
+  const fresh=habit('h:new','新习惯',{createdAt:'2026-11-10T03:00:00.000Z'});
+  const november=month(fresh,windowDays('2026-11-10',WINDOW_TODAY).filter(day=>day!=='2026-11-15').map(day=>done('h:new',day)),'2026-11');
+  assert.deepEqual(kindsOf(november),[...repeat('before',9),...repeat('done',5),'missed',...repeat('done',15)]);
+  assert.deepEqual(november.stats,{done:20,elapsed:21,longest:15,doubleMisses:0});
+  // created in the month the window starts in: before the habit is "before" (not begun), never "unknown"
+  const october=habit('h:oct','十月新习惯',{createdAt:'2026-10-25T03:00:00.000Z'});
+  const inOctober=month(october,windowDays('2026-10-25',WINDOW_TODAY).filter(day=>day!=='2026-10-28').map(day=>done('h:oct',day)),'2026-10');
+  assert.deepEqual(kindsOf(inOctober),[...repeat('before',24),'done','done','done','missed','done','done','done']);
+  assert.deepEqual(inOctober.stats,{done:6,elapsed:7,longest:3,doubleMisses:0});
+  // created on the first day of the window
+  const first=habit('h:first','窗口第一天',{createdAt:'2026-10-20T03:00:00.000Z'});
+  const onTheDay=month(first,windowDays('2026-10-20',WINDOW_TODAY).map(day=>done('h:first',day)),'2026-10');
+  assert.deepEqual(kindsOf(onTheDay),[...repeat('before',19),...repeat('done',12)]);
+  assert.ok(!kindsOf(onTheDay).includes('unknown'));
+});
+
 test('recentNotes: the newest records of one habit, with who made them',()=>{
   const completions=[
     done('h:walk','2026-10-30',{source:'agent',note:'和朋友一起走到公园，聊了一路。'}),
@@ -388,14 +459,20 @@ test('recentNotes: the newest records of one habit, with who made them',()=>{
   assert.equal(completions[0].date,'2026-10-30','the list it was given is left as it was');
 });
 
-test('monthBounds: from the month of the oldest record to the month of today',()=>{
+test('monthBounds: from the month the status window starts in to the month of today, whatever has been recorded',()=>{
+  // the window is today and the 61 days before it, so it reaches back to 2 September when today is 2 November
+  assert.deepEqual(monthBounds({completions:[],today:'2026-11-02'}),{earliest:'2026-09',latest:'2026-11'});
   const completions=[done('h:a','2026-10-12'),done('h:a','2026-09-05'),done('h:b','2026-11-01')];
   assert.deepEqual(monthBounds({completions,today:'2026-11-02'}),{earliest:'2026-09',latest:'2026-11'});
-  assert.deepEqual(monthBounds({completions:[],today:'2026-11-02'}),{earliest:'2026-11',latest:'2026-11'},'nothing recorded yet: just this month');
-  assert.deepEqual(monthBounds({completions:[done('h:a','2026-11-01')],today:'2026-11-02'}),{earliest:'2026-11',latest:'2026-11'});
-  assert.deepEqual(monthBounds({completions:[done('h:a','2025-12-31')],today:'2026-01-01'}),{earliest:'2025-12',latest:'2026-01'},'over New Year');
-  assert.deepEqual(monthBounds({completions:[done('h:a','2026-12-05')],today:'2026-11-02'}),{earliest:'2026-11',latest:'2026-11'},'a date from the future cannot be turned to');
-  assert.deepEqual(monthBounds({completions:[],today:''}),{earliest:'',latest:''});
+  assert.deepEqual(monthBounds({completions:[done('h:a','2026-11-01')],today:'2026-11-02'}),{earliest:'2026-09',latest:'2026-11'},'a new habit does not shorten it');
+  assert.deepEqual(monthBounds({completions:[done('h:a','2026-12-05')],today:'2026-11-02'}),{earliest:'2026-09',latest:'2026-11'},'a date from the future cannot be turned to');
+  assert.deepEqual(monthBounds({completions:[],today:WINDOW_TODAY}),{earliest:'2026-10',latest:'2026-12'},'the window starts on 20 October: the month the unknown days are in');
+  assert.deepEqual(monthBounds({completions:[],today:'2026-12-01'}),{earliest:'2026-10',latest:'2026-12'},'the window starts on 1 October');
+  assert.deepEqual(monthBounds({completions:[],today:'2026-12-31'}),{earliest:'2026-10',latest:'2026-12'},'the window starts on 31 October');
+  assert.deepEqual(monthBounds({completions:[],today:'2026-01-01'}),{earliest:'2025-11',latest:'2026-01'},'over New Year');
+  assert.deepEqual(monthBounds({completions:[],today:'2026-03-01'}),{earliest:'2025-12',latest:'2026-03'},'over New Year, the other way');
+  for(const today of ['','2026-1-2','soon',undefined])assert.deepEqual(monthBounds({completions:[],today}),{earliest:'',latest:''},String(today));
+  assert.deepEqual(monthBounds({}),{earliest:'',latest:''});
 });
 
 // ---- 聊天 ----
@@ -448,6 +525,38 @@ test('isProactive: only a message that says so, with the flag or from the backgr
 test('proactiveLabel: the time it was sent, in the person\'s zone, and the words from the board',()=>{
   assert.equal(proactiveLabel({createdAt:'2026-11-02T11:30:00.000Z',proactive:true},SH),'19:30 · Weave 主动来问');
   assert.equal(proactiveLabel({createdAt:'2026-11-02T11:30:00.000Z',proactive:true},LA),'03:30 · Weave 主动来问');
+});
+
+// ---- the zone ----
+
+test('with no zone given, the date and time helpers use Beijing time and never the machine\'s zone',()=>{
+  // 2026-11-03T07:30Z is 15:30 on the 3rd in Shanghai, 23:30 on the 2nd in Los Angeles
+  const instant='2026-11-03T07:30:00Z';
+  assert.equal(localDay(instant),'2026-11-03');
+  assert.equal(formatTime(instant),'15:30');
+  assert.equal(formatDue('2026-11-04T12:00:00Z',undefined,'2026-11-03'),'明天 20:00');
+  assert.equal(proactiveLabel({createdAt:instant}),'15:30 · Weave 主动来问');
+  const sent={id:'m',role:'user',text:'m',createdAt:'2026-11-02T16:30:00.000Z'};   // 00:30 on the 3rd in Shanghai
+  assert.deepEqual(withSeparators([sent],undefined,'2026-11-03'),[{kind:'separator',label:'今天'},{kind:'message',message:sent}]);
+
+  // The same calls in a process whose own zone is Los Angeles, where a helper that fell back to the machine would answer
+  // 2026-11-02, 23:30, 明天 04:00, 昨天, and so on. This is what makes the test hold on any machine, not only on one in Shanghai.
+  const href=name=>JSON.stringify(new URL('../hosted/app/workspace/'+name,import.meta.url).href);
+  const script=`
+    import {localDay,formatTime,formatDue} from ${href('dates.mjs')};
+    import {withSeparators,proactiveLabel} from ${href('chat-view.mjs')};
+    const list=withSeparators([{id:'m',role:'user',text:'m',createdAt:'2026-11-02T16:30:00.000Z'}],undefined,'2026-11-03');
+    console.log(JSON.stringify({
+      machine:Intl.DateTimeFormat().resolvedOptions().timeZone,
+      localDay:localDay('2026-11-03T07:30:00Z'),
+      formatTime:formatTime('2026-11-03T07:30:00Z'),
+      formatDue:formatDue('2026-11-04T12:00:00Z',undefined,'2026-11-03'),
+      proactiveLabel:proactiveLabel({createdAt:'2026-11-03T07:30:00.000Z'}),
+      separators:list.map(item=>item.kind==='separator'?item.label:item.message.id),
+    }));`;
+  const out=JSON.parse(execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,TZ:'America/Los_Angeles'},encoding:'utf8'}));
+  assert.equal(out.machine,'America/Los_Angeles','the child process really is in another zone');
+  assert.deepEqual(out,{machine:'America/Los_Angeles',localDay:'2026-11-03',formatTime:'15:30',formatDue:'明天 20:00',proactiveLabel:'15:30 · Weave 主动来问',separators:['今天','m']});
 });
 
 // ---- 重试 ----
