@@ -336,6 +336,18 @@ export function receiveReceipt(world,{id,state},now=Date.now()){
   return {ok:true};
 }
 
+// What the bridge can do at once instead of waiting for its next poll, read off what an event just put in the queue:
+//   wake: true      something is queued for the Agent (a bound person's message, an @ in an enabled group): run a tick now
+//   outbound: true  a message is queued to be sent (bind confirmation, a group notice, a refusal): claim it now
+// Each is present only when true, so a bridge that does not know them (or a server that does not send them) changes nothing.
+function fastReplyHints(world,known){
+  const fresh=Object.entries(world.wechat??{}).filter(([id])=>!known.has(id)).map(([,entry])=>entry);
+  return {
+    ...(fresh.some(entry=>entry.direction==='inbound'&&entry.status==='queued')?{wake:true}:{}),
+    ...(fresh.some(entry=>entry.direction==='outbound'&&entry.status==='queued')?{outbound:true}:{}),
+  };
+}
+
 export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Date.now()}){
   const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   try{
@@ -350,7 +362,11 @@ export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Dat
     const seen=world.runtime['runtime:wechat-bridge']?.lastSeenAt;
     if(typeof seen!=='number'||now-seen>60000)world.runtime['runtime:wechat-bridge']={id:'runtime:wechat-bridge',lastSeenAt:now};
     let result;
-    if(path==='/api/internal/wechat/events')result=await ingest(world,input,{secret,now});
+    if(path==='/api/internal/wechat/events'){
+      const known=new Set(Object.keys(world.wechat??{}));
+      result=await ingest(world,input,{secret,now});
+      Object.assign(result,fastReplyHints(world,known));
+    }
     else if(path==='/api/internal/wechat/claim')result={jobs:await claimOutbound(world,{secret,now})};
     else if(path==='/api/internal/wechat/receipt')result=receiveReceipt(world,input,now);
     else return json({error:'接口不存在'},404);

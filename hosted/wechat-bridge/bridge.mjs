@@ -204,12 +204,61 @@ export function cursorStore(file){
     async save(cursor){await mkdir(dirname(file),{recursive:true,mode:0o700});const temp=file+'.tmp';await writeFile(temp,JSON.stringify({cursor}),{mode:0o600});await rename(temp,file);},
   };
 }
-// For deployments where Cron does not fire. A tick can wait on several model calls.
-async function tickLoop({weave,isStopping}){
-  while(!isStopping()){
+// ── the fast path: act on a message when it arrives instead of at the next poll ───────────────────────────────────────────
+// Runs `job` one at a time. request(): now, or, if it is running, exactly one more time after it, however many requests come in
+// meanwhile. ifIdle(): only if nothing is running; the fallback loops use it, because behind a busy run they would only queue a
+// pointless extra one. The job should handle its own errors; one that throws anyway is logged and does not wedge the flight.
+export function singleFlight(job){
+  let running=false,again=false;
+  const start=async()=>{
+    running=true;
+    try{do{again=false;try{await job();}catch(error){console.error('后台任务出错：'+error.message);}}while(again);}
+    finally{running=false;}
+  };
+  return {
+    request:()=>{if(running){again=true;return Promise.resolve();}return start();},
+    ifIdle:()=>running?Promise.resolve():start(),
+  };
+}
+// The tick Weave needs when Cron does not fire (WEAVE_TICK=1). A tick can wait on several model calls, hence the long timeout.
+// When it returns, afterTick runs: the replies it queued should go out now, not at the next poll.
+export function createTick({weave,afterTick=()=>{}}){
+  return singleFlight(async()=>{
     try{await weave('tick',{},{timeoutMs:170000});}catch(error){console.error('定时任务暂时跑不了：'+error.message);}
-    await delay(60000);
-  }
+    afterTick();
+  });
+}
+// Weave answers /events with wake:true when it queued something for the Agent and outbound:true when it queued a message to send.
+// A server that sends neither (an older one) changes nothing. Only the answer to /events is looked at.
+export function withHints(weave,{onWake,onOutbound}){
+  return async(path,data,options)=>{
+    const result=await weave(path,data,options);
+    if(path==='events'&&result){
+      if(result.wake===true)onWake();
+      if(result.outbound===true)onOutbound();
+    }
+    return result;
+  };
+}
+// Puts the pieces together. `deliver` is one delivery pass; withTick says whether this bridge runs ticks itself (WEAVE_TICK=1).
+// A wake runs a tick at once, a tick that returns is followed by a delivery pass, and an outbound hint runs one too. Everything is
+// single-flight, so a burst of messages means at most one tick running and one waiting, and never two deliveries at the same time.
+export function createFastPath({weave,deliver,withTick,isStopping=()=>false}){
+  const delivery=singleFlight(deliver);
+  const ticking=withTick?createTick({weave,afterTick:()=>{if(!isStopping())void delivery.request();}}):null;
+  const hinted=withHints(weave,{
+    onWake:()=>{if(ticking&&!isStopping())void ticking.request();},
+    onOutbound:()=>{if(!isStopping())void delivery.request();},
+  });
+  return {hinted,delivery,ticking};
+}
+// The fallbacks, for whatever a hint missed or an older server never announces: a tick every 60 s (when the bridge runs ticks) and a
+// delivery pass every 20 s. Weave queues replies from a once-a-minute Cron too, and each poll reads D1.
+export async function tickLoop({ticking,isStopping,wait=delay}){
+  while(!isStopping()){await ticking.ifIdle();await wait(60000);}
+}
+export async function deliveryLoop({delivery,isStopping,wait=delay}){
+  while(!isStopping()){await delivery.ifIdle();await wait(20000);}
 }
 // 3 s after the first failure, doubling up to 60 s. A logged-out daemon refuses every time; waiting longer keeps the log short.
 export const reconnectDelay=failures=>Math.min(3000*2**failures,60000);
@@ -246,12 +295,10 @@ export async function main(env=process.env){
   let stopping=false;for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{stopping=true;setTimeout(()=>process.exit(0),3000).unref();});
   const throttle=throttleFromEnv(env),memory=newMemory();
   console.log('微信桥接已启动。');
-  void follow({daemon,weave,cursors,isStopping:()=>stopping});
-  if(env.WEAVE_TICK==='1')void tickLoop({weave,isStopping:()=>stopping});
-  while(!stopping){
-    try{await deliverOnce({daemon,weave,throttle,memory});}catch(error){console.error('发送队列暂时不可用：'+error.message);}
-    // Weave queues replies from a once-a-minute Cron, and each poll reads D1.
-    await delay(20000);
-  }
+  const deliver=async()=>{try{await deliverOnce({daemon,weave,throttle,memory});}catch(error){console.error('发送队列暂时不可用：'+error.message);}};
+  const {hinted,delivery,ticking}=createFastPath({weave,deliver,withTick:env.WEAVE_TICK==='1',isStopping:()=>stopping});
+  void follow({daemon,weave:hinted,cursors,isStopping:()=>stopping});
+  if(ticking)void tickLoop({ticking,isStopping:()=>stopping});
+  await deliveryLoop({delivery,isStopping:()=>stopping});
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error.message);process.exitCode=1;});
