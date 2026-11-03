@@ -157,6 +157,7 @@ export const COPY = freeze({
   deleteConfirm: '确定要永久删除账号吗？你的聊天、计划和日程都会被删除，无法恢复。',
 
   // The assistant's home page (助理主页)
+  agentTabs: '助理主页的栏目', // the two tabs' accessible name (the board's aria-label)
   remindersTab: '提醒',
   memoryTab: '记忆',
   // 草稿文案，待确认。(A-4: the board's first sentence no longer holds now that Weave can remind once)
@@ -166,6 +167,8 @@ export const COPY = freeze({
   weekly: '每周',
   monthly: '每月',
   noneScheduled: '暂时没有安排。',
+  // A reminder's delete button's accessible name (the board's script): 删除：给妈妈打个电话
+  removeReminder: text => '删除：' + text,
   // 草稿文案，待确认。(A-4)
   memoryIntro: '这些是 Weave 自己记下的关于你的事。哪条不对，直接在聊天里跟它说。',
   // 草稿文案，待确认。(A-4)

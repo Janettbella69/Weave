@@ -41,11 +41,16 @@ export function todoModel({goals = [], habits = [], completions = [], reminders 
       };
     });
 
+  const later = upcomingReminders({reminders, now});
+  return {today: rows, later, doneCount: rows.filter(row => row.done).length, total: rows.length};
+}
+
+// The one-off reminders that are still scheduled and not due yet at `now`, soonest first: {reminderId, title, dueAt}.
+// 待办 lists them under 之后, the assistant's home page under 只响一次.
+export function upcomingReminders({reminders = [], now} = {}) {
   const nowMs = toMs(now);
-  const later = reminders
+  return reminders
     .filter(reminder => reminder.status === 'scheduled' && toMs(reminder.dueAt) > nowMs)
     .sort((a, b) => toMs(a.dueAt) - toMs(b.dueAt))
     .map(reminder => ({reminderId: reminder.id, title: reminder.text, dueAt: reminder.dueAt}));
-
-  return {today: rows, later, doneCount: rows.filter(row => row.done).length, total: rows.length};
 }

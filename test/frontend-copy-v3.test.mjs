@@ -35,6 +35,7 @@ const TEXT = {
   remindersTab: '提醒', memoryTab: '记忆', notLive: '主动提醒还没开通。现在 Weave 只会在你交代的时间提醒你一次；开通以后，它会按下面的安排主动来找你。',
   once: '只响一次', daily: '每天', weekly: '每周', monthly: '每月', noneScheduled: '暂时没有安排。',
   memoryIntro: '这些是 Weave 自己记下的关于你的事。哪条不对，直接在聊天里跟它说。', memoryEmpty: 'Weave 还没有记下关于你的事。',
+  agentTabs: '助理主页的栏目',
   // the first time the site is opened
   welcome: '你好，我是 Weave', firstRunIntro: '先选一件最想养成的小事。我们从小到不会失败的一步开始，慢慢来。', pickOne: '选一件想养成的事', firstRunGo: '就这样开始', firstRunChange: '想换个说法，就在下面跟我说。',
   ownHabit: '我想养成…', ownPlaceholder: '比如：每天拉伸 5 分钟', ownDone: '好了', sayIt: '也可以直接跟我说', sayItPlaceholder: '比如：我总是熬夜，想早点睡',
@@ -66,6 +67,7 @@ const CALLS = [
   ['outOf', [20], '/ 20 天'],
   ['outOf', [0], '/ 0 天'],
   ['notionPage', ['习惯日记'], '用到的页面：习惯日记'],
+  ['removeReminder', ['给妈妈打个电话'], '删除：给妈妈打个电话'],
   ['firstRunPick', ['饭后走走'], '好，就从「饭后走走」开始。'],
   ['firstRunStep', ['吃完饭，穿上鞋走到楼下'], '第一步可以小到：吃完饭，穿上鞋走到楼下。'],
   ['firstRunStarter', ['饭后走走', '吃完饭，穿上鞋走到楼下'], '我想从「饭后走走」开始，第一步：吃完饭，穿上鞋走到楼下。'],

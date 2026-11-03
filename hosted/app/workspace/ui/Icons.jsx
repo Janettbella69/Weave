@@ -13,6 +13,8 @@ export {
   ChevronDown,                // the zone choice in settings
   ChevronLeft, ChevronRight,
   Clock,                      // 「HH:MM · Weave 主动来问」, and the reminders tab
+  NotepadText,                // the memory tab
+  Trash2,                     // deleting a reminder
   Zap,                        // 「已连接」
   // the goal categories, in their order: health, relationships, finance, career, interests, productivity
   Heart, Users, JapaneseYen, Briefcase, Palette, Laptop,

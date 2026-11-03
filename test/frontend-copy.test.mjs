@@ -90,6 +90,24 @@ test('the settings page keeps export, the privacy page and deleting the account 
   assert.match(page,/authKind === 'guest' \? '\/api\/auth\/guest\/signout\?return_to=%2F' : '\/'/,'a guest is signed out, anyone else goes home');
 });
 
+test('the assistant\'s home page: reminders in the account\'s zone, memory read when its tab opens and drawn as Markdown',async()=>{
+  const page=await read('app/workspace/pages/AgentPage.jsx');
+  assert.match(page,/const tz = state\.profile\.timezone, today = state\.today/);
+  assert.match(page,/formatDue\([^)]*, tz, today\)/,'when a reminder is due, next to the person\'s day');
+  assert.match(page,/upcomingReminders\(\{/);
+  assert.match(page,/api\('reminders\/cancel', \{id: /);
+  assert.match(page,/api\('agent-memory'\)/);
+  assert.match(page,/^import Markdown from '\.\.\/Markdown';$/m);
+  assert.match(page,/<Markdown text=\{[^}]+\}\/>/);
+  assert.match(page,/aria-pressed=\{tab === 'reminders'\}/);assert.match(page,/aria-pressed=\{tab === 'memory'\}/);
+  assert.match(page,/<ViewLink view="chat"/,'its own way back to the chat');
+});
+
+test('every view has its page now, and the assistant\'s home page is not a tab',async()=>{
+  const workspace=await read('app/workspace/Workspace.jsx');
+  assert.match(workspace,/const PAGES=\{chat:ChatPage,todo:TodoPage,goals:GoalsPage,records:RecordsPage,settings:SettingsPage,agent:AgentPage\};/);
+});
+
 test('a new goal is talked over in the chat, with its category',async()=>{
   const goals=await read('app/workspace/pages/GoalsPage.jsx');
   assert.match(goals,/sendChat\(props,\s*COPY\.goalStarter\(/);

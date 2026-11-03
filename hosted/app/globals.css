@@ -269,20 +269,21 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-proactive{align-self:flex-start;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--wv-secondary)}
 .wv-chat-compose{flex:none;padding:8px 24px 20px}
 .wv-chat-note{margin-left:20px;font-size:12px;color:var(--wv-small)}
-/* What Weave writes in Markdown (Markdown.jsx), inside its bubble. A code block scrolls sideways inside the bubble.
-   Blocks are 8px apart and the first has none above it. A list or a code block takes that gap too: its own rules below
-   set only its bottom and side margins, so they never override the top one. */
-.wv-bubble>*+*{margin-top:8px}
-.wv-bubble>:first-child{margin-top:0}
-.wv-bubble :is(ul,ol){margin-right:0;margin-bottom:0;margin-left:0;padding-left:1.4em}
-.wv-bubble li+li,.wv-bubble li>:is(ul,ol){margin-top:2px}
-.wv-bubble .md-heading{font-size:17px}
-.wv-bubble a{color:var(--wv-link)}
-.wv-bubble a:hover{color:var(--wv-on-blue)}
-.wv-bubble code{padding:1px 5px;border-radius:6px;background:#FFFFFF;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}
-.wv-bubble pre{max-width:100%;margin-right:0;margin-bottom:0;margin-left:0;padding:10px 14px;border-radius:12px;background:#FFFFFF;overflow-x:auto;font-size:13px;line-height:1.5}
-.wv-bubble pre code{padding:0;border-radius:0;background:none;font-size:inherit;overflow-wrap:normal;white-space:pre}
-.wv-bubble hr{margin:12px 0;border:0;border-top:1px solid #DADADA}
+/* What Weave writes in Markdown (Markdown.jsx): inside its bubble, and its memory on the assistant's home page
+   (.wv-memory-text, which sits on the white page and so gives code a grey ground: --wv-md-code). A code block scrolls
+   sideways. Blocks are 8px apart and the first has none above it. A list or a code block takes that gap too: its own
+   rules below set only its bottom and side margins, so they never override the top one. */
+:is(.wv-bubble,.wv-memory-text)>*+*{margin-top:8px}
+:is(.wv-bubble,.wv-memory-text)>:first-child{margin-top:0}
+:is(.wv-bubble,.wv-memory-text) :is(ul,ol){margin-right:0;margin-bottom:0;margin-left:0;padding-left:1.4em}
+:is(.wv-bubble,.wv-memory-text) li+li,:is(.wv-bubble,.wv-memory-text) li>:is(ul,ol){margin-top:2px}
+:is(.wv-bubble,.wv-memory-text) .md-heading{font-size:17px}
+:is(.wv-bubble,.wv-memory-text) a{color:var(--wv-link)}
+:is(.wv-bubble,.wv-memory-text) a:hover{color:var(--wv-on-blue)}
+:is(.wv-bubble,.wv-memory-text) code{padding:1px 5px;border-radius:6px;background:var(--wv-md-code,#FFFFFF);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}
+:is(.wv-bubble,.wv-memory-text) pre{max-width:100%;margin-right:0;margin-bottom:0;margin-left:0;padding:10px 14px;border-radius:12px;background:var(--wv-md-code,#FFFFFF);overflow-x:auto;font-size:13px;line-height:1.5}
+:is(.wv-bubble,.wv-memory-text) pre code{padding:0;border-radius:0;background:none;font-size:inherit;overflow-wrap:normal;white-space:pre}
+:is(.wv-bubble,.wv-memory-text) hr{margin:12px 0;border:0;border-top:1px solid #DADADA}
 @media(max-width:719.98px){
   .wv-chat-head{padding:6px 16px}
   .wv-chat-log{padding:16px}
@@ -559,6 +560,50 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-setting-text{flex-basis:180px}
   .wv-settings-text{font-size:14px}
   .wv-bind{padding:14px}
+}
+
+/* 助理主页 (pages/AgentPage.jsx): the way back, Weave in the middle, the two tabs, and what each holds */
+.wv-agent{padding:24px 40px 56px}
+.wv-agent-column{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.wv-back{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;min-height:44px;font-size:14px;color:var(--wv-secondary);text-decoration:none}
+.wv-back:hover{color:var(--wv-ink)}
+.wv-agent-head{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.wv-agent-head h1{margin-top:12px;font-size:28px}
+.wv-agent-status{display:flex;align-items:center;gap:8px;font-size:17px;color:var(--wv-secondary)}
+.wv-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px;border-radius:999px;background:#F2F2F2}
+.wv-tab{display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 12px;border:0;border-radius:999px;background:transparent;color:#5F5F5F;font-size:15px;line-height:1.3}
+.wv-tab[aria-pressed=true]{background:#FFFFFF;color:var(--wv-ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.10)}
+.wv-agent-panel{display:flex;flex-direction:column;gap:28px}
+.wv-not-live{padding:14px 18px;border-radius:20px;background:var(--wv-block);font-size:15px;line-height:1.7}
+.wv-schedule{display:flex;flex-direction:column;gap:6px}
+.wv-schedule h2{margin-bottom:4px;font-size:19px}
+.wv-schedule-empty{font-size:14px;color:var(--wv-secondary)}
+.wv-reminders{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.wv-reminder{display:flex;align-items:center;gap:14px;padding:10px 0}
+.wv-reminder-icon{flex:none;display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:14px;background:#F2F2F2}
+.wv-reminder-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
+.wv-reminder-title{font-size:16px;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
+.wv-reminder-meta{font-size:14px;color:var(--wv-secondary)}
+.wv-round.is-quiet{color:#5F5F5F}
+.wv-memory{display:flex;flex-direction:column;gap:24px}
+.wv-memory-intro{font-size:15px;line-height:1.7;color:var(--wv-secondary)}
+.wv-memory-text{--wv-md-code:#F2F2F2;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
+/* A heading in the memory starts a new part: the size and room of the board's groups */
+.wv-memory-text .md-heading{font-size:19px}
+.wv-memory-text>.md-heading:not(:first-child){margin-top:20px}
+.wv-memory-failed{display:flex;flex-direction:column;align-items:flex-start;gap:12px;font-size:15px}
+@media(max-width:719.98px){
+  .wv-agent{padding:8px 16px 32px}
+  .wv-agent-column{gap:20px}
+  .wv-agent-head h1{margin-top:8px;font-size:24px}
+  .wv-agent-status{font-size:15px}
+  .wv-agent-panel{gap:24px}
+  .wv-not-live{padding:12px 16px;border-radius:18px;font-size:14px}
+  .wv-schedule h2{font-size:17px}
+  .wv-reminder{gap:12px}
+  .wv-memory-intro{font-size:14px}
+  .wv-memory-text{font-size:15px}
+  .wv-memory-text .md-heading{font-size:17px}
 }
 
 @media(prefers-reduced-motion:reduce){

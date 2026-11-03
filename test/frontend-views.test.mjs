@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {localDay,addDays,weekStart,dayRange,formatDay,formatHeader,formatHeaderShort,formatTime,formatDue,formatMonth,addMonths} from '../hosted/app/workspace/dates.mjs';
-import {todoModel} from '../hosted/app/workspace/todo.mjs';
+import {todoModel,upcomingReminders} from '../hosted/app/workspace/todo.mjs';
 import {habitKey,reminderKey,withChecks,settleChecks} from '../hosted/app/workspace/todo-checks.mjs';
 import {CATEGORY_LABEL,goalsModel,goalWordsLimit} from '../hosted/app/workspace/goals-view.mjs';
 import {MESSAGE_MAX_LENGTH} from '../hosted/app/workspace/chat-input.mjs';
@@ -200,6 +200,22 @@ test('todoModel: later is the one-off reminders still to come, soonest first',()
   ]);
   assert.deepEqual([model.total,model.doneCount,model.today],[0,0,[]],'reminders are not part of 今天 n / m');
   assert.deepEqual(todoModel({goals:[],habits:[],completions:[],reminders,today:TODAY,now:'2026-11-02T12:30:00Z',tz:SH}).later.map(r=>r.reminderId),['r:tonight','r:tomorrow'],'now may be an ISO time');
+});
+
+test('upcomingReminders: the list of 只响一次 on the assistant\'s home page is 待办\'s 之后, from the same rule',()=>{
+  const reminders=[
+    reminder('r:tomorrow','给妈妈打个电话','2026-11-03T12:00:00.000Z'),
+    reminder('r:tonight','拿快递','2026-11-02T13:00:00.000Z'),
+    reminder('r:past','已经过了','2026-11-02T11:00:00.000Z'),
+    reminder('r:cancelled','取消了','2026-11-04T12:00:00.000Z','cancelled'),
+  ];
+  assert.deepEqual(upcomingReminders({reminders,now:NOW}),[
+    {reminderId:'r:tonight',title:'拿快递',dueAt:'2026-11-02T13:00:00.000Z'},
+    {reminderId:'r:tomorrow',title:'给妈妈打个电话',dueAt:'2026-11-03T12:00:00.000Z'},
+  ],'scheduled and still to come, soonest first');
+  assert.deepEqual(upcomingReminders({reminders,now:NOW}),todoModel({reminders,today:TODAY,now:NOW,tz:SH}).later);
+  assert.deepEqual(upcomingReminders({now:NOW}),[]);
+  assert.equal(reminders[0].id,'r:tomorrow','the list it was given is left in its order');
 });
 
 test('todoModel: the answer of an older server, with no lists at all, is an empty page and not an error',()=>{
