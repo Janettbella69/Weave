@@ -55,23 +55,35 @@ env_set() {
   mv "$tmp" "$file"
 }
 
-# 桥接用的 wx 密钥：读和发；第二个参数是 1 时再加 media（看图：只用来读守护进程已经存好的照片副本，见 docs/WECHAT.md）。
-# 旧的同名密钥先作废，免得越攒越多。建新密钥不会让小号掉线（agent-wechat 文档：密钥和微信登录是分开的）。
-# 新密钥只写进 bridge.env，不显示，也不进命令行参数。
-bridge_key_renew() {
-  local id="$1" media="${2:-}" key
-  wx_cli tokens list | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const t of JSON.parse(s).items||[])if(t.name==="weave-bridge"&&!t.revoked)console.log(t.id)})' | while IFS= read -r old; do
-    wx_cli tokens revoke "$old" >/dev/null || true
-  done
+# 换桥接用的 wx 密钥，分三步，任何时候桥接手里都有一把能用的：
+#   bridge_key_create ID [1]   先建新的（读和发；第二个参数是 1 时再加 media，看图用，见 docs/WECHAT.md），写进 bridge.env；
+#                              这时旧的还有效。新密钥的 id 放在 new_key_id 里。
+#   （调用的地方接着重启桥接，让它用上新密钥）
+#   bridge_key_revoke_others   最后作废别的同名密钥，留下 new_key_id 那把。
+# 建新密钥、作废旧密钥都不会让小号掉线（agent-wechat 文档：密钥和微信登录是分开的）。密钥只写进 bridge.env，不显示，也不进命令行参数。
+bridge_key_create() {
+  local id="$1" media="${2:-}" out key
   if [ "$media" = 1 ]; then
-    key=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send --scopes media | json_get token)
+    out=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send --scopes media)
   else
-    key=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send | json_get token)
+    out=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send)
   fi
+  key=$(printf '%s' "$out" | json_get token)
+  new_key_id=$(printf '%s' "$out" | json_get grant.id)
+  out=""
   [ -n "$key" ] || die "建密钥没成功。"
   env_set "$bridge_env" WX_TOKEN "$key"
   env_set "$bridge_env" WX_ACCOUNT "$id"
   key=""
+}
+bridge_key_revoke_others() {
+  if [ -z "${new_key_id:-}" ]; then
+    say "没拿到新密钥的 id，旧的 weave-bridge 密钥没有作废（不影响使用）。要清理：bash deploy/wechat-mac/wx.sh tokens list"
+    return 0
+  fi
+  wx_cli tokens list | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const t of JSON.parse(s).items||[])if(t.name==="weave-bridge"&&!t.revoked&&t.id!==process.argv[1])console.log(t.id)})' "$new_key_id" | while IFS= read -r old; do
+    wx_cli tokens revoke "$old" >/dev/null || true
+  done
 }
 
 # 读 env 文件里的一个值；没有就是空。

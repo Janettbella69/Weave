@@ -4,7 +4,8 @@
 #                                          在 bridge.env 里写 WEAVE_WECHAT_IMAGES=1，重启桥接
 #   bash deploy/wechat-mac/images.sh off   重建密钥，去掉 media，把 bridge.env 里的 WEAVE_WECHAT_IMAGES 清空，重启桥接
 # 重建密钥不会让小号掉线（agent-wechat 文档：撤销密钥不会登出微信）。新密钥只写进 bridge.env，不显示。
-# 服务器那边要另外打开：web.env 里加 WEAVE_WECHAT_IMAGES=1 再部署，见 docs/WECHAT.md「看图（默认关闭）」。
+# 顺序：打开时先开桥接（这个脚本 on），再开网站（web.env 里加 WEAVE_WECHAT_IMAGES=1 再部署）；关掉时先关网站，再跑 off。
+# 网站只有听到桥接说它也开着才会用照片，见 docs/WECHAT.md「看图（默认关闭）」。
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
@@ -24,13 +25,15 @@ id=$(env_get "$bridge_env" WX_ACCOUNT)
 
 umask 077
 if [ "$want" = 1 ]; then say "重建桥接用的密钥：读、发，加上看图用的 media……"; else say "重建桥接用的密钥：只能读和发，去掉 media……"; fi
-bridge_key_renew "$id" "$want"
+bridge_key_create "$id" "$want"
 env_set "$bridge_env" WEAVE_WECHAT_IMAGES "$want"
 say "已写入 ${bridge_env}（不显示内容）。"
 
 agent_start bridge
+# 桥接已经用上新密钥，这时再作废旧的：换密钥的整个过程里桥接都有一把能用的。
+bridge_key_revoke_others
 if [ "$want" = 1 ]; then
-  say "看图在这台 Mac 上打开了，桥接已重启。服务器那边也要打开：web.env 里 WEAVE_WECHAT_IMAGES=1，再部署（docs/WECHAT.md）。"
+  say "看图在这台 Mac 上打开了，桥接已重启。下一步打开网站：web.env 里 WEAVE_WECHAT_IMAGES=1，再部署（docs/WECHAT.md）。"
 else
   say "看图在这台 Mac 上关掉了，桥接已重启。"
 fi

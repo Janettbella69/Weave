@@ -404,6 +404,35 @@ test('images.sh: no argument, an unknown one, or no signed-in account yet change
   } finally { box.done(); }
 });
 
+// A launchctl stand-in that writes into the same call log as the fake wx, so one file shows the order of everything. The label is a
+// test one too, so nothing could ever reach a real launchd job.
+function fakeLaunchctl(box) {
+  writeFileSync(join(box.dir, 'bin', 'launchctl'), `#!/usr/bin/env bash
+printf 'launchctl %s\\n' "$*" >> "$FAKE_LOG/wx-calls"
+exit 0
+`, {mode: 0o755});
+}
+
+test('the key is changed without a gap: the new key is made and written, the bridge restarts on it, and only then the old one is revoked (images.sh and login.sh)', () => {
+  for (const script of [['images.sh', 'on'], ['images.sh', 'off'], ['login.sh']]) {
+    const box = macBox();
+    try {
+      fakeWx(box);
+      fakeLaunchctl(box);
+      writeFileSync(join(box.logs, 'wx-state'), JSON.stringify({created: true, loggedIn: true}));
+      writeFileSync(box.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\nWX_ACCOUNT=acc-1\n`, {mode: 0o600});
+      const r = bash([join(mac, script[0]), ...script.slice(1)], {env: {...box.env, WEAVE_WECHAT_NO_LAUNCHD: '', WEAVE_WECHAT_LABEL: 'test.weave.order'}});
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      const calls = wxCalls(box), name = script.join(' ');
+      const create = calls.findIndex(c => /tokens create weave-bridge/.test(c)), restart = calls.findIndex(c => /^launchctl (kickstart|bootstrap) .*test\.weave\.order\.bridge/.test(c)), revoke = calls.findIndex(c => /tokens revoke t-old/.test(c));
+      assert.ok(create >= 0 && restart > create && revoke > restart, name + ':\n' + calls.join('\n'));
+      assert.ok(!calls.some(c => /tokens revoke t-new/.test(c)), name + ': the new key is kept');
+      assert.ok(!calls.some(c => /tokens revoke t-other/.test(c)), name + ': another program\'s key is left alone');
+      assert.match(readFileSync(box.bridgeEnv, 'utf8'), /^WX_TOKEN=SECRET-BRIDGE-KEY-123$/m);
+    } finally { box.done(); }
+  }
+});
+
 test('stop.sh and status.sh run without anything installed; stop.sh refuses an option it does not know', () => {
   const box = macBox();
   try {

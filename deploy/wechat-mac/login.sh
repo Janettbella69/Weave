@@ -46,11 +46,13 @@ say ""
 images=$(env_get "$bridge_env" WEAVE_WECHAT_IMAGES)
 if [ "$images" = 1 ]; then say "建桥接用的密钥（读、发，和看图用的 media）……"; else say "建桥接用的密钥（只能读和发）……"; fi
 umask 077
-bridge_key_renew "$id" "$images"
+bridge_key_create "$id" "$images"
 say "已写入 ${bridge_env}（不显示内容）。"
 
 agent_start bridge
 say "桥接已启动。"
+# 桥接已经用上新密钥，这时再作废旧的。
+bridge_key_revoke_others
 say ""
 bash "$here/status.sh" || true
 say ""
