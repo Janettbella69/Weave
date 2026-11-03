@@ -25,8 +25,24 @@ state_dir="$home_dir/state"
 bridge_env="$home_dir/bridge.env"
 wx_url="http://127.0.0.1:$WX_PORT"
 
+# 对本机守护进程（127.0.0.1）的调用不该走代理。curl 和 wx 都会照 shell 里的 http_proxy / https_proxy / all_proxy 办事，
+# 而 curl 不会自己放过 127.0.0.1，守护进程明明在跑也会被报成连不上。系统设置里的代理它们都不看。
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}" no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
+
 say() { printf '%s\n' "$*"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
+
+# 微信的服务器域名现在解析到哪个 IPv4。WEAVE_WECHAT_FAKE_DNS_IP 只给测试用。
+resolve_ipv4() {
+  if [ -n "${WEAVE_WECHAT_FAKE_DNS_IP:-}" ]; then printf '%s' "$WEAVE_WECHAT_FAKE_DNS_IP"; return 0; fi
+  node -e 'require("node:dns").lookup(process.argv[1],{family:4},(e,a)=>process.stdout.write(e?"":a))' "$1" 2>/dev/null || true
+}
+# 代理软件的虚拟 IP 模式（TUN + fake-ip，Clash 一类）会把每个域名解析成 198.18.x.x，再由它转发。wx 不能设代理，
+# 但会被它悄悄带上：微信看到的是代理的出口，不是家里的网络。解析到 198.18/15 就返回 0；解析不出来、或是真 IP 就返回 1。
+proxy_fake_ip() {
+  case "$(resolve_ipv4 long.weixin.qq.com)" in 198.18.*|198.19.*) return 0 ;; esac
+  return 1
+}
 
 # 对 agent-wechat 守护进程说话：固定带上地址和令牌文件，输出是 JSON。
 wx_cli() { "$wx_bin" --json --server "$wx_url" --token-file "$data_dir/api-token" "$@"; }

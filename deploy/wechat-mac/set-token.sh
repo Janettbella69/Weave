@@ -30,7 +30,9 @@ token=""
 say "== 1/3 把令牌交给服务器，并重新部署网站（要几十秒到几分钟）"
 payload=$(base64 < "$server_script" | tr -d '\n')
 # 令牌走 ssh 的标准输入；命令行里只有服务器脚本的文字（不是秘密）。
-if ! printf '%s\n' "$token" | ssh -i "$key" -o ConnectTimeout=15 "$host" "bash -c \"\$(printf %s '$payload' | base64 -d)\""; then
+# 重新部署可能几分钟里一行输出都没有（docker build -q），代理软件或路由器会把这么久没动静的连接掐掉，部署做到一半就断了。
+# 所以每 30 秒发一次心跳，连续 20 次（10 分钟）没回应才算断。
+if ! printf '%s\n' "$token" | ssh -i "$key" -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 "$host" "bash -c \"\$(printf %s '$payload' | base64 -d)\""; then
   die "服务器那一步没有成功，上面有原因。这台 Mac 的配置没有动。排查后直接重跑这个脚本。"
 fi
 

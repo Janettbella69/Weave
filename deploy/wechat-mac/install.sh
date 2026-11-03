@@ -17,9 +17,11 @@ install_wx() {
     say "wx $WX_VERSION 已经装好了，跳过下载。"
     return 0
   fi
-  say "下载 wx ${WX_VERSION}（约 29 MB，网慢的话要一两分钟）……"
-  tmp=$(umask 077; mktemp "$home_dir/bin/.wx-download.XXXXXX")
-  curl -fSL -# --retry 3 --max-time 900 -o "$tmp" "$url" || { rm -f "$tmp"; die "下载失败。检查网络（需要能打开 github.com），再重跑。"; }
+  say "下载 wx ${WX_VERSION}（约 29 MB。直连几十秒；经代理软件时实测约 8 分钟，慢是正常的，别按 Ctrl-C。中断了重跑会接着下）……"
+  # 固定的文件名，断了能接着下（-C -）。不设总时长上限（慢线路 15 分钟也下不完），只在 1 分钟里连 1 KB/s 都不到时才放弃这一次，再试。
+  tmp="$home_dir/bin/.wx-download.part"
+  curl -fSL -# -C - --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 30 --speed-limit 1024 --speed-time 60 -o "$tmp" "$url" \
+    || die "下载没完成。已经下的部分留着，检查网络（需要能打开 github.com）后重跑，会接着下。"
   got=$(shasum -a 256 "$tmp" | cut -d' ' -f1)
   if [ "$got" != "$WX_SHA256_DARWIN_ARM64" ]; then
     rm -f "$tmp"

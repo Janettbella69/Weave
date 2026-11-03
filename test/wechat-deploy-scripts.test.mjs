@@ -3,7 +3,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -211,7 +211,7 @@ function macBox(webEnv) {
   mkdirSync(logs);
   const key = join(box.dir, 'key');
   writeFileSync(key, 'not a real key');
-  const env = {...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: box.home, FAKE_LOG: logs, FAKE_WEB_ENV: box.webEnv, WEAVE_DEPLOY_DIR: box.deploy, WEAVE_SKIP_DEPLOY: '1', WEAVE_SSH_KEY: key, WEAVE_SSH_HOST: 'ubuntu@server.invalid', WEAVE_WECHAT_HOME: join(box.dir, 'wxhome'), WEAVE_WECHAT_LAUNCH_DIR: join(box.dir, 'LaunchAgents'), WEAVE_WECHAT_NO_LAUNCHD: '1'};
+  const env = {...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: box.home, FAKE_LOG: logs, FAKE_WEB_ENV: box.webEnv, WEAVE_DEPLOY_DIR: box.deploy, WEAVE_SKIP_DEPLOY: '1', WEAVE_SSH_KEY: key, WEAVE_SSH_HOST: 'ubuntu@server.invalid', WEAVE_WECHAT_HOME: join(box.dir, 'wxhome'), WEAVE_WECHAT_LAUNCH_DIR: join(box.dir, 'LaunchAgents'), WEAVE_WECHAT_NO_LAUNCHD: '1', WEAVE_WECHAT_FAKE_DNS_IP: '203.0.113.7' /* a real-looking address, so no test does a DNS lookup */};
   return {...box, env, logs, bridgeEnv: join(box.dir, 'wxhome/bridge.env')};
 }
 
@@ -234,6 +234,8 @@ test('set-token.sh: one new token lands in web.env on the server and in bridge.e
     for (const where of [r.stdout, r.stderr, readFileSync(join(box.logs, 'ssh-argv'), 'utf8'), readFileSync(join(box.logs, 'curl-argv'), 'utf8')]) assert.ok(!where.includes(serverToken));
     assert.match(r.stdout, /没带令牌：HTTP 401/);
     assert.match(r.stdout, /带令牌：HTTP 200/);
+    // A redeploy can be silent for minutes; without keepalives a proxy or router drops the idle connection mid-deploy.
+    assert.match(readFileSync(join(box.logs, 'ssh-argv'), 'utf8'), /-o ServerAliveInterval=30 -o ServerAliveCountMax=20/);
   } finally { box.done(); }
 });
 
@@ -273,20 +275,28 @@ function fakeWx(box) {
 import {appendFileSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
 const args = process.argv.slice(2), log = process.env.FAKE_LOG + '/wx-calls', stateFile = process.env.FAKE_LOG + '/wx-state';
 appendFileSync(log, args.join(' ') + '\\n');
-const withValue = new Set(['--server', '--token-file', '--account', '--accounts', '--scopes', '--alias']);
+const withValue = new Set(['--server', '--token-file', '--account', '--accounts', '--scopes', '--alias', '--after', '--limit']);
 const words = [];
 for (let i = 0; i < args.length; i++) { if (withValue.has(args[i])) i++; else if (!args[i].startsWith('--')) words.push(args[i]); }
 const state = () => existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
 const save = value => writeFileSync(stateFile, JSON.stringify({...state(), ...value}));
 const out = value => process.stdout.write(JSON.stringify(value));
 const joined = words.join(' ');
-if (joined === 'accounts list') out({items: state().created ? [{id: 'acc-1', alias: 'weave'}] : []});
+if (joined === 'version') out({version: '1.3.3', target: 'aarch64-apple-darwin'});
+else if (joined === 'accounts list') out({items: state().created ? [{id: 'acc-1', alias: 'weave'}] : []});
 else if (joined === 'accounts create') { save({created: true}); out({id: 'acc-1'}); }
 else if (joined === 'account status') out({authenticated: !!state().loggedIn});
 else if (joined === 'auth login') { console.log('[QR CODE HERE]'); save({loggedIn: true}); }
 else if (joined === 'tokens list') out({items: [{id: 't-old', name: 'weave-bridge', revoked: false}, {id: 't-other', name: 'other', revoked: false}]});
 else if (joined === 'tokens revoke t-old') out({revoked: true});
 else if (joined === 'tokens create weave-bridge') out({grant: {id: 't-new'}, token: 'SECRET-BRIDGE-KEY-123'});
+else if (joined === 'events list') {
+  // Like the real daemon: pages of 1 to 200 events in cursor order, {items, nextCursor}.
+  const value = name => args[args.indexOf(name) + 1], after = Number(value('--after') ?? 0), limit = Number(value('--limit') ?? 100);
+  if (state().failEvents || !(limit >= 1 && limit <= 200)) { console.error('invalid event cursor/limit'); process.exit(2); }
+  const items = (state().events ?? []).filter(event => Number(event.cursor) > after).slice(0, limit);
+  out({items, nextCursor: items.length ? items[items.length - 1].cursor : String(after)});
+}
 else { console.error('unexpected: ' + joined); process.exit(2); }
 `, {mode: 0o755});
   return file;
@@ -301,7 +311,9 @@ test('login.sh: shows the scan line before the QR, logs in once, replaces the ol
     const r = bash([join(mac, 'login.sh')], {env: box.env});
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.ok(r.stdout.indexOf('用小号扫这个二维码') >= 0 && r.stdout.indexOf('用小号扫这个二维码') < r.stdout.indexOf('[QR CODE HERE]'));
-    const calls = readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(Boolean);
+    // A re-login uses the saved credentials first and may show no QR at all; the header must not leave her waiting for one.
+    assert.ok(r.stdout.indexOf('可能不出二维码') >= 0 && r.stdout.indexOf('可能不出二维码') < r.stdout.indexOf('[QR CODE HERE]'));
+    const calls =readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(Boolean);
     assert.equal(calls.filter(c => /auth login/.test(c)).length, 1);
     assert.ok(!calls.find(c => /auth login/.test(c)).includes('--json'), 'the QR is only drawn without --json');
     assert.ok(calls.some(c => /tokens revoke t-old/.test(c)));
@@ -340,6 +352,165 @@ test('login.sh: a small account that is already signed in is not asked to scan a
     assert.ok(!r.stdout.includes('用小号扫这个二维码'));
     assert.ok(!/auth login/.test(readFileSync(join(box.logs, 'wx-calls'), 'utf8')));
   } finally { box.done(); }
+});
+
+// ── a proxy app in TUN + fake-ip mode: wx cannot be given a proxy, but it is captured anyway ──────────────────────────
+test('the proxy check tells the proxy app\'s fake addresses (198.18.0.0/15) from real ones', () => {
+  const box = sandbox();
+  try {
+    for (const [ip, expected] of [['198.18.0.100', 'captured'], ['198.19.3.4', 'captured'], ['203.0.113.7', 'real'], ['198.20.0.1', 'real'], ['none', 'real']]) {
+      assert.equal(lib(box, 'if proxy_fake_ip; then echo captured; else echo real; fi', {WEAVE_WECHAT_FAKE_DNS_IP: ip}).stdout.trim(), expected, JSON.stringify(ip));
+    }
+  } finally { box.done(); }
+});
+
+test('local calls to the daemon never go through a proxy named in the shell, and what was already in NO_PROXY is kept', () => {
+  const box = sandbox();
+  try {
+    const r = lib(box, 'printf "%s|%s" "$NO_PROXY" "$no_proxy"', {NO_PROXY: 'example.com', no_proxy: '', http_proxy: 'http://127.0.0.1:1082'});
+    assert.equal(r.stdout, '127.0.0.1,localhost,example.com|127.0.0.1,localhost');
+  } finally { box.done(); }
+});
+
+test('login.sh warns before the QR when the proxy app has captured the network, and says nothing when it has not', () => {
+  const caught = macBox();
+  try {
+    fakeWx(caught);
+    mkdirSync(join(caught.dir, 'wxhome'), {recursive: true});
+    writeFileSync(caught.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\n`, {mode: 0o600});
+    const r = bash([join(mac, 'login.sh')], {env: {...caught.env, WEAVE_WECHAT_FAKE_DNS_IP: '198.18.0.100'}});
+    assert.equal(r.status, 0, r.stdout + r.stderr);   // not a terminal here, so it cannot ask and carries on
+    assert.match(r.stdout, /代理软件正在接管所有联网/);
+    assert.match(r.stdout, /彻底退出/);
+    assert.ok(r.stdout.indexOf('代理软件正在接管') < r.stdout.indexOf('用小号扫这个二维码'));
+  } finally { caught.done(); }
+  const clean = macBox();
+  try {
+    fakeWx(clean);
+    mkdirSync(join(clean.dir, 'wxhome'), {recursive: true});
+    writeFileSync(clean.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\n`, {mode: 0o600});
+    const r = bash([join(mac, 'login.sh')], {env: {...clean.env, WEAVE_WECHAT_FAKE_DNS_IP: '203.0.113.7'}});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(!r.stdout.includes('代理软件正在接管'));
+  } finally { clean.done(); }
+});
+
+// ── install.sh end to end: a fake macOS toolchain, a fake download and a fake wx; nothing leaves the temp directory ──
+const PINNED_SHA = '64d9098cbe329069f73b0ddecc22c6e57d388f2c47b593412d9dc80d15fcc394';
+function installBox() {
+  const box = macBox(), source = join(box.dir, 'wx-source'), ibin = join(box.dir, 'ibin');
+  const wx = fakeWx(box);
+  renameSync(wx, source);   // the fake wx is what the "download" delivers, not something already installed
+  mkdirSync(ibin, {recursive: true});
+  const tool = (name, body) => writeFileSync(join(ibin, name), `#!/usr/bin/env bash\n${body}\n`, {mode: 0o755});
+  tool('uname', 'case "$1" in -m) echo arm64;; *) echo Darwin;; esac');
+  tool('plutil', 'exit 0');
+  tool('launchctl', 'exit 0');
+  tool('shasum', `printf '%s  %s\\n' "\${FAKE_SHA:-${PINNED_SHA}}" "\${@: -1}"`);
+  tool('curl', `printf '%s\\n' "$*" >> "$FAKE_LOG/curl-argv"
+case "$*" in
+  *releases/download/*) out=""; prev=""; for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done; cp "$FAKE_WX_SOURCE" "$out"; exit 0 ;;
+  *127.0.0.1:6179/v1/*) exit 0 ;;
+esac
+echo "unexpected curl: $*" >&2; exit 99`);
+  return {...box, env: {...box.env, PATH: `${ibin}:${box.env.PATH}`, FAKE_WX_SOURCE: source}};
+}
+
+test('install.sh: downloads the pinned wx so an interrupted download resumes, installs it, writes the three launchd files and a bridge.env that turns the tick on', () => {
+  const box = installBox();
+  try {
+    const r = bash([join(mac, 'install.sh'), '--keep-awake'], {env: box.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /校验通过/);
+    assert.match(r.stdout, /wx 版本：1\.3\.3（目标 aarch64-apple-darwin）/);
+    const download = readFileSync(join(box.logs, 'curl-argv'), 'utf8').split('\n').find(line => line.includes('releases/download/'));
+    assert.ok(download.includes('https://github.com/thisnick/agent-wechat/releases/download/v1.3.3/wx-v1.3.3-darwin-arm64'), download);
+    // Resumable, and no total time limit: a slow line through a proxy took about 8 minutes for the 29 MB.
+    assert.match(download, / -C - /);
+    assert.match(download, /--speed-time 60/);
+    assert.ok(!download.includes('--max-time'), download);
+    const wxBin = join(box.dir, 'wxhome/bin/wx');
+    assert.equal(mode(wxBin), 0o755);
+    assert.ok(!existsSync(join(box.dir, 'wxhome/bin/.wx-download.part')));
+    for (const name of ['daemon', 'bridge', 'awake']) assert.ok(existsSync(join(box.dir, 'LaunchAgents', `com.weave.wechat.${name}.plist`)), name);
+    const env = readFileSync(box.bridgeEnv, 'utf8');
+    for (const line of ['WEAVE_ORIGIN=https://weave.azorashopping.site', 'WX_BASE_URL=http://127.0.0.1:6179/v1', 'WEAVE_TICK=1']) assert.ok(env.split('\n').includes(line), line);
+    for (const dir of ['wxhome', 'wxhome/bin', 'wxhome/data', 'wxhome/logs', 'wxhome/state']) assert.equal(mode(join(box.dir, dir)), 0o700, dir);
+    // A second run finds the right wx in place and downloads nothing.
+    const again = bash([join(mac, 'install.sh')], {env: box.env});
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.match(again.stdout, /已经装好了，跳过下载/);
+    assert.equal(readFileSync(join(box.logs, 'curl-argv'), 'utf8').split('\n').filter(line => line.includes('releases/download/')).length, 1);
+  } finally { box.done(); }
+});
+
+test('install.sh: a download whose SHA-256 is not the pinned one is deleted and nothing is installed', () => {
+  const box = installBox();
+  try {
+    const r = bash([join(mac, 'install.sh')], {env: {...box.env, FAKE_SHA: 'deadbeef'.repeat(8)}});
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /校验没通过/);
+    assert.ok(!existsSync(join(box.dir, 'wxhome/bin/wx')));
+    assert.ok(!existsSync(join(box.dir, 'wxhome/bin/.wx-download.part')));
+    assert.ok(!existsSync(join(box.dir, 'LaunchAgents')));
+  } finally { box.done(); }
+});
+
+// ── status.sh: why the account is logged out is only in the daemon's event log, so status.sh shows the latest connection event ──
+const SECRET = 'SECRET-BODY';
+function eventLog() {
+  const stamp = n => `2030-01-01T00:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}+00:00`;
+  const events = [];
+  for (let cursor = 1; cursor <= 450; cursor++) events.push({cursor: String(cursor), kind: 'message.committed', createdAt: stamp(cursor), data: {messageId: 'm' + cursor, direction: 'incoming', body: SECRET}});
+  const set = (cursor, kind, data) => { events[cursor - 1] = {cursor: String(cursor), kind, createdAt: stamp(cursor), data}; };
+  set(5, 'account.connection', {state: 'connection_unavailable'});
+  set(130, 'account.connection', {state: 'auth_required', source: 'push', serviceCode: -13, authentication: 'logged_out', body: SECRET});
+  set(433, 'account.connection', {state: 'auth_required', source: 'sync', serviceCode: -13, authentication: 'logged_out', text: SECRET, commands: [{text: SECRET}]});
+  set(440, 'account.updated', {authentication: 'logged_out'});
+  return events;
+}
+const statusBox = state => {
+  const box = macBox();
+  fakeWx(box);
+  writeFileSync(join(box.logs, 'wx-state'), JSON.stringify(state));
+  return box;
+};
+
+test('status.sh shows the most recent connection event, found across pages of 200, with its fixed fields and no message content', () => {
+  const box = statusBox({created: true, events: eventLog()});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: box.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件/);
+    assert.ok(r.stdout.includes('account.connection state=auth_required source=sync serviceCode=-13 authentication=logged_out（2030-01-01T00:07:13+00:00，事件号 433）'), r.stdout);
+    assert.ok(!r.stdout.includes('source=push') && !r.stdout.includes('connection_unavailable'), 'only the latest one');
+    assert.ok(!(r.stdout + r.stderr).includes(SECRET));
+    // It pages like the real daemon (never more than 200 at a time) and stops when a page comes back empty.
+    const pages = readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(line => line.includes('events list'));
+    assert.deepEqual(pages.map(line => /--after (\d+) --limit (\d+)/.exec(line).slice(1)), [['0', '200'], ['200', '200'], ['400', '200'], ['450', '200']]);
+  } finally { box.done(); }
+});
+
+test('status.sh says so when there is no connection event yet, when the event log cannot be read, and shows nothing about it when there is no account', () => {
+  const none = statusBox({created: true, events: [{cursor: '1', kind: 'message.committed', createdAt: 'x', data: {}}]});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: none.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件[^\n]*\n（还没有）/);
+  } finally { none.done(); }
+  const broken = statusBox({created: true, failEvents: true});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: broken.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件[^\n]*\n（读不到）/);
+  } finally { broken.done(); }
+  const empty = statusBox({});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: empty.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /还没有账号/);
+    assert.ok(!r.stdout.includes('最近一次连接事件'));
+  } finally { empty.done(); }
 });
 
 test('stop.sh and status.sh run without anything installed; stop.sh refuses an option it does not know', () => {
