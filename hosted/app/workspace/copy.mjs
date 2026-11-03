@@ -14,6 +14,8 @@ const freeze = value => {
 
 export const COPY = freeze({
   // Navigation and page titles
+  brand: 'Weave',
+  mainNav: '主导航', // the navigation's accessible name (the boards' aria-label)
   chat: '聊天',
   todo: '待办',
   goals: '目标',
@@ -24,6 +26,7 @@ export const COPY = freeze({
   connected: '已连接',
 
   // Chat
+  send: '发送', // the round send button's accessible name (the boards' aria-label)
   placeholder: '给 Weave 发消息…',
   deepseek: '聊天内容会发给 DeepSeek 生成回复。',
   today: '今天',

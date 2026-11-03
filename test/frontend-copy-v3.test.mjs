@@ -9,9 +9,9 @@ import {isValidTimezone} from '../hosted/app/workspace/timezone.mjs';
 // so a reworded or invented sentence shows up in review. The plain strings first, then what the functions return.
 const TEXT = {
   // navigation and page titles
-  chat: '聊天', todo: '待办', goals: '目标', records: '记录', settings: '设置', agentHome: '助理主页', backToChat: '返回聊天', connected: '已连接',
+  brand: 'Weave', mainNav: '主导航', chat: '聊天', todo: '待办', goals: '目标', records: '记录', settings: '设置', agentHome: '助理主页', backToChat: '返回聊天', connected: '已连接',
   // chat
-  placeholder: '给 Weave 发消息…', deepseek: '聊天内容会发给 DeepSeek 生成回复。', today: '今天', yesterday: '昨天', thinking: '正在想…',
+  send: '发送', placeholder: '给 Weave 发消息…', deepseek: '聊天内容会发给 DeepSeek 生成回复。', today: '今天', yesterday: '昨天', thinking: '正在想…',
   // to-do
   todayLabel: '今天', later: '之后', missedYesterday: '昨天没做，今天做一下就不算连着错过。', addHint: '想加别的事？', addLink: '在聊天里跟 Weave 说一声',
   todoEmpty: '还没有每天要做的事。去「目标」定一个，或者在聊天里跟 Weave 说说你想养成什么。', checkFailed: '没记上，再点一次试试。',

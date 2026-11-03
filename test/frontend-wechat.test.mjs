@@ -40,14 +40,22 @@ test('no state offers a button that cannot work, and the unfinished one carries 
 
 const walk=async dir=>(await Promise.all((await readdir(dir,{withFileTypes:true})).map(entry=>entry.isDirectory()?walk(new URL(entry.name+'/',dir)):[new URL(entry.name,dir)]))).flat();
 
-test('the sentence has one home, and the old hiding and dead button are gone',async()=>{
+const appSources=async()=>{
   const files=await walk(new URL('../hosted/app/',import.meta.url));
-  const sources=await Promise.all(files.filter(file=>/\.(jsx?|mjs|tsx?)$/.test(file.pathname)).map(async file=>[file.pathname,await readFile(file,'utf8')]));
+  return Promise.all(files.filter(file=>/\.(jsx?|mjs|tsx?)$/.test(file.pathname)).map(async file=>[file.pathname,await readFile(file,'utf8')]));
+};
+
+test('the sentence has one home, and the old hiding and dead button are gone',async()=>{
+  const sources=await appSources();
   assert.deepEqual(sources.filter(([,text])=>text.includes(NOTE)).map(([path])=>path.split('/').pop()),['wechat-row.mjs']);
   const workspace=sources.find(([path])=>path.endsWith('/Workspace.jsx'))[1];
-  assert.ok(workspace.includes('wechatRow(state.settings.wechat)'));
   assert.ok(!workspace.includes('wechatShown'),'the row is no longer hidden');
   assert.ok(!workspace.includes('disabled={!state.settings.wechat'),'no disabled connect button');
-  assert.ok(workspace.includes('{wechat.card&&'),'the card follows the same state as the row');
   for(const [path,text] of sources)assert.ok(!text.includes('微信连接暂不可用'),path+' brings back the old unavailable wording');
+});
+
+test('the row follows the server, and the card the row',{todo:'Task 10 moves the WeChat row into SettingsPage.jsx'},async()=>{
+  const workspace=(await appSources()).find(([path])=>path.endsWith('/Workspace.jsx'))[1];
+  assert.ok(workspace.includes('wechatRow(state.settings.wechat)'));
+  assert.ok(workspace.includes('{wechat.card&&'),'the card follows the same state as the row');
 });

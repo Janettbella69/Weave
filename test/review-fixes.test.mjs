@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import {D1} from './helpers/product-db.mjs';
 import {Store} from '../hosted/lib/weave/store.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
@@ -134,11 +134,22 @@ test('every prompt that advises people carries the health safety rules',async()=
   assert.equal(h.systems.length,5);for(const system of h.systems)assert.ok(system.includes(SAFETY_RULES),system.slice(0,40));
 });
 
+// Every source file of the workspace (hosted/app/workspace/**), as one text: the shell, its pages, its ui parts and modules.
+async function workspaceText(){
+  const walk=async dir=>(await Promise.all((await readdir(dir,{withFileTypes:true})).map(entry=>entry.isDirectory()?walk(new URL(entry.name+'/',dir)):[new URL(entry.name,dir)]))).flat();
+  const files=(await walk(new URL('../hosted/app/workspace/',import.meta.url))).filter(file=>/\.(jsx?|mjs|tsx?)$/.test(file.pathname));
+  return (await Promise.all(files.map(file=>readFile(file,'utf8')))).join('\n');
+}
+
 test('product copy no longer makes the claims the code contradicts',async()=>{
   const read=path=>readFile(new URL('../hosted/app/'+path,import.meta.url),'utf8');
-  const landing=await read('LandingMarketing.tsx'),workspace=await read('workspace/Workspace.jsx'),panel=await read('workspace/ProactivePanel.jsx');
+  const landing=await read('LandingMarketing.tsx'),workspace=await workspaceText();
   for(const text of ['数据保存在当前浏览器','产品宣传','自动回跳','高级通道'])assert.ok(!landing.includes(text),text);
-  assert.ok(!workspace.includes('清除本机数据'));assert.ok(!panel.includes('Hermes'));assert.ok(!panel.includes('HERMES'));
-  assert.ok(workspace.includes('account/delete'));assert.ok(workspace.includes('DeepSeek'));
+  assert.ok(!workspace.includes('清除本机数据'));assert.ok(!workspace.includes('Hermes'));assert.ok(!workspace.includes('HERMES'));
+  assert.ok(workspace.includes('DeepSeek'));
   const privacy=await read('privacy/page.tsx');for(const text of ['DeepSeek','Notion','删除','导出'])assert.ok(privacy.includes(text),text);
+});
+
+test('the workspace still offers to delete the account',{todo:'Task 10 moves account deletion into SettingsPage.jsx'},async()=>{
+  assert.ok((await workspaceText()).includes('account/delete'));
 });

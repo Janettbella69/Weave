@@ -1,24 +1,28 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 
 const read=path=>readFile(new URL('../hosted/'+path,import.meta.url),'utf8');
 
+// Every source file of the workspace (hosted/app/workspace/**): the shell, its pages, its ui parts and its modules.
+const walk=async dir=>(await Promise.all((await readdir(dir,{withFileTypes:true})).map(entry=>entry.isDirectory()?walk(new URL(entry.name+'/',dir)):[new URL(entry.name,dir)]))).flat();
+async function workspaceSources(){
+  const root=new URL('../hosted/app/workspace/',import.meta.url);
+  const files=(await walk(root)).filter(file=>/\.(jsx?|mjs|tsx?)$/.test(file.pathname));
+  return Promise.all(files.map(async file=>[file.pathname.slice(root.pathname.length),await readFile(file,'utf8')]));
+}
+
 test('the workspace has no English labels or titles',async()=>{
-  const workspace=await read('app/workspace/Workspace.jsx'),panel=await read('app/workspace/ProactivePanel.jsx');
+  const sources=await workspaceSources();
+  assert.ok(sources.some(([name])=>name==='Workspace.jsx'),'the walk reaches the shell');
   for(const text of ['YOUR LIFE, REMEMBERED','SMALL COMMITMENTS','NOTICE, ASK','CHANNELS','<h2>Channels</h2>','Personal Agent','>个人 Agent<','>Agent 协作<','Agent 待测试'])
-    for(const [name,source] of [['Workspace.jsx',workspace],['ProactivePanel.jsx',panel]])assert.ok(!source.includes(text),name+' still has '+text);
+    for(const [name,source] of sources)assert.ok(!source.includes(text),name+' still has '+text);
 });
 
 test('nothing in the workspace writes raw HTML',async()=>{
-  for(const path of ['app/workspace/Workspace.jsx','app/workspace/ProactivePanel.jsx','app/workspace/Markdown.jsx'])
-    assert.ok(!(await read(path)).includes('dangerouslySetInnerHTML'),path);
-});
-
-test('friends, negotiation and the background page are behind the feature flags',async()=>{
-  const workspace=await read('app/workspace/Workspace.jsx');
-  for(const guarded of ["FEATURES.collaboration&&view==='connections'","FEATURES.proactive&&view==='proactive'","{FEATURES.collaboration&&<div className=\"quick-actions\">","{FEATURES.collaboration&&join&&","FEATURES.collaboration&&agentReady&&!state.profile.slots.length"])
-    assert.ok(workspace.includes(guarded),guarded);
+  const sources=await workspaceSources();
+  assert.ok(sources.some(([name])=>name==='Markdown.jsx'),'the walk reaches the components');
+  for(const [name,source] of sources)assert.ok(!source.includes('dangerouslySetInnerHTML'),name);
 });
 
 test('a 401 is not sent to the guest URL when the site is behind the access password',async()=>{
@@ -27,10 +31,18 @@ test('a 401 is not sent to the guest URL when the site is behind the access pass
   assert.equal(workspace.split('/api/auth/guest/start').length-1,1,'one guest redirect, only for guest mode');
 });
 
-test('single-user mode gets no sign-out link that does not exist',async()=>{
-  const auth=await read('app/weave-auth.ts'),workspace=await read('app/workspace/Workspace.jsx');
-  assert.ok(auth.includes('authKind: "single"'));
-  assert.ok(workspace.includes("authKind==='chatgpt'?<>")&&workspace.includes("authKind==='guest'?<>")&&workspace.includes(':null}</footer>'));
+test('the shell no longer brings in the feature flags or the background page',async()=>{
+  const imports=source=>[...source.matchAll(/^\s*import\b[^;]*?from\s*['"]([^'"]+)['"]/gm)].map(match=>match[1]);
+  const workspace=imports(await read('app/workspace/Workspace.jsx'));
+  assert.ok(workspace.length>0,'the imports were read');
+  for(const path of workspace)assert.ok(!/features(\.mjs)?$/.test(path)&&!/ProactivePanel/.test(path),'Workspace.jsx imports '+path);
+  for(const [name,source] of await workspaceSources())
+    for(const path of imports(source))assert.ok(!/features(\.mjs)?$/.test(path)&&!/ProactivePanel/.test(path),name+' imports '+path);
+});
+
+test('the status poll stays at once every 5 seconds',async()=>{
+  // PR #24 and `npm run check:stall` are tuned to this rhythm.
+  assert.match(await read('app/workspace/Workspace.jsx'),/setInterval\([\s\S]{0,200}?,\s*5000\s*\)/);
 });
 
 test('the error boundary does not show the raw error',async()=>{

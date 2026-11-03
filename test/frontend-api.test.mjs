@@ -2,7 +2,6 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {apiRequest,ApiError,unauthorizedAction,reloadAllowed,normalizeStatus} from '../hosted/app/workspace/api-client.mjs';
 import {readNotionReturn,normalizePages,waitForNotionPages} from '../hosted/app/workspace/notion-return.mjs';
-import {FEATURES,navViews} from '../hosted/app/workspace/features.mjs';
 
 const answer=(body,init={})=>async()=>new Response(typeof body==='string'?body:JSON.stringify(body),{status:200,...init});
 const recorder=(handler)=>{const calls=[];const fetchImpl=async(url,options)=>{calls.push({url,options});return handler(url,options);};return {fetchImpl,calls};};
@@ -99,12 +98,6 @@ test('a connection the server finished by itself is recognised, and asked about 
   assert.equal(asked,1);assert.equal(reads,3);
   // pages win over the connected check
   assert.deepEqual(await waitForNotionPages(async()=>({ready:true,pages:[{id:'a',title:'b'}]}),{sleep,isConnected}),{pages:[{id:'a',title:'b'}]});
-});
-
-test('friends and the background page are not offered for now',()=>{
-  assert.equal(FEATURES.collaboration,false);assert.equal(FEATURES.proactive,false);
-  assert.deepEqual(navViews().map(([id])=>id),['chat','calendar','memory']);
-  assert.deepEqual(navViews({collaboration:true,proactive:true}).map(([id])=>id),['chat','connections','calendar','proactive','memory']);
 });
 
 test('a status answer is only used when it has what the workspace shows; friend lists may be missing',()=>{
