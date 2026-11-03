@@ -13,7 +13,7 @@ export const SCOPES = deepFreeze({
     builtins: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch'],
     denied: ['WebFetch', 'Agent'],
     // 只有会写东西的工具；读数据走叫醒前的快照 weave/weave.db（教材 p.16「查数留SQL,不要封成MCP」）。
-    tools: ['send_message', 'save_habit', 'log_completion'],
+    tools: ['send_message', 'save_habit', 'log_completion', 'save_goal', 'set_reminder'],
     skills: ['weave:weekly-review'],
     circuitBreakerUsd: 2,
     network: 'none',

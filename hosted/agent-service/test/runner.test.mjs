@@ -31,7 +31,7 @@ test('一轮请求只带 owner 范围的内置工具和 weave 工具，Skill 只
   assert.equal(r.outcome, 'success');
   const body = mainCalls()[0].body, names = body.tools.map(t => t.name);
   assert.deepEqual(names.filter(n => !n.startsWith('mcp__')).sort(), ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Skill', 'WebSearch', 'Write']);
-  assert.deepEqual(names.filter(n => n.startsWith('mcp__')).sort(), ['mcp__weave__log_completion', 'mcp__weave__save_habit', 'mcp__weave__send_message']);
+  assert.deepEqual(names.filter(n => n.startsWith('mcp__')).sort(), ['mcp__weave__log_completion', 'mcp__weave__save_goal', 'mcp__weave__save_habit', 'mcp__weave__send_message', 'mcp__weave__set_reminder']);
   const all = JSON.stringify(body);
   assert.ok(all.includes('weave:weekly-review') && all.includes('复盘一周的习惯完成情况时使用'));
   assert.ok(!all.includes('dataviz') && !all.includes('code-review'), 'a bundled coding skill leaked in');

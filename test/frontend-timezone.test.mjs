@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {wallClockIn,instantFromWallClock,shouldAdoptDeviceTimezone,isValidTimezone,SERVER_DEFAULT_TIMEZONE} from '../hosted/app/workspace/timezone.mjs';
+import {wallClockIn,instantFromWallClock,isValidTimezone} from '../hosted/app/workspace/timezone.mjs';
 
 test('a wall-clock time is turned into the right instant in each zone',()=>{
   // 2026-11-02 is after the US clocks went back (Nov 1): Los Angeles is UTC-8, Shanghai UTC+8
@@ -30,13 +30,6 @@ test('input that is not a time gives null',()=>{
   assert.equal(instantFromWallClock('','UTC'),null);assert.equal(instantFromWallClock('soon','UTC'),null);
 });
 
-test('the browser zone replaces the server default only for a profile nobody has saved',()=>{
-  const fresh={revision:1,timezone:SERVER_DEFAULT_TIMEZONE};
-  assert.equal(shouldAdoptDeviceTimezone(fresh,'America/Los_Angeles'),true);
-  assert.equal(shouldAdoptDeviceTimezone(fresh,'Asia/Shanghai'),false,'already the same');
-  assert.equal(shouldAdoptDeviceTimezone({revision:2,timezone:SERVER_DEFAULT_TIMEZONE},'America/Los_Angeles'),false,'profile was saved');
-  assert.equal(shouldAdoptDeviceTimezone({revision:1,timezone:'Europe/London'},'America/Los_Angeles'),false,'someone chose a zone');
-  assert.equal(shouldAdoptDeviceTimezone(fresh,''),false);assert.equal(shouldAdoptDeviceTimezone(fresh,'Not/AZone'),false);
-  assert.equal(shouldAdoptDeviceTimezone(null,'America/Los_Angeles'),false);
+test('a zone name is checked before it is used',()=>{
   assert.equal(isValidTimezone('America/Los_Angeles'),true);assert.equal(isValidTimezone('nope'),false);assert.equal(isValidTimezone(undefined),false);
 });

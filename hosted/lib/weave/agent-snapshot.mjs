@@ -7,11 +7,15 @@ import {verifyCapability} from './capability.mjs';
 import {localClock, GROUP_TIMEZONE} from './proactivity.mjs';
 import {groupSnapshotMessages} from './wechat.mjs';
 
+// 列的顺序和 hosted/agent-service/snapshot.mjs 的 TABLES 一一对应；新列只往后加（weekly-review 的 stats.py 按列名读，不受影响）。
 const habitRow = h => ({
   habit_id: h.id, name: h.name, identity: h.identity ?? '', trigger: h.trigger ?? '', minimum_action: h.minimumAction ?? '',
-  created_at: h.createdAt ?? null, updated_at: h.updatedAt ?? null,
+  created_at: h.createdAt ?? null, updated_at: h.updatedAt ?? null, goal_id: h.goalId ?? null,
 });
 const completionRow = c => ({habit_id: c.habitId, date: c.date, note: c.note ?? '', source: c.source ?? null, created_at: c.createdAt ?? null});
+// 全部目标，归档的也给（archived 是 0 / 1）；全部提醒，不分状态（scheduled、delivered、cancelled）。
+const goalRow = g => ({goal_id: g.id, title: g.title, category: g.category, archived: g.archived ? 1 : 0, created_at: g.createdAt ?? null});
+const reminderRow = r => ({reminder_id: r.id, text: r.text, due_at: r.dueAt, status: r.status});
 
 export function snapshotFor(person, claims, now) {
   const owner = claims.scope === 'owner';
@@ -21,6 +25,8 @@ export function snapshotFor(person, claims, now) {
   if (!owner) return snapshot;
   snapshot.tables.habits = (person.habits || []).map(habitRow);
   snapshot.tables.completions = (person.completions || []).map(completionRow);
+  snapshot.tables.goals = (person.goals || []).map(goalRow);
+  snapshot.tables.reminders = (person.reminders || []).map(reminderRow);
   return snapshot;
 }
 
