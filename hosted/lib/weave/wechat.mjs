@@ -9,7 +9,7 @@ import {REPLIES,TICK_BUDGET_MS,START_BY_MS,wakeForMessage,wakeForGroup,forgetAge
 const stamp=now=>new Date(now).toISOString();
 const bindPattern=/^绑定\s*(?:weave\s*)?([a-f0-9]{48})$/i;
 const GROUP_SUFFIX='@chatroom',CONTEXT_LIMIT=50,CONTEXT_MS=14*86400000,SEEN_LIMIT=200,TEXT_LIMIT=500;
-const DAILY_GROUP_REPLIES=30,STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
+const STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
 // Agent SDK path: a run that has been 'processing' this long lost its worker; it is never retried.
 const ORPHAN_MS=10*60000,MAX_WAKES_PER_TICK=5,GROUP_RECEIPTS=50;
 export const GROUP_ENABLED_TEXT='已开启打卡助理。我会读这个群的消息，只用来了解大家的进度，不会写进任何人的个人记忆。不想被记的话，在消息开头写「别记」。任何人 @我 说「关闭打卡群」，我就停止读取并删除这个群的记录。';
@@ -123,10 +123,6 @@ async function ingestGroup(world,message,{secret,now}){
   context.messages.push({from:`成员${member+1}`,text:text.slice(0,TEXT_LIMIT),at:message.createdAt??now});
   await writeContext(group,context,secret,aad,now);
   if(!message.mentioned||isStale(message,now))return {accepted:true,stored:true};
-  const day=stamp(now).slice(0,10);
-  if(group.replyDay!==day){group.replyDay=day;group.replyCount=0;}
-  if(group.replyCount>=DAILY_GROUP_REPLIES)return {accepted:true,stored:true,limited:true};
-  group.replyCount++;
   const entryId='in:'+seenId;
   world.wechat[entryId]={id:entryId,direction:'inbound',source:'group',groupAad:aad,ownerId:group.ownerId,payload:await seal(JSON.stringify({text,sender:message.sender,threadId:message.threadId,label:`成员${member+1}`}),secret,aad),status:'queued',createdAt:stamp(now)};
   return {accepted:true,queued:true};
@@ -203,10 +199,6 @@ export function groupTool(name,world,claims,args,toolUseId,now){
     const sent=typeof args.text==='string'?args.text.trim():'';
     if(!sent||sent.length>700)fail('消息要 1–700 字。');
     if(!group||group.ownerId!==claims.owner)fail('这个群没有开启打卡助理，没有发出。');
-    const day=stamp(now).slice(0,10);
-    if(group.replyDay!==day){group.replyDay=day;group.replyCount=0;}
-    if(group.replyCount>=DAILY_GROUP_REPLIES)fail('今天这个群的回复已经到上限了，这条没有发出。');
-    group.replyCount++;
     queueOut(world,{source:'group',groupAad:key,text:sent,target:group.target},now);
     text='已发出。';
   }catch(error){
