@@ -5,7 +5,8 @@ import {modelClient,habitCouncil,DEFAULT_MODEL} from './model.mjs';
 import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from './notion.mjs';
 import {notionCallback,notionConfigured,connectionState,finishNotion,listNotionPages,selectNotionPage,sweepNotionRuntime,forgetNotionRuntime,clearNotionSettings} from './notion-connect.mjs';
 import {hermesQueue} from './hermes-queue.mjs';
-import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction} from './proactivity.mjs';
+import {proactiveState,configureProactivity,publicProactivity,runtimeStatus,suggestionAction,localClock} from './proactivity.mjs';
+import {checkToday,uncheckToday} from './habits.mjs';
 import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wechat.mjs';
 import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
@@ -24,6 +25,8 @@ async function body(request){
   let value;try{value=JSON.parse(new TextDecoder().decode(bytes));}catch{domain.fail('JSON 格式错误');}
   if(!value||Array.isArray(value)||typeof value!=='object')domain.fail('需要 JSON 对象');return value;
 }
+// Calendar arithmetic on a YYYY-MM-DD string, done in UTC so no zone or daylight-saving rule gets involved.
+const daysBefore=(day,count)=>new Date(Date.parse(day+'T00:00:00Z')-count*86400000).toISOString().slice(0,10);
 // Resolves how one owner's model calls run: their own key, or the managed provider.
 export async function agentCall(world,owner,{secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget,now=Date.now()}){
   const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
@@ -96,7 +99,12 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     if(request.method==='GET'){
       await save();
-      if(path==='status')return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user'});
+      if(path==='status'){
+        // today is the person's own calendar day (the one a check-in is filed under), whatever zone the server or the browser is in.
+        // The pages draw the last 62 days of check-ins: today and the 61 days before it. The export has them all.
+        const today=localClock(person,now).day,since=daysBefore(today,61);
+        return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user',goals:(person.goals||[]).filter(g=>!g.archived),habits:person.habits||[],completions:(person.completions||[]).filter(c=>c.date>=since),today});
+      }
       if(path==='connections/notion/pending'){
         const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now){if(value.reason)continue;return json({ready:true,pages:value.pages||[]});}delete world.runtime[key];}
         await save();return json({ready:false,pages:[]});
@@ -113,7 +121,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
         if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
         return json({text:await readAgentMemory({service,ownerId:id,fetcher})});
       }
-      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,calendar:domain.calendar(world,id),proactivity:publicProactivity(person),suggestions:person.suggestions,habits:person.habits||[],completions:person.completions||[]});
+      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,calendar:domain.calendar(world,id),proactivity:publicProactivity(person),suggestions:person.suggestions,goals:person.goals||[],habits:person.habits||[],completions:person.completions||[]});
       return json({error:'接口不存在'},404);
     }
     const input=await body(request);
@@ -219,6 +227,9 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       const reminder=person.reminders.find(r=>r.id===input.id);if(!reminder||reminder.status!=='scheduled')domain.fail('提醒不存在或已经执行',404);reminder.status='cancelled';
     }
     else if(path==='notifications/read')person.notifications.forEach(n=>n.read=true);
+    // The web page's tick box: today only, in the person's own zone (habits.mjs). The result is the rule's own answer, sent as is.
+    else if(path==='habits/check')output=checkToday(person,input.habit_id,now);
+    else if(path==='habits/uncheck')output=uncheckToday(person,input.habit_id,now);
     else if(path==='account/delete'){
       if(input.confirm!==true)domain.fail('请确认要永久删除账号');
       const service=agentRuntime==='sdk'?agentServiceConfig(agentServiceUrl,agentServiceToken):null;
