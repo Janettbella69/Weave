@@ -55,6 +55,25 @@ env_set() {
   mv "$tmp" "$file"
 }
 
+# 桥接用的 wx 密钥：读和发；第二个参数是 1 时再加 media（看图：只用来读守护进程已经存好的照片副本，见 docs/WECHAT.md）。
+# 旧的同名密钥先作废，免得越攒越多。建新密钥不会让小号掉线（agent-wechat 文档：密钥和微信登录是分开的）。
+# 新密钥只写进 bridge.env，不显示，也不进命令行参数。
+bridge_key_renew() {
+  local id="$1" media="${2:-}" key
+  wx_cli tokens list | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const t of JSON.parse(s).items||[])if(t.name==="weave-bridge"&&!t.revoked)console.log(t.id)})' | while IFS= read -r old; do
+    wx_cli tokens revoke "$old" >/dev/null || true
+  done
+  if [ "$media" = 1 ]; then
+    key=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send --scopes media | json_get token)
+  else
+    key=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send | json_get token)
+  fi
+  [ -n "$key" ] || die "建密钥没成功。"
+  env_set "$bridge_env" WX_TOKEN "$key"
+  env_set "$bridge_env" WX_ACCOUNT "$id"
+  key=""
+}
+
 # 读 env 文件里的一个值；没有就是空。
 env_get() {
   local file="$1" key="$2" line

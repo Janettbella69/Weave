@@ -3,7 +3,7 @@
 #   1. 确认 wx 守护进程在跑、桥接令牌已经配好（install.sh、set-token.sh 跑过）；
 #   2. 建一个叫 weave 的账号（已有就用它）；
 #   3. 在终端里画二维码，等你用小号扫、在手机上点登录；
-#   4. 登录成功后，建一把只能读和发的密钥写进桥接配置（不显示），启动桥接。
+#   4. 登录成功后，建一把只能读和发的密钥写进桥接配置（不显示），启动桥接。看图打开着（images.sh on）时，密钥再带上 media。
 # 扫不上就直接重跑，二维码 5 分钟内有效，会自动刷新 3 次。
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -42,17 +42,11 @@ else
 fi
 
 say ""
-say "建桥接用的密钥（只能读和发）……"
-# 旧的同名密钥先作废，免得越攒越多。
-wx_cli tokens list | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const t of JSON.parse(s).items||[])if(t.name==="weave-bridge"&&!t.revoked)console.log(t.id)})' | while IFS= read -r old; do
-  wx_cli tokens revoke "$old" >/dev/null || true
-done
-bridge_key=$(wx_cli tokens create weave-bridge --accounts "$id" --scopes read --scopes send | json_get token)
-[ -n "$bridge_key" ] || die "建密钥没成功。"
+# 看图打开着（bridge.env 里 WEAVE_WECHAT_IMAGES=1）就保留 media 权限，免得重新登录以后照片读不出来。
+images=$(env_get "$bridge_env" WEAVE_WECHAT_IMAGES)
+if [ "$images" = 1 ]; then say "建桥接用的密钥（读、发，和看图用的 media）……"; else say "建桥接用的密钥（只能读和发）……"; fi
 umask 077
-env_set "$bridge_env" WX_TOKEN "$bridge_key"
-env_set "$bridge_env" WX_ACCOUNT "$id"
-bridge_key=""
+bridge_key_renew "$id" "$images"
 say "已写入 ${bridge_env}（不显示内容）。"
 
 agent_start bridge

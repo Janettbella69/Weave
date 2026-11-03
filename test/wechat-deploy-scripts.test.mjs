@@ -342,6 +342,68 @@ test('login.sh: a small account that is already signed in is not asked to scan a
   } finally { box.done(); }
 });
 
+// ── images.sh (看图, off by default) with the same fake wx ─────────────────────────────────────
+const wxCalls = box => readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(Boolean);
+
+test('images.sh on: the bridge key is made again with media, WEAVE_WECHAT_IMAGES=1 is written, other lines stay, nothing is shown and WeChat is not touched', () => {
+  const box = macBox();
+  try {
+    fakeWx(box);
+    writeFileSync(box.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\nWX_ACCOUNT=acc-1\nWX_TOKEN=OLD-KEY\nWEAVE_TICK=1\n`, {mode: 0o600});
+    const r = bash([join(mac, 'images.sh'), 'on'], {env: box.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const calls = wxCalls(box);
+    assert.ok(calls.some(c => /tokens revoke t-old/.test(c)));
+    assert.ok(!calls.some(c => /tokens revoke t-other/.test(c)));
+    assert.match(calls.find(c => /tokens create weave-bridge/.test(c)), /--accounts acc-1 --scopes read --scopes send --scopes media$/);
+    assert.ok(!calls.some(c => /auth|logout|account status|media-transfers/.test(c)), calls.join('\n'));
+    const env = readFileSync(box.bridgeEnv, 'utf8');
+    assert.match(env, /^WX_TOKEN=SECRET-BRIDGE-KEY-123$/m);
+    assert.match(env, /^WX_ACCOUNT=acc-1$/m);
+    assert.match(env, /^WEAVE_WECHAT_IMAGES=1$/m);
+    assert.match(env, /^WEAVE_TICK=1$/m);
+    assert.match(env, new RegExp(`^WECHAT_BRIDGE_TOKEN=${GOOD}$`, 'm'));
+    assert.ok(!env.includes('OLD-KEY'));
+    assert.equal(mode(box.bridgeEnv), 0o600);
+    assert.ok(!(r.stdout + r.stderr).includes('SECRET-BRIDGE-KEY-123'));
+    assert.match(r.stdout, /WEAVE_WECHAT_IMAGES=1/);
+  } finally { box.done(); }
+});
+
+test('images.sh off makes the key again without media and clears the switch; login.sh keeps media while the switch is on', () => {
+  const box = macBox();
+  try {
+    fakeWx(box);
+    writeFileSync(join(box.logs, 'wx-state'), JSON.stringify({created: true, loggedIn: true}));
+    writeFileSync(box.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\nWX_ACCOUNT=acc-1\nWEAVE_WECHAT_IMAGES=1\n`, {mode: 0o600});
+    const login = bash([join(mac, 'login.sh')], {env: box.env});
+    assert.equal(login.status, 0, login.stdout + login.stderr);
+    assert.match(wxCalls(box).filter(c => /tokens create/.test(c)).at(-1), /--scopes read --scopes send --scopes media$/);
+    const off = bash([join(mac, 'images.sh'), 'off'], {env: box.env});
+    assert.equal(off.status, 0, off.stdout + off.stderr);
+    assert.match(wxCalls(box).filter(c => /tokens create/.test(c)).at(-1), /--scopes read --scopes send$/);
+    assert.match(readFileSync(box.bridgeEnv, 'utf8'), /^WEAVE_WECHAT_IMAGES=$/m);
+    const again = bash([join(mac, 'login.sh')], {env: box.env});
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    assert.match(wxCalls(box).filter(c => /tokens create/.test(c)).at(-1), /--scopes read --scopes send$/);
+  } finally { box.done(); }
+});
+
+test('images.sh: no argument, an unknown one, or no signed-in account yet changes nothing', () => {
+  const box = macBox();
+  try {
+    fakeWx(box);
+    writeFileSync(box.bridgeEnv, `WECHAT_BRIDGE_TOKEN=${GOOD}\n`, {mode: 0o600});
+    for (const args of [[], ['yes'], ['on']]) {
+      const r = bash([join(mac, 'images.sh'), ...args], {env: box.env});
+      assert.notEqual(r.status, 0, args.join(' '));
+    }
+    assert.match(bash([join(mac, 'images.sh'), 'on'], {env: box.env}).stderr, /login\.sh/);
+    assert.ok(!existsSync(join(box.logs, 'wx-calls')) || !/tokens/.test(readFileSync(join(box.logs, 'wx-calls'), 'utf8')));
+    assert.equal(readFileSync(box.bridgeEnv, 'utf8'), `WECHAT_BRIDGE_TOKEN=${GOOD}\n`);
+  } finally { box.done(); }
+});
+
 test('stop.sh and status.sh run without anything installed; stop.sh refuses an option it does not know', () => {
   const box = macBox();
   try {
@@ -356,14 +418,14 @@ test('stop.sh and status.sh run without anything installed; stop.sh refuses an o
 });
 
 test('the scripts are executable and pass bash -n', () => {
-  for (const file of [...['lib.sh', 'install.sh', 'set-token.sh', 'login.sh', 'status.sh', 'stop.sh', 'wx.sh'].map(f => join(mac, f)), server]) {
+  for (const file of [...['lib.sh', 'install.sh', 'set-token.sh', 'login.sh', 'images.sh', 'status.sh', 'stop.sh', 'wx.sh'].map(f => join(mac, f)), server]) {
     assert.equal(bash(['-n', file]).status, 0, file);
     if (!file.endsWith('lib.sh')) assert.ok(mode(file) & 0o100, file + ' is not executable');
   }
 });
 
 test('no script has a bare $name right before a non-ASCII character: bash 3.2 reads the first byte as part of the name and dies with "unbound variable"', () => {
-  const scripts = ['lib.sh', 'install.sh', 'set-token.sh', 'login.sh', 'status.sh', 'stop.sh', 'wx.sh'].map(f => join(mac, f)).concat(server);
+  const scripts = ['lib.sh', 'install.sh', 'set-token.sh', 'login.sh', 'images.sh', 'status.sh', 'stop.sh', 'wx.sh'].map(f => join(mac, f)).concat(server);
   for (const file of scripts) {
     const bad = readFileSync(file, 'utf8').split('\n').map((line, i) => [i + 1, line]).filter(([, line]) => /\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]/.test(line));
     assert.deepEqual(bad, [], file + ': write ${name} here');
