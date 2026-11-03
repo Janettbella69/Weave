@@ -63,10 +63,11 @@ test('groups: enabling, refusing and closing say outbound; an @ in an enabled gr
   const forget = await h.bridge('events', h.group('wxid-bob', '@助理 别记 我今天情绪很差', true));
   assert.equal(forget.data.skipped, true);
   bothAbsent(forget.data);
-  let limited;
-  for (let i = 0; i < 31; i++) limited = await h.bridge('events', h.group('wxid-bob', '@助理 第' + i + '次', true));
-  assert.equal(limited.data.limited, true);
-  bothAbsent(limited.data);
+  let many;
+  for (let i = 0; i < 31; i++) many = await h.bridge('events', h.group('wxid-bob', '@助理 第' + i + '次', true));
+  assert.equal(many.data.limited, undefined);      // no daily cap on group replies
+  assert.equal(many.data.queued, true);
+  assert.deepEqual(flags(many.data), wake);
   const closed = await h.bridge('events', h.group('wxid-bob', '@助理 关闭打卡群', true));
   assert.equal(closed.data.closed, true);
   assert.deepEqual(flags(closed.data), outbound);
