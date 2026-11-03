@@ -1,9 +1,10 @@
 # 微信客户端（agent-wechat 的 wx 守护进程）和 Weave 的微信桥接，跑在 43.162.107.53 上。试点用，随时可以退回 Mac。
-# 项目名固定为 wechat：同目录的脚本都带 -p wechat，只会碰到 wechat-wx-1、wechat-bridge-1 和 wechat_ 开头的三个卷，
-# 不碰 weave（网站和 Agent 服务）和 Azora。平时不用直接跑 docker compose，用同目录的 up.sh、login.sh、status.sh、stop.sh。
+# 项目名固定为 wechat：同目录的脚本都带 -p wechat，只会碰到 wechat-wx-1、wechat-bridge-1、网络 wechat_default
+# 和 wechat_ 开头的三个卷，不碰 weave（网站和 Agent 服务）和 Azora。平时不用直接跑 docker compose，用同目录的脚本。
 #
-# 两个服务都用宿主的网络（network_mode: host），原因见 README.md「为什么用宿主的网络」：守护进程只肯听 127.0.0.1，
-# 桥接要连得到它，而且守护进程重启（比如内存超了被杀）以后要能自己连回去。两个服务都没有对外的端口。
+# 网络（原因见 README.md 第 8 节）：wx 在自己的网络 wechat_default 里，只能往外连；外面连不进来，它也碰不到服务器
+# 自己 127.0.0.1 上的服务（Azora 的数据库、管理端口）。桥接加入 wx 的网络（network_mode: service:wx），在那里的
+# 127.0.0.1:6179 找到 wx。两个服务都没有对外的端口。
 name: wechat
 
 services:
@@ -14,8 +15,7 @@ services:
     image: ghcr.io/thisnick/agent-wechat-native:v1.3.3@sha256:c08d38c949129e81408666c4f6d6ce7e6ae2fbaa61121a1a3c5a3d09c5650419
     # 名字写死：脚本和 README 里的 docker exec、docker logs、docker stop 都用这个名字，compose 配置坏了也停得掉。
     container_name: wechat-wx-1
-    network_mode: host
-    # 只听 127.0.0.1:6179（外面连不到，和 Mac 那套用同一个端口，避开 agent-wechat 默认的 6174）。
+    # 只听它自己网络里的 127.0.0.1:6179（和 Mac 那套用同一个端口）。服务器上别的程序、外网都连不到；桥接和它共用网络。
     # 没有指定令牌文件，所以守护进程第一次启动时自己生成主令牌 /var/lib/agent-wechat/api-token（权限 600），
     # 它和小号的数据一起留在 wx-data 卷里；脚本用 docker exec 在容器里调 wx，令牌不离开容器。
     command: ["serve", "--data-dir", "/var/lib/agent-wechat", "--listen", "127.0.0.1:6179"]
@@ -28,7 +28,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,mode=1777
     volumes:
-      # 小号的登录、聊天记录、联系人、收到的图片和文件、主令牌。镜像里这个目录属于 10001、权限 700，新卷照搬。
+      # 小号的登录、聊天记录、联系人、收到的图片和文件、wx 的事件记录、主令牌。镜像里这个目录属于 10001、权限 700，新卷照搬。
       - wx-data:/var/lib/agent-wechat
       # 守护进程的临时快照（TMPDIR），不是数据本身。
       - wx-scratch:/var/cache/agent-wechat
@@ -47,15 +47,20 @@ services:
         max-file: "3"
 
   bridge:
-    # 桥接只用 Node 自带的东西，没有依赖。代码直接用这份仓库里的（只读挂进去），git pull 以后要重启桥接才会用上新代码。
-    image: node:22-alpine
+    # Node 22（2026-11-03 查到的 node:22-alpine，Node 22.23.4）。tag 给人看，Docker 认 digest；改它要连 lib.sh 的 BRIDGE_IMAGE 一起改。
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
     container_name: wechat-bridge-1
-    network_mode: host
+    # 用 wx 的网络：在 127.0.0.1:6179 找到 wx，往外连 Weave 也走 wx 的网络。
+    # wx 一重启就换了新网络，桥接留在旧的里面：bridge-guard.mjs 发现 wx 30 秒没回应就退出，Docker 再把桥接拉起来，
+    # 拉起来的容器会加入 wx 现在的网络（README 第 8 节）。
+    network_mode: service:wx
     # 让容器里的进程能正常收到停止信号。
     init: true
     user: node
     working_dir: /app
-    command: ["node", "bridge.mjs"]
+    # 桥接只用 Node 自带的东西，没有依赖。代码直接用这份仓库里的（只读挂进去），git pull 以后要重启桥接才会用上新代码。
+    # 外面包一层 bridge-guard.mjs：桥接本身一行不改，见上面和 bridge-guard.mjs 开头的说明。
+    command: ["node", "/guard/bridge-guard.mjs"]
     # 令牌和账号（权限 600，不进 git）：up.sh 建，login.sh 写。
     env_file: bridge.env
     environment:
@@ -63,6 +68,7 @@ services:
       WECHAT_BRIDGE_STATE: /home/node/cursor.json
     volumes:
       - ../../../hosted/wechat-bridge:/app:ro
+      - ./bridge-guard.mjs:/guard/bridge-guard.mjs:ro
       # 镜像里 /home/node 属于 node 用户，新卷照搬，所以桥接能写。
       - bridge-state:/home/node
     read_only: true

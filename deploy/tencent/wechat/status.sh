@@ -33,9 +33,22 @@ peak() {
   say "${2} 启动以来最多用过：$(mib "$bytes")"
 }
 
+# 桥接这次启动以来有没有连上 wx 和 Weave（bridge-guard.mjs 第一次连上时各打一行）。
+show_contact() {
+  local started logs wx="还没有" weave="还没有"
+  container_running "$bridge_container" || return 0
+  started=$(docker inspect -f '{{.State.StartedAt}}' "$bridge_container" 2>/dev/null || true)
+  [ -n "$started" ] || return 0
+  logs=$(docker logs --since "$started" "$bridge_container" 2>&1 || true)
+  case "$logs" in *"桥接已连上 wx 守护进程"*) wx="连上了" ;; esac
+  case "$logs" in *"桥接已连上 Weave"*) weave="连上了" ;; esac
+  say "桥接这次启动以来：wx ${wx}，Weave ${weave}"
+}
+
 say "== 容器"
 show_container "$wx_container" "wx 守护进程"
 show_container "$bridge_container" "微信桥接"
+show_contact
 
 say ""
 say "== 微信小号"

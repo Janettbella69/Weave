@@ -3,17 +3,21 @@
 # 这里定义的变量给 source 它的脚本用，单看这个文件像是没用到：
 # shellcheck disable=SC2034
 #
-# 版本、镜像和端口：下面的 WX_VERSION、WX_IMAGE_*、端口 6179 要和 compose.yml 一致，WX_VERSION 还要和
+# 版本、镜像和端口：下面的 WX_VERSION、WX_IMAGE_*、BRIDGE_IMAGE、端口 6179 要和 compose.yml 一致，WX_VERSION 还要和
 # deploy/wechat-mac/lib.sh 一致，测试会核对。env_set、env_get 和 Mac 那套是同一份写法，测试核对两边结果一样。
 #
 # 测试用的环境变量（平时不用管）：
-#   WEAVE_WEB_ENV         网站的配置 web.env 在哪，默认是上一层目录的 web.env（~/weave/deploy/tencent/web.env）
-#   WEAVE_ORIGIN          Weave 的地址，默认 https://weave.azorashopping.site
-#   WEAVE_WECHAT_QR_MODE  terminal 或 png：不看有没有终端，固定用一种方式给二维码
+#   WEAVE_WEB_ENV                网站的配置 web.env 在哪，默认是上一层目录的 web.env（~/weave/deploy/tencent/web.env）
+#   WEAVE_ORIGIN                 Weave 的地址，默认 https://weave.azorashopping.site
+#   WEAVE_WECHAT_TTY=1           当作有终端（会问你、二维码画在终端里），不管实际有没有
+#   WEAVE_WECHAT_SETTLE_SECONDS  桥接连上以后再看它多少秒才作废旧密钥，默认 10
+#   WEAVE_WECHAT_CONTACT_SECONDS 最多等多少秒让桥接连上 wx 和 Weave，默认 30
 
 WX_VERSION=1.3.3
 WX_IMAGE_REPO=ghcr.io/thisnick/agent-wechat-native
 WX_IMAGE_DIGEST=sha256:c08d38c949129e81408666c4f6d6ce7e6ae2fbaa61121a1a3c5a3d09c5650419
+# 桥接用的 Node 镜像（compose.yml 里 bridge 的 image）。login.sh 也用它，在 wx 的网络里先试一下连不连得上 Weave。
+BRIDGE_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 WX_PORT=6179
 WX_ALIAS=weave
 WEAVE_ORIGIN_DEFAULT=https://weave.azorashopping.site
@@ -32,9 +36,16 @@ wx_token_in_container=/var/lib/agent-wechat/api-token
 # login.sh --png 时二维码图片先存在容器里，再拷到服务器的家目录，给你 scp 回 Mac。
 qr_in_container=/var/lib/agent-wechat/weave-login-qr.png
 qr_on_host="$HOME/weave-wechat-qr.png"
+settle_seconds="${WEAVE_WECHAT_SETTLE_SECONDS:-10}"
+case "$settle_seconds" in ''|*[!0-9]*) settle_seconds=10 ;; esac
+contact_seconds="${WEAVE_WECHAT_CONTACT_SECONDS:-30}"
+case "$contact_seconds" in ''|0|*[!0-9]*) contact_seconds=30 ;; esac
 
 say() { printf '%s\n' "$*"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
+
+# 有没有一个能问你话的终端（ssh -t 才有）。
+interactive() { [ "${WEAVE_WECHAT_TTY:-}" = 1 ] || { [ -t 0 ] && [ -t 1 ]; }; }
 
 refuse_root() {
   [ "$(id -u)" != 0 ] || die "别用 root 或 sudo 跑：用平时登录的 ubuntu 用户就行（它能直接用 docker）。没有改任何东西。"
@@ -66,12 +77,6 @@ check_project() {
 $(docker ps -a --filter label=com.docker.compose.project=wechat --format '{{.Names}} {{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
 EOF
   [ -z "$others" ] || die "这台机器上已经有一个别的 compose 项目也叫 wechat（容器：${others# }），不是这个目录建的。为了不碰它，什么都没做。把这段话发给 Claude。"
-}
-
-# 127.0.0.1:6179 有没有被别的程序占着。没有 ss 就当没占（启动时 wx 自己会报错）。
-port_busy() {
-  command -v ss >/dev/null 2>&1 || return 1
-  [ -n "$(ss -Hltn "sport = :$WX_PORT" 2>/dev/null || true)" ]
 }
 
 # wx 的内存上限：128m 到 1024m 之间的整数 MB。
@@ -191,7 +196,11 @@ EOT
   chmod 600 "$bridge_env"
 }
 
-# 问 Weave 的公网地址（和桥接走同一条路）。参数原样交给 curl；令牌只能经 -K - 从标准输入给，不进命令行参数。
+# 从 wx 的网络里（桥接走的就是这条路）问两次 Weave 的公网地址：先不带令牌，再带上标准输入里的那个令牌。
+# 打印两个 HTTP 状态码，比如「401 200」；连不上是 0。令牌只走标准输入，不进命令行参数。
+# 用桥接的镜像起一个用完就删的容器（只读、不给特权）。
+weave_probe_js='let t="";process.stdin.on("data",d=>t+=d).on("end",async()=>{const u=process.argv[1]+"/api/internal/wechat/events";const ask=async h=>{try{const r=await fetch(u,{method:"POST",redirect:"manual",headers:Object.assign({"Content-Type":"application/json"},h),body:"{}",signal:AbortSignal.timeout(30000)});return r.status}catch(e){return 0}};const a=await ask({});const b=await ask({Authorization:"Bearer "+t.trim()});console.log(a+" "+b)})'
 weave_probe() {
-  curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: application/json' -d '{}' "$@" "$origin/api/internal/wechat/events" || true
+  docker run --rm -i --network "container:$wx_container" --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --user node --memory 128m "$BRIDGE_IMAGE" node -e "$weave_probe_js" "$origin" 2>/dev/null || true
 }
