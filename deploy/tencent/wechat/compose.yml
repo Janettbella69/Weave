@@ -2,9 +2,9 @@
 # 项目名固定为 wechat：同目录的脚本都带 -p wechat，只会碰到 wechat-wx-1、wechat-bridge-1、网络 wechat_default
 # 和 wechat_ 开头的三个卷，不碰 weave（网站和 Agent 服务）和 Azora。平时不用直接跑 docker compose，用同目录的脚本。
 #
-# 网络（原因见 README.md 第 8 节）：wx 在自己的网络 wechat_default 里，只能往外连；外面连不进来，它也碰不到服务器
-# 自己 127.0.0.1 上的服务（Azora 的数据库、管理端口）。桥接加入 wx 的网络（network_mode: service:wx），在那里的
-# 127.0.0.1:6179 找到 wx。两个服务都没有对外的端口。
+# 网络（原因见 README.md 第 8 节）：wx 在自己的网络 wechat_default 里，只能往外连，外面连不进来。服务器上只绑在
+# 127.0.0.1 的服务它碰不到；绑在 0.0.0.0 或 docker0 / 网关地址上的（Azora 对外的端口、Weave 网站的 4317）照样能经宿主连到。
+# 桥接加入 wx 的网络（network_mode: service:wx），在那里的 127.0.0.1:6179 找到 wx。两个服务都没有对外的端口。
 name: wechat
 
 services:

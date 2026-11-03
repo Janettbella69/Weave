@@ -53,6 +53,24 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'bash ~/weave/deploy
 wx 守护进程正常：版本 1.3.3，只听它自己网络里的 127.0.0.1:6179（外网和服务器上别的程序都连不到），内存上限 256 MB。
 ```
 
+**第 2 步之后再看两眼**（只读，各跑一次就行；这时 Mac 还照常工作）：
+
+(a) 启动桥接时不会动 wx。这条只演练、不真的做（`--dry-run`），用的是 login.sh 启动桥接的同一组参数：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/weave/deploy/tencent/wechat && docker compose -p wechat up -d --force-recreate --no-deps --dry-run bridge'
+```
+
+每行开头是 `DRY-RUN MODE`；里面只应该有 `wechat-bridge-1`，不应该有 `wechat-wx-1` 的 Recreate、Stop 或 Remove。出现了就先别往下做，把输出发给 Claude。要是说不认识 `--dry-run`，是 docker compose 太旧（2.20 以后才有），把 `docker compose version` 的结果发给 Claude。
+
+(b) wx 的网络和服务器所在的私有网络（VPC）不重叠：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker network inspect wechat_default --format "{{range .IPAM.Config}}{{.Subnet}} {{end}}"; ip -4 -o addr show scope global'
+```
+
+第一行是 wx 网络的网段（比如 `172.18.0.0/16`），下面几行是服务器自己的地址，`eth0` 那行是它在私有网络里的地址（比如 `10.206.0.12/20`）。再到腾讯云控制台看这台服务器所在私有网络的网段（私有网络 → 这个 VPC → IPv4 CIDR）。wx 网络的网段不能和私有网络的网段、`eth0` 的地址有重叠（比如私有网络是 `172.16.0.0/12`，它就包含 `172.18.0.0/16`，算重叠）。重叠了就先别往下做，告诉 Claude。
+
 **第 3 步：停掉 Mac 上的那一套。从这一步开始，助理不在线。**
 
 ```
@@ -296,7 +314,7 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'openssl rand -hex 3
 
 ## 8. 网络：为什么这样连
 
-**wx 在自己的网络里。** wx 用 compose 给这个项目建的网络 `wechat_default`，没有对外的端口：它能往外连微信，外面连不进来；它也碰不到服务器自己 127.0.0.1 上的服务（Azora 的数据库、管理端口之类）。它只听这个网络里的 127.0.0.1:6179（agent-wechat 只肯听 127.0.0.1：源码里写死了 `--listen must be loopback`），服务器上别的程序也连不到。
+**wx 在自己的网络里。** wx 用 compose 给这个项目建的网络 `wechat_default`，没有对外的端口：它能往外连微信，外面连不进来。服务器上**只绑在 127.0.0.1** 的服务，它碰不到。但绑在 0.0.0.0、或者绑在 docker0 / 网关地址上的服务，它照样能经过宿主连到：比如 Azora 对外发布的端口，和 Weave 网站的 4317（绑在 docker0 的地址上，就是 `~/weave/deploy/tencent/.env` 里的 `WEAVE_BIND_IP`）。连到以后能做什么，看那些服务自己的密码和令牌（Weave 网站要访问密码，内部接口要令牌；Azora 的我没查）。wx 自己只听这个网络里的 127.0.0.1:6179（agent-wechat 只肯听 127.0.0.1：源码里写死了 `--listen must be loopback`），服务器上别的程序也连不到。
 
 **桥接用 wx 的网络**（`network_mode: service:wx`）：它在那里的 127.0.0.1:6179 找到 wx，往外连 Weave 也走那里。
 
