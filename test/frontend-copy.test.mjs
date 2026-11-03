@@ -156,6 +156,72 @@ test('the status poll stays at once every 5 seconds',async()=>{
   assert.match(await read('app/workspace/Workspace.jsx'),/setInterval\([\s\S]{0,200}?,\s*5000\s*\)/);
 });
 
+// globals.css as a list of rules in file order, one entry per selector: {media, selector, size}. `media` is the condition
+// of the @media block the rule is in ('' outside one); `size` is the font size the rule sets last (font-size, or the
+// size in the font shorthand): a number of px, the value as written when it is not in px, or null when the rule sets
+// none. Enough CSS for this file: comments, rules, and @media blocks one level deep.
+function cssRules(css){
+  const list=text=>{const parts=[];let depth=0,start=0;for(let i=0;i<text.length;i++){if(text[i]==='(')depth++;else if(text[i]===')')depth--;else if(text[i]===','&&!depth){parts.push(text.slice(start,i));start=i+1;}}return [...parts,text.slice(start)].map(part=>part.trim().replace(/\s+/g,' ')).filter(Boolean);};
+  const sizeOf=body=>{
+    let size=null;
+    for(const declaration of body.split(';')){
+      const colon=declaration.indexOf(':'),name=declaration.slice(0,colon).trim(),value=declaration.slice(colon+1).trim();
+      if(colon<0||(name!=='font-size'&&name!=='font')||value==='inherit')continue;
+      const px=(name==='font'?/(?:^|\s)([\d.]+)px(?=[\s/]|$)/:/^([\d.]+)px$/).exec(value);
+      size=px?Number(px[1]):value;
+    }
+    return size;
+  };
+  const rules=[];
+  const walk=(text,media)=>{
+    for(let at=0;;){
+      const open=text.indexOf('{',at);if(open<0)return;
+      let depth=1,close=open+1;
+      for(;depth&&close<text.length;close++){if(text[close]==='{')depth++;else if(text[close]==='}')depth--;}
+      const head=text.slice(at,open).trim(),body=text.slice(open+1,close-1);
+      if(head.startsWith('@media'))walk(body,head.slice('@media'.length).trim());
+      else for(const selector of list(head))rules.push({media,selector,size:sizeOf(body)});
+      at=close;
+    }
+  };
+  walk(css.replace(/\/\*[\s\S]*?\*\//g,''),'');
+  return rules;
+}
+// Whether a rule in that @media block reaches a screen this wide. Only widths are read; any other condition counts as met.
+const reachesWidth=(media,width)=>[...media.matchAll(/(max|min)-width:\s*([\d.]+)px/g)].every(([,side,px])=>side==='max'?width<=Number(px):width>=Number(px));
+
+test('on a phone every text box of the workspace is at least 16px, so Safari on an iPhone does not zoom in on it',async()=>{
+  // Safari zooms the page in when a text box under 16px gets focus, and does not zoom back out.
+  const css=await read('app/globals.css'),rules=cssRules(css);
+  // A selector under .wv whose subject is a text box: it ends in input, textarea or select, or in .wv-input (the first
+  // run's line), with nothing after but pseudo-classes (::placeholder is not the box).
+  const isBox=selector=>/\.wv\b/.test(selector)&&/(?:(?:^|[\s>+~])(?:input|textarea|select)|\.wv-input)(?![\w-])(?:(?!::)[^\s>+~])*$/.test(selector);
+  const sized=rules.filter(rule=>isBox(rule.selector)&&rule.size!==null);
+  assert.ok(sized.length>=5,'the rules that size the boxes were found');
+  // Every selector that sizes a box, on phones from the narrowest to the widest: the last of its rules that reaches the
+  // screen is the size there. A wide screen keeps its own size.
+  for(const selector of new Set(sized.map(rule=>rule.selector)))
+    for(const width of [320,375,390,430]){
+      const reaching=sized.filter(rule=>rule.selector===selector&&reachesWidth(rule.media,width));
+      if(!reaching.length)continue;
+      const size=reaching.at(-1).size;
+      assert.ok(typeof size==='number'&&size>=16,`${selector} is ${typeof size==='number'?size+'px':size} on a ${width}px phone`);
+    }
+  // The boxes in the pages, each with the rule that gives it a size of its own: without one it would take the 15px of
+  // .wv (inputs inherit their font). A new box needs its line here.
+  const sources=new Map(await workspaceSources());
+  const boxes=[...sources].filter(([name])=>name.endsWith('.jsx')).flatMap(([name,source])=>[...source.matchAll(/<(input|textarea|select)\b/g)].map(match=>name+' '+match[1]));
+  assert.deepEqual(boxes.sort(),['pages/FirstRun.jsx input','pages/SettingsPage.jsx select','ui/Composer.jsx textarea']);
+  assert.match(sources.get('ui/Composer.jsx'),/<div className="wv-composer-box">\s*<textarea\b/);
+  assert.match(sources.get('pages/FirstRun.jsx'),/<input [^\n]*className="wv-input"/);
+  assert.match(sources.get('pages/SettingsPage.jsx'),/<span className="wv-select">\s*<select\b/);
+  for(const selector of ['.wv-composer-box textarea','.wv-input','.wv-select select'])
+    assert.ok(sized.some(rule=>rule.selector===selector&&rule.media===''),selector+' has a size of its own');
+  // The first run's and a new goal's boxes are sized again inside their pages, and those rules are checked above too.
+  for(const selector of ['.wv-first-run .wv-composer-box textarea','.wv-goal-talk .wv-composer-box textarea'])
+    assert.ok(sized.some(rule=>rule.selector===selector),selector);
+});
+
 test('the error boundary does not show the raw error',async()=>{
   const boundary=await read('components/ErrorBoundary.jsx');
   assert.ok(boundary.includes('请刷新页面重试')&&boundary.includes('刷新页面'));
