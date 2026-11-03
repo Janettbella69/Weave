@@ -16,6 +16,7 @@ import {handleAgentTool} from './agent-tools.mjs';
 import {handleAgentSnapshot} from './agent-snapshot.mjs';
 import {readAgentMemory} from './agent-memory.mjs';
 import {agentServiceConfig,wakeForMessage,forgetAgentWorkspace} from './dispatcher.mjs';
+import {dropOwnerPhotos} from './wechat-photos.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
   if(!request.headers.get('content-type')?.startsWith('application/json'))domain.fail('需要 JSON 请求',415);
@@ -91,7 +92,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     // The server's own clock: the Agent service calls this every minute (proactive design §4.7). Reminders and the
     // background wakes; queued WeChat messages stay with the Mac bridge's tick below.
     if(requestPath==='/api/internal/tick')return internalTick(request,{tick,agentRuntime,agentServiceUrl,agentServiceToken});
-    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now});
+    // 看图只在 Agent SDK 路线上有（照片要经 Agent 服务交给模型）。
+    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now,images:wechat?.images===true&&agentRuntime==='sdk'});
     // Any other internal path is not a route: answer before reading identity or touching the world.
     if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
     // The browser comes back from Notion here (no login; the one-time state binds it to the account that clicked connect).
@@ -261,6 +263,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
         await forgetAgentWorkspace({service,ownerId:id,fetcher});
       }
       domain.deleteAccount(world,id);
+      // 微信看图暂存的照片不在 world 里，按主人另外删（表不存在时什么都不做）。
+      await dropOwnerPhotos(db,id);
       // The guest row only stores the session token, but nothing of theirs should remain.
       if(identity.userId.startsWith('guest:')){try{await db.prepare('DELETE FROM weave_guest_sessions WHERE id=?').bind(identity.userId.slice('guest:'.length)).run();}catch{/* the row is optional metadata */}}
     }

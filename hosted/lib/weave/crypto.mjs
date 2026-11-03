@@ -16,3 +16,12 @@ export async function unseal(value, secret, owner) {
   const [iv,cipher]=value.split(':');
   return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(iv),additionalData:encoder.encode(owner)},await key(secret),bytes(cipher)));
 }
+// The same key and AES-GCM as seal(), for bytes (a WeChat photo) that should not be turned into text first.
+export async function sealBytes(value, secret, owner) {
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:encoder.encode(owner)},await key(secret),value);
+  return {iv:hex(iv),data:new Uint8Array(encrypted)};
+}
+export async function unsealBytes({iv,data}, secret, owner) {
+  return new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(iv),additionalData:encoder.encode(owner)},await key(secret),data));
+}

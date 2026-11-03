@@ -85,6 +85,8 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
 
+微信看图默认关。要打开：先开桥接（Mac 部署：`deploy/wechat-mac/images.sh on`），再在 `web.env` 里加 `WEAVE_WECHAT_IMAGES=1` 并部署。关掉时先关网站。`weave.nginx.conf` 为它多了一行 `client_body_buffer_size 1m;`，是可选的加固，只有以后新装 nginx 时才会带上，这些步骤不会动正在用的 nginx（没有它时，照片可能作为临时文件在共用 nginx 的磁盘上短暂停留）；要改正在用的 nginx，得另外小心地在原文件上改，并且先经负责人同意。见 [`docs/WECHAT.md`](../../docs/WECHAT.md) 的「看图（默认关闭）」。
+
 ## 主动提醒和 Jev
 
 主动提醒不用额外配置：部署以后，Agent 服务每分钟敲一次网站的 `/api/internal/tick`，到点的提醒、跟进和定期看看都由它触发，不再依赖 Mac。想关掉：`agent.env` 里加一行 `AGENT_TICK_SECONDS=0`，再部署一次。看它在不在跑：`docker logs weave-agent-1 | tail`，启动那一行写着 `tick: every 60s`，后台叫醒时会有 `tick started 1 background wake(s)`。
