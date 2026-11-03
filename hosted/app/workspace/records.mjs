@@ -7,7 +7,8 @@ import {addDays, localDay} from './dates.mjs';
 import {SERVER_DEFAULT_TIMEZONE} from './timezone.mjs';
 
 // /api/status sends the records of `today` and of the 61 days before it (hosted/lib/weave/api.mjs). A day before
-// `addDays(today, -61)` may have records the page was not sent, so the page cannot say it was missed.
+// `addDays(today, -61)` may have records the page was not sent, so the page cannot say it was missed. The server keeps
+// its own 61 (this bundle brings in no server code); test/habits-web.test.mjs holds the two together.
 export const STATUS_WINDOW_BACK = 61;
 
 // habit id -> the days that habit was done (a Set of 'YYYY-MM-DD').
