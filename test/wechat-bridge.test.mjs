@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createDaemon,createThrottle,createWeave,cursorStore,deliverOnce,forwardable,handleEvent,reconnectDelay,sseEvents,throttleFromEnv} from '../hosted/wechat-bridge/bridge.mjs';
+import {createDaemon,createThrottle,createWeave,cursorStore,deliverOnce,describeEvent,eventFacts,forwardable,handleEvent,reconnectDelay,sseEvents,throttleFromEnv} from '../hosted/wechat-bridge/bridge.mjs';
 
 const sse=text=>new Response(text).body;
 const collect=async iterable=>{const items=[];for await(const item of iterable)items.push(item);return items;};
@@ -49,6 +49,46 @@ test('our own sends and other event kinds advance the cursor without fetching a 
   await handleEvent({cursor:'1',kind:'message.committed',data:{messageId:'m',direction:'outgoing'}},context);
   await handleEvent({cursor:'2',kind:'group.updated',data:{}},context);
   assert.deepEqual(saved,['1','2']);
+});
+// A logged-out account raises no error in the bridge (the stream stays up, nothing is being sent), so these events are the only
+// trace of the drop. The test pattern: the event carries a message body and a name in places they must never be copied from.
+test('a session event is logged with its fixed fields and nothing else, and the cursor still advances',async()=>{
+  const lines=[],saved=[],acked=[];
+  const context={daemon:{message:async()=>{throw Error('should not fetch');},ack:async c=>acked.push(c)},weave:async()=>{throw Error('should not forward');},saveCursor:async c=>saved.push(c),log:line=>lines.push(line)};
+  const secret={body:'SECRET-BODY',text:'SECRET-TEXT',nickname:'SECRET-NAME',commands:[{text:'SECRET-COMMAND'}]};
+  await handleEvent({cursor:'11',kind:'account.connection',data:{state:'auth_required',source:'polling',serviceCode:-13,authentication:'logged_out',...secret}},context);
+  await handleEvent({cursor:'12',kind:'account.updated',data:{accountId:'acc-1',connection:'disconnected',...secret}},context);
+  await handleEvent({cursor:'13',kind:'account.updated',data:{authentication:'logged_out'}},context);
+  await handleEvent({cursor:'14',kind:'account.push',data:{state:'reconnecting',reason:'connection_unavailable',fallback:'heartbeat_polling',...secret}},context);
+  await handleEvent({cursor:'15',kind:'projection.blocked',data:{batchId:'b1',reason:'unsupported_or_unavailable_profile',retryableAfterRepair:true,blockedCommandCount:3,truncated:false,...secret}},context);
+  assert.deepEqual(lines,[
+    '小号需要重新登录（Mac 上跑 login.sh）：state=auth_required source=polling serviceCode=-13 authentication=logged_out',
+    '微信账号：connection=disconnected',
+    '微信账号：authentication=logged_out',
+    '微信长连接：state=reconnecting reason=connection_unavailable fallback=heartbeat_polling',
+    '有同步批次没能写入账号库：reason=unsupported_or_unavailable_profile blockedCommandCount=3 retryableAfterRepair=true',
+  ]);
+  assert.ok(!lines.join('\n').includes('SECRET'));
+  assert.deepEqual(saved,['11','12','13','14','15']);
+  assert.deepEqual(acked,['11','12','13','14','15']);
+});
+test('other connection states are logged too, but ordinary messages and unrelated events are not',async()=>{
+  const lines=[];const context={daemon:{message:async()=>incoming,ack:async()=>{}},weave:async()=>{},saveCursor:async()=>{},log:line=>lines.push(line)};
+  await handleEvent({cursor:'1',kind:'account.connection',data:{state:'connection_unavailable'}},context);
+  await handleEvent({cursor:'2',kind:'message.committed',data:{messageId:'msg_1',direction:'incoming',body:'SECRET-BODY'}},context);
+  await handleEvent({cursor:'3',kind:'account.updated',data:{accountId:'acc-1',avatar:'x'}},context);   // nothing about the session in it
+  await handleEvent({cursor:'4',kind:'group.updated',data:{state:'x'}},context);
+  await handleEvent({cursor:'5',kind:'account.connection',data:{}},context);
+  await handleEvent({cursor:'6',kind:'account.connection'},context);
+  assert.deepEqual(lines,['微信连接：state=connection_unavailable']);
+});
+test('a value that is not short and plain never reaches the log, so an event cannot smuggle text or fake a log line into it',()=>{
+  const data={state:'auth_required\n2030-01-01T00:00:00.000Z 假的一行',source:'x'.repeat(65),serviceCode:{nested:1},authentication:'a b',ok:'fine'};
+  assert.equal(eventFacts({kind:'account.connection',data}),null);
+  assert.equal(eventFacts({kind:'account.connection',data:{...data,state:'auth_required',source:'sync'}}),'state=auth_required source=sync');
+  assert.equal(describeEvent({kind:'account.connection',data:{...data,state:'auth_required',source:'sync'}}),'小号需要重新登录（Mac 上跑 login.sh）：state=auth_required source=sync');
+  assert.equal(eventFacts(null),null);
+  assert.equal(eventFacts({kind:'account.connection',data:'text'}),null);
 });
 test('a failed ack never blocks progress',async()=>{
   const saved=[];await handleEvent({cursor:'3',kind:'x',data:{}},{daemon:{ack:async()=>{throw Error('down');}},weave:async()=>{},saveCursor:async c=>saved.push(c)});

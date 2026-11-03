@@ -57,7 +57,26 @@ export async function* sseEvents(body){
     }
   }
 }
-export async function handleEvent(event,{daemon,weave,saveCursor}){
+// What the daemon says about the WeChat session itself. A logged-out account raises no error here (the event stream stays up and
+// nothing is being sent), so without these lines bridge.log would say nothing at all. Only the fields named here are ever copied,
+// and only short plain values: never a message body, a name or a list of commands, whatever else the event carries.
+const SESSION_FACTS={'account.connection':['state','source','serviceCode','authentication'],'account.updated':['authentication','connection'],'account.push':['state','reason','fallback'],'projection.blocked':['reason','blockedCommandCount','retryableAfterRepair']};
+const plain=value=>(typeof value==='number'&&Number.isFinite(value))||typeof value==='boolean'||(typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,64}$/.test(value));
+export function eventFacts(event){
+  const keys=SESSION_FACTS[event?.kind];
+  if(!keys||!event.data||typeof event.data!=='object')return null;
+  const facts=keys.filter(key=>plain(event.data[key])).map(key=>`${key}=${event.data[key]}`);
+  return facts.length?facts.join(' '):null;
+}
+export function describeEvent(event){
+  const facts=eventFacts(event);
+  if(!facts)return null;
+  if(event.kind==='account.connection'&&event.data.state==='auth_required')return '小号需要重新登录（Mac 上跑 login.sh）：'+facts;
+  return {'account.connection':'微信连接：','account.updated':'微信账号：','account.push':'微信长连接：','projection.blocked':'有同步批次没能写入账号库：'}[event.kind]+facts;
+}
+export async function handleEvent(event,{daemon,weave,saveCursor,log=(...args)=>console.log(...args)}){
+  const line=describeEvent(event);
+  if(line)log(line);
   if(event.kind==='message.committed'&&event.data?.direction==='incoming'&&typeof event.data.messageId==='string'){
     const message=forwardable(await daemon.message(event.data.messageId));
     if(message)await weave('events',message);

@@ -275,7 +275,7 @@ function fakeWx(box) {
 import {appendFileSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
 const args = process.argv.slice(2), log = process.env.FAKE_LOG + '/wx-calls', stateFile = process.env.FAKE_LOG + '/wx-state';
 appendFileSync(log, args.join(' ') + '\\n');
-const withValue = new Set(['--server', '--token-file', '--account', '--accounts', '--scopes', '--alias']);
+const withValue = new Set(['--server', '--token-file', '--account', '--accounts', '--scopes', '--alias', '--after', '--limit']);
 const words = [];
 for (let i = 0; i < args.length; i++) { if (withValue.has(args[i])) i++; else if (!args[i].startsWith('--')) words.push(args[i]); }
 const state = () => existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : {};
@@ -290,6 +290,13 @@ else if (joined === 'auth login') { console.log('[QR CODE HERE]'); save({loggedI
 else if (joined === 'tokens list') out({items: [{id: 't-old', name: 'weave-bridge', revoked: false}, {id: 't-other', name: 'other', revoked: false}]});
 else if (joined === 'tokens revoke t-old') out({revoked: true});
 else if (joined === 'tokens create weave-bridge') out({grant: {id: 't-new'}, token: 'SECRET-BRIDGE-KEY-123'});
+else if (joined === 'events list') {
+  // Like the real daemon: pages of 1 to 200 events in cursor order, {items, nextCursor}.
+  const value = name => args[args.indexOf(name) + 1], after = Number(value('--after') ?? 0), limit = Number(value('--limit') ?? 100);
+  if (state().failEvents || !(limit >= 1 && limit <= 200)) { console.error('invalid event cursor/limit'); process.exit(2); }
+  const items = (state().events ?? []).filter(event => Number(event.cursor) > after).slice(0, limit);
+  out({items, nextCursor: items.length ? items[items.length - 1].cursor : String(after)});
+}
 else { console.error('unexpected: ' + joined); process.exit(2); }
 `, {mode: 0o755});
   return file;
@@ -304,7 +311,9 @@ test('login.sh: shows the scan line before the QR, logs in once, replaces the ol
     const r = bash([join(mac, 'login.sh')], {env: box.env});
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.ok(r.stdout.indexOf('用小号扫这个二维码') >= 0 && r.stdout.indexOf('用小号扫这个二维码') < r.stdout.indexOf('[QR CODE HERE]'));
-    const calls = readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(Boolean);
+    // A re-login uses the saved credentials first and may show no QR at all; the header must not leave her waiting for one.
+    assert.ok(r.stdout.indexOf('可能不出二维码') >= 0 && r.stdout.indexOf('可能不出二维码') < r.stdout.indexOf('[QR CODE HERE]'));
+    const calls =readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(Boolean);
     assert.equal(calls.filter(c => /auth login/.test(c)).length, 1);
     assert.ok(!calls.find(c => /auth login/.test(c)).includes('--json'), 'the QR is only drawn without --json');
     assert.ok(calls.some(c => /tokens revoke t-old/.test(c)));
@@ -445,6 +454,63 @@ test('install.sh: a download whose SHA-256 is not the pinned one is deleted and 
     assert.ok(!existsSync(join(box.dir, 'wxhome/bin/.wx-download.part')));
     assert.ok(!existsSync(join(box.dir, 'LaunchAgents')));
   } finally { box.done(); }
+});
+
+// ── status.sh: why the account is logged out is only in the daemon's event log, so status.sh shows the latest connection event ──
+const SECRET = 'SECRET-BODY';
+function eventLog() {
+  const stamp = n => `2030-01-01T00:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}+00:00`;
+  const events = [];
+  for (let cursor = 1; cursor <= 450; cursor++) events.push({cursor: String(cursor), kind: 'message.committed', createdAt: stamp(cursor), data: {messageId: 'm' + cursor, direction: 'incoming', body: SECRET}});
+  const set = (cursor, kind, data) => { events[cursor - 1] = {cursor: String(cursor), kind, createdAt: stamp(cursor), data}; };
+  set(5, 'account.connection', {state: 'connection_unavailable'});
+  set(130, 'account.connection', {state: 'auth_required', source: 'push', serviceCode: -13, authentication: 'logged_out', body: SECRET});
+  set(433, 'account.connection', {state: 'auth_required', source: 'sync', serviceCode: -13, authentication: 'logged_out', text: SECRET, commands: [{text: SECRET}]});
+  set(440, 'account.updated', {authentication: 'logged_out'});
+  return events;
+}
+const statusBox = state => {
+  const box = macBox();
+  fakeWx(box);
+  writeFileSync(join(box.logs, 'wx-state'), JSON.stringify(state));
+  return box;
+};
+
+test('status.sh shows the most recent connection event, found across pages of 200, with its fixed fields and no message content', () => {
+  const box = statusBox({created: true, events: eventLog()});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: box.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件/);
+    assert.ok(r.stdout.includes('account.connection state=auth_required source=sync serviceCode=-13 authentication=logged_out（2030-01-01T00:07:13+00:00，事件号 433）'), r.stdout);
+    assert.ok(!r.stdout.includes('source=push') && !r.stdout.includes('connection_unavailable'), 'only the latest one');
+    assert.ok(!(r.stdout + r.stderr).includes(SECRET));
+    // It pages like the real daemon (never more than 200 at a time) and stops when a page comes back empty.
+    const pages = readFileSync(join(box.logs, 'wx-calls'), 'utf8').split('\n').filter(line => line.includes('events list'));
+    assert.deepEqual(pages.map(line => /--after (\d+) --limit (\d+)/.exec(line).slice(1)), [['0', '200'], ['200', '200'], ['400', '200'], ['450', '200']]);
+  } finally { box.done(); }
+});
+
+test('status.sh says so when there is no connection event yet, when the event log cannot be read, and shows nothing about it when there is no account', () => {
+  const none = statusBox({created: true, events: [{cursor: '1', kind: 'message.committed', createdAt: 'x', data: {}}]});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: none.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件[^\n]*\n（还没有）/);
+  } finally { none.done(); }
+  const broken = statusBox({created: true, failEvents: true});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: broken.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /== 最近一次连接事件[^\n]*\n（读不到）/);
+  } finally { broken.done(); }
+  const empty = statusBox({});
+  try {
+    const r = bash([join(mac, 'status.sh')], {env: empty.env});
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /还没有账号/);
+    assert.ok(!r.stdout.includes('最近一次连接事件'));
+  } finally { empty.done(); }
 });
 
 test('stop.sh and status.sh run without anything installed; stop.sh refuses an option it does not know', () => {

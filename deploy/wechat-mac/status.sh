@@ -30,6 +30,16 @@ else
       if(!items.length)return console.log("还没有账号，跑 login.sh。");
       for(const a of items)console.log(`${a.alias||a.id}：${a.authenticated?"已登录":"没登录"}，连接 ${a.connection}，收消息方式 ${a.incomingTransport}，待处理批次 ${a.pendingProjectionBatches}`);
     })'
+  # 「没登录」的原因只记在守护进程的事件日志里（daemon.log 里没有），所以把最近一条连接事件也摆出来。
+  if [ "$(printf '%s' "$accounts" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String((JSON.parse(s).items||[]).length)))' 2>/dev/null)" != 0 ]; then
+    say ""
+    say "== 最近一次连接事件（微信那头最近说了什么；不含消息内容）"
+    if last=$(node "$here/last-connection-event.mjs" "$wx_bin" "$wx_url" "$data_dir/api-token" weave 2>/dev/null); then
+      if [ -n "$last" ]; then say "$last"; else say "（还没有）"; fi
+    else
+      say "（读不到）"
+    fi
+  fi
 fi
 
 for name in daemon bridge; do
