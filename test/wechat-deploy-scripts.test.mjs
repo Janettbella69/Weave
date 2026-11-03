@@ -78,15 +78,42 @@ test('the launchd files run the pinned wx and the bridge from this checkout, and
   } finally { box.done(); }
 });
 
-test('plist text escapes what would break the XML', () => {
-  const box = sandbox();
-  try {
-    const r = lib(box, `plist_text 'a.b' '/tmp/x&y.log' '' '/bin/echo' 'a<b>&c'`);
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(r.stdout.includes('<string>a&lt;b&gt;&amp;c</string>'));
-    assert.ok(r.stdout.includes('/tmp/x&amp;y.log'));
-  } finally { box.done(); }
-});
+// bash 5.2 added a shell option, patsub_replacement (on by default), that turns an unquoted & in the replacement of
+// ${var//pattern/replacement} into the text that matched. macOS ships bash 3.2, which has no such option, so escaping with
+// ${s//</&lt;} passed on the Mac and produced "<lt;" on Ubuntu's bash 5.2. Every case runs under the default options and with
+// the option forced on and off wherever the shell knows it (older shells ignore the shopt), so the result must not depend on it.
+const escapeCases = [
+  ['a<b>&c', 'a&lt;b&gt;&amp;c'],
+  ['&lt;', '&amp;lt;'],
+  ['x & y < z > w', 'x &amp; y &lt; z &gt; w'],
+  ['<<>>&&', '&lt;&lt;&gt;&gt;&amp;&amp;'],
+  ["it's \"quoted\"", "it's \"quoted\""],
+  ['/Users/张三/微信 & 日志 <1>', '/Users/张三/微信 &amp; 日志 &lt;1&gt;'],
+  ['plain', 'plain'],
+  ['', ''],
+];
+const quoted = text => `'${text.replace(/'/g, `'\\''`)}'`;
+for (const [name, prefix] of [['default options', ''], ['patsub_replacement on', 'shopt -s patsub_replacement 2>/dev/null || true; '], ['patsub_replacement off', 'shopt -u patsub_replacement 2>/dev/null || true; ']]) {
+  test(`xml_escape gives the same answer under ${name}`, () => {
+    const box = sandbox();
+    try {
+      for (const [input, expected] of escapeCases) {
+        const r = lib(box, `${prefix}printf '%s' "$(xml_escape ${quoted(input)})"`);
+        assert.equal(r.status, 0, r.stderr);
+        assert.equal(r.stdout, expected, `escaping ${JSON.stringify(input)} under ${name}`);
+      }
+    } finally { box.done(); }
+  });
+  test(`plist text escapes what would break the XML under ${name}`, () => {
+    const box = sandbox();
+    try {
+      const r = lib(box, `${prefix}plist_text 'a.b' '/tmp/x&y.log' '' '/bin/echo' 'a<b>&c'`);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(r.stdout.includes('<string>a&lt;b&gt;&amp;c</string>'), r.stdout);
+      assert.ok(r.stdout.includes('/tmp/x&amp;y.log'), r.stdout);
+    } finally { box.done(); }
+  });
+}
 
 // ── the server side ─────────────────────────────────────────────────────────────────────────
 function serverBox(webEnv = 'WEAVE_ENCRYPTION_KEY=aa\nWEAVE_BASIC_AUTH=weave:p@ss=word\nWEAVE_AGENT_RUNTIME=sdk\nWECHAT_BRIDGE_TOKEN=\nAGENT_SERVICE_TOKEN=bb\n') {

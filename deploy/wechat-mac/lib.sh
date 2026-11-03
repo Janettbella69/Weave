@@ -77,7 +77,10 @@ agent_start() {   # 没加载就加载；已经加载就重启，让新配置生
 }
 agent_stop() { if agent_loaded "$1"; then launchctl bootout "$(launch_domain)/$(label_of "$1")" 2>/dev/null || true; fi; }
 
-xml_escape() { local s="$1"; s=${s//&/&amp;}; s=${s//</&lt;}; s=${s//>/&gt;}; printf '%s' "$s"; }
+# 把 & < > 换成 XML 的写法（先换 &）。用 sed，不用 ${s//</&lt;}：bash 5.2 起 patsub_replacement 默认打开，替换串里没加引号的 &
+# 会被换成「匹配到的字符」，${s//</&lt;} 就写出 "<lt;"；macOS 自带的 bash 3.2 没有这个选项，所以只在 Linux 上错。
+# sed 里 \& 是字面的 &，GNU 和 BSD 的 sed 一样；LC_ALL=C 让它按字节处理，路径里有中文也原样放过。
+xml_escape() { printf '%s' "$1" | LC_ALL=C sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
 # 生成 plist。参数：label、日志文件、工作目录（可空）、然后是命令和参数。
 plist_text() {
