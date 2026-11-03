@@ -326,6 +326,9 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-first-run{padding:32px 16px 24px}
   .wv-welcome h1{font-size:24px}
   .wv-plan,.wv-own{padding:18px 20px;border-radius:20px}
+  /* Safari on an iPhone zooms the page in when a text box under 16px gets focus, and does not zoom back out. So every
+     text box is 16px on a phone (test/frontend-copy.test.mjs checks them all); a wide screen keeps its 15px. */
+  .wv-input,.wv-first-run .wv-composer-box textarea{font-size:16px}
 }
 
 /* A page with a title (待办, 目标): the column, the title row, the sections */
@@ -447,6 +450,8 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-goal-talk .wv-bubble{max-width:90%}
   .wv-goal-talk-compose{padding:12px 14px 14px}
   .wv-goal-talk .wv-composer-box{padding:2px 2px 2px 16px;border-radius:25px;box-shadow:none}
+  /* 16px, so an iPhone does not zoom in on it (see the first run's boxes) */
+  .wv-goal-talk .wv-composer-box textarea{font-size:16px}
 }
 
 /* 记录 (pages/RecordsPage.jsx): the habit buttons (the first run's .wv-option pills), the three numbers, the month's
@@ -560,6 +565,8 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-setting-text{flex-basis:180px}
   .wv-settings-text{font-size:14px}
   .wv-bind{padding:14px}
+  /* 16px, so an iPhone does not zoom in on it (see the first run's boxes) */
+  .wv-select select{font-size:16px}
 }
 
 /* 助理主页 (pages/AgentPage.jsx): the way back, Weave in the middle, the two tabs, and what each holds */
@@ -570,11 +577,15 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-agent-head{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
 .wv-agent-head h1{margin-top:12px;font-size:28px}
 .wv-agent-status{display:flex;align-items:center;gap:8px;font-size:17px;color:var(--wv-secondary)}
-.wv-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;padding:4px;border-radius:999px;background:#F2F2F2}
+.wv-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;border-radius:999px;background:#F2F2F2}
 .wv-tab{display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 12px;border:0;border-radius:999px;background:transparent;color:#5F5F5F;font-size:15px;line-height:1.3}
 .wv-tab[aria-pressed=true]{background:#FFFFFF;color:var(--wv-ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.10)}
 .wv-agent-panel{display:flex;flex-direction:column;gap:28px}
-.wv-not-live{padding:14px 18px;border-radius:20px;background:var(--wv-block);font-size:15px;line-height:1.7}
+/* The block at the top of 提醒: a sentence, how often Weave comes now, why it is quiet, and the three buttons */
+.wv-dial{display:flex;flex-direction:column;gap:8px;padding:14px 18px;border-radius:20px;background:var(--wv-block);font-size:15px;line-height:1.7}
+.wv-dial-notice{color:var(--wv-on-blue)}
+.wv-dial-buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.wv-dial .wv-button[aria-disabled=true]{opacity:.5;cursor:default;filter:none}
 .wv-schedule{display:flex;flex-direction:column;gap:6px}
 .wv-schedule h2{margin-bottom:4px;font-size:19px}
 .wv-schedule-empty{font-size:14px;color:var(--wv-secondary)}
@@ -584,6 +595,7 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-reminder-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
 .wv-reminder-title{font-size:16px;font-weight:500;line-height:1.4;overflow-wrap:anywhere}
 .wv-reminder-meta{font-size:14px;color:var(--wv-secondary)}
+.wv-reminder.is-paused .wv-reminder-title{color:var(--wv-secondary)}
 .wv-round.is-quiet{color:#5F5F5F}
 .wv-memory{display:flex;flex-direction:column;gap:24px}
 .wv-memory-intro{font-size:15px;line-height:1.7;color:var(--wv-secondary)}
@@ -592,13 +604,51 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
 .wv-memory-text .md-heading{font-size:19px}
 .wv-memory-text>.md-heading:not(:first-child){margin-top:20px}
 .wv-memory-failed{display:flex;flex-direction:column;align-items:flex-start;gap:12px;font-size:15px}
+/* MEMORY.md, the file that is Weave's memory: its name on a bar, what is in it below, as a file is shown */
+.wv-memory-file{display:flex;flex-direction:column;border:1px solid var(--wv-line);border-radius:20px;overflow:hidden}
+.wv-memory-file-name{display:flex;align-items:center;gap:10px;min-height:48px;padding:0 16px;background:var(--wv-nav);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;overflow-wrap:anywhere}
+.wv-memory-file-body{padding:16px;border-top:1px solid var(--wv-line)}
+/* 动态 (pages/ActivityList.jsx): a day at a time; each row a round tick, what happened in bold, a grey line, the time */
+.wv-activity{display:flex;flex-direction:column;gap:20px}
+.wv-activity-day{display:flex;flex-direction:column;gap:2px}
+.wv-activity-day h2{font-size:15px;color:var(--wv-secondary)}
+.wv-activity-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.wv-activity-item{display:flex;align-items:flex-start;gap:12px;padding:10px 0}
+.wv-activity-icon{flex:none;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:999px;background:var(--wv-chip);color:var(--wv-on-blue)}
+.wv-activity-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.wv-activity-title{font-size:15px;font-weight:600;line-height:1.4;overflow-wrap:anywhere}
+.wv-activity-detail{font-size:14px;line-height:1.5;color:var(--wv-secondary);overflow-wrap:anywhere}
+/* A message Weave sent shows two lines of it at most */
+.wv-activity-detail.is-clamped{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.wv-activity-time{flex:none;padding-top:2px;font-size:12px;line-height:1.5;color:var(--wv-small);white-space:nowrap}
+
+/* Weave's panel beside the chat (pages/AgentSide.jsx): from 1200px wide (side-panel.mjs), the assistant's home page sits
+   on the right of the conversation, which narrows to make room and keeps its box. Narrower there is no panel, and the
+   avatar opens the page instead. */
+.wv-chat-split{display:flex;height:100%}
+.wv-chat-split>.wv-chat{flex:1;min-width:0}
+.wv-agent-link.is-toggle{padding:0;border:0;border-radius:12px;background:transparent;text-align:left}
+.wv-side{display:none}
+@media(min-width:1200px){
+  .wv-side{position:relative;flex:none;display:flex;flex-direction:column;gap:20px;width:400px;min-height:0;overflow-y:auto;padding:28px 20px 32px;border-left:1px solid var(--wv-line);background:var(--wv-page)}
+}
+.wv-side-close{position:absolute;top:12px;right:12px}
+.wv-side .wv-agent-head h1{margin-top:4px;font-size:20px}
+.wv-side .wv-agent-status{font-size:14px}
+.wv-side .wv-agent-panel{gap:24px}
+.wv-side .wv-schedule h2{font-size:17px}
+/* The dial's three buttons fit on one line of the panel, as on a phone */
+.wv-side .wv-dial{padding:12px 16px;font-size:14px}
+.wv-side .wv-dial-buttons .wv-button{padding:0 14px;font-size:14px}
 @media(max-width:719.98px){
   .wv-agent{padding:8px 16px 32px}
   .wv-agent-column{gap:20px}
   .wv-agent-head h1{margin-top:8px;font-size:24px}
   .wv-agent-status{font-size:15px}
   .wv-agent-panel{gap:24px}
-  .wv-not-live{padding:12px 16px;border-radius:18px;font-size:14px}
+  .wv-dial{padding:12px 16px;border-radius:18px;font-size:14px}
+  /* The three buttons fit on one line of a 390px phone */
+  .wv-dial-buttons .wv-button{padding:0 14px;font-size:14px}
   .wv-schedule h2{font-size:17px}
   .wv-reminder{gap:12px}
   .wv-memory-intro{font-size:14px}

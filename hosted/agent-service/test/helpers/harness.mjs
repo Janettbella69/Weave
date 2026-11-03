@@ -32,11 +32,11 @@ export async function createHarness({limits = {perAccount: 1e9, total: 1e10}} = 
     for (const d of Object.values(dirs)) mkdirSync(d, {recursive: true});
     return dirs;
   };
-  async function wakeOnce({scope = scopeFor('owner'), trigger = message('你好'), memory = '', dirs = tenant(), rpc = async () => ({ok: true, text: 'ok'}), sessionId, sandbox = false, account = 'u:test'} = {}) {
+  async function wakeOnce({scope = scopeFor('owner'), trigger = message('你好'), memory = '', dirs = tenant(), rpc = async () => ({ok: true, text: 'ok'}), sessionId, forkSession, sandbox = false, account = 'u:test'} = {}) {
     const run = proxy.openRun({account, provider: 'deepseek', model: 'deepseek-flash'});
     try {
       const isolation = isolationFor({mode: 'local', scope, dirs, pluginDir: PLUGIN_DIR, proxy: {url: proxyUrl}, sandbox});
-      const result = await wake({scope, trigger, memory, provider: providerFor('deepseek'), model: 'deepseek-flash', runToken: run.token, isolation, rpc, sessionId});
+      const result = await wake({scope, trigger, memory, provider: providerFor('deepseek'), model: 'deepseek-flash', runToken: run.token, isolation, rpc, sessionId, forkSession});
       return {...result, dirs, runToken: run.token};
     } finally {
       run.close();

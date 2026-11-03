@@ -4,6 +4,8 @@ import {D1} from './helpers/product-db.mjs';
 import {Store, withWorld} from '../hosted/lib/weave/store.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {issueCapability} from '../hosted/lib/weave/capability.mjs';
+import {STATUS_WINDOW_BACK} from '../hosted/app/workspace/records.mjs';
+import {addDays} from '../hosted/app/workspace/dates.mjs';
 
 const secret = 'ab'.repeat(32);
 // 15:00Z is 23:00 on 2026-11-02 in Shanghai, the default zone.
@@ -15,6 +17,8 @@ const HABIT_NOT_FOUND = '没有这个习惯。先查 weave/weave.db 的 habits �
 // Every top-level key of GET /api/status before the web check-in work, and the four it adds.
 const OLD_STATUS_KEYS = ['profile', 'personId', 'people', 'messages', 'plans', 'checkins', 'calendar', 'reminders', 'notifications', 'negotiations', 'settings', 'invites', 'agentRuntime'];
 const NEW_STATUS_KEYS = ['goals', 'habits', 'completions', 'today'];
+// 第二块（主动服务）：排期和档位。
+const PROACTIVE_STATUS_KEYS = ['schedules', 'proactive', 'activity'];
 
 async function setup() {
   const db = new D1();
@@ -52,7 +56,7 @@ test("status of a fresh person: empty goals, habits and completions, and today i
   // On the real clock it is still a plain YYYY-MM-DD date.
   assert.match((await s.status('Alice', {now: Date.now()})).today, /^\d{4}-\d{2}-\d{2}$/);
   // Nothing that was in the status before is gone or renamed.
-  assert.deepEqual(Object.keys(status).sort(), [...OLD_STATUS_KEYS, ...NEW_STATUS_KEYS].sort());
+  assert.deepEqual(Object.keys(status).sort(), [...OLD_STATUS_KEYS, ...NEW_STATUS_KEYS, ...PROACTIVE_STATUS_KEYS].sort());
 });
 
 test('habits/check logs today as a web completion, a second check is a duplicate, and uncheck takes it away', async () => {
@@ -125,6 +129,21 @@ test('status.completions covers the last 62 days: today minus 61 is in, minus 62
   assert.deepEqual((await s.status('Alice')).completions.map(c => c.date), ['2026-09-02', '2026-11-01', '2026-11-02']);
   const exported = (await s.call('Alice', 'export')).data;
   assert.deepEqual(exported.completions.map(c => c.date), [...dates, '2026-11-02']);
+});
+
+test("the records page's STATUS_WINDOW_BACK is the window /api/status sends", async () => {
+  // The page (app/workspace/records.mjs) and the server (lib/weave/api.mjs) each keep the number: the page's bundle does
+  // not bring in server code. Held together here, at any day: the first day sent is today minus STATUS_WINDOW_BACK.
+  const s = await setup();
+  const walk = await s.habit('Alice');
+  for (const now of [NOW, LA_LATE, Date.parse('2027-03-01T04:00:00Z')]) {
+    const today = (await s.status('Alice', {now})).today;
+    const first = addDays(today, -STATUS_WINDOW_BACK), before = addDays(today, -STATUS_WINDOW_BACK - 1);
+    await withWorld(s.db, world => {
+      world.people[s.ids.Alice].completions = [before, first, today].map(date => ({id: 'old-' + date, habitId: walk, date, note: '', createdAt: date + 'T08:00:00.000Z', source: 'agent'}));
+    });
+    assert.deepEqual((await s.status('Alice', {now})).completions.map(c => c.date), [first, today], 'today is ' + today);
+  }
 });
 
 test("check, today and the 62-day window follow the person's zone, not UTC", async () => {

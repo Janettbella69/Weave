@@ -6,6 +6,7 @@ import {Store} from './store.mjs';
 import {verifyCapability} from './capability.mjs';
 import {localClock, GROUP_TIMEZONE} from './proactivity.mjs';
 import {groupSnapshotMessages} from './wechat.mjs';
+import {scheduleRows, settingsRow} from './proactive.mjs';
 
 // 列的顺序和 hosted/agent-service/snapshot.mjs 的 TABLES 一一对应；新列只往后加（weekly-review 的 stats.py 按列名读，不受影响）。
 const habitRow = h => ({
@@ -27,6 +28,9 @@ export function snapshotFor(person, claims, now) {
   snapshot.tables.completions = (person.completions || []).map(completionRow);
   snapshot.tables.goals = (person.goals || []).map(goalRow);
   snapshot.tables.reminders = (person.reminders || []).map(reminderRow);
+  // 重复的提醒和 Weave 自己的跟进（时间是带偏移的当地时间），以及档位和今天还能主动说几句（设计稿第 4.8 节）。
+  snapshot.tables.schedules = scheduleRows(person);
+  snapshot.tables.proactive_settings = [settingsRow(person, now)];
   return snapshot;
 }
 

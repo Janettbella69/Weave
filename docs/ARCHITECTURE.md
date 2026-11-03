@@ -185,13 +185,14 @@ export function weaveServer(scope, capability) {
 
 | 工具 | 干什么 | 后端的硬规则 | 本人 | 群 | 研究 |
 | --- | --- | --- | --- | --- | --- |
-| `send_message` | 开口说话 | 收件人由这一轮决定，**模型选不了**；每日上限、安静时段、相同内容冷却 | ✓ | ✓ | ✓ |
+| `send_message` | 开口说话 | 收件人由这一轮决定，**模型选不了**；每日上限、安静时段、相同内容冷却。没人直接找它的那一轮（后台）：档位 `off` 不发，按档位每天最多主动说几句，发出的带 `proactive: true` | ✓ | ✓ | ✓ |
 | `save_habit` | 写身份句、触发、最小动作；可以挂在一个目标下（`goal_id`） | 只改自己的；`goal_id` 必须是自己还在追踪的目标 | ✓ | | |
 | `save_goal` | 新建或修改一个目标，`archived: true` 表示不再追踪 | 只改自己的；名字 1–30 字，类别七选一，最多 10 个在追踪的目标 | ✓ | | |
 | `log_completion` | 记一次完成 | 不记未来日期；同习惯同日去重 | ✓ | | |
-| `set_reminder` | 在某个时间原样提醒一次（只响一次；每天 / 每周 / 每月是第二块，加在它上面） | 调现有的 `addReminder`：1–500 字，时间必须是带时区、在将来的 ISO 时间（可以不写秒，工具后端补 `:00`）；到点后不叫醒模型、不花钱：网页每次请求时把到点的提醒写进聊天和通知，服务器配了微信、桥接在跑时 `scheduler.mjs` 排进微信 | ✓ | | |
-| `schedule_wake` | 到点叫醒自己 | 每日上限 | ✓ | ✓ | |
-| `list_schedule` / `cancel_schedule` | 查和取消上面两种 | 只看自己的 | ✓ | ✓ | |
+| `set_reminder` | 在某个时间原样提醒（`repeat`：不填只响一次，`daily` / `weekly` / `monthly` 按当地钟点重复） | 只响一次的调现有的 `addReminder`，重复的存进 `person.schedules`（`proactive.mjs`）：1–500 字，时间必须是带时区、在将来的 ISO 时间（可以不写秒，工具后端补 `:00`）；到点后不叫醒模型、不花钱，原样写进聊天和通知，接了微信就排进微信；晚了 2 小时以上的重复提醒不补；后台那一轮不能用 | ✓ | | |
+| `schedule_wake` | 到点在后台叫醒自己（跟进），`repeat`：`none` / `daily` / `weekly` | 在将来、30 天以内、落在允许时段里；最多 10 条有效的跟进；后台那一轮只能排一次性的；每天后台醒几次按档位 | ✓ | | |
+| `cancel_schedule` | 取消一条跟进或提醒（只响一次的和重复的都行） | 只能取消自己的、还没结束的；排期本身在快照的 `schedules`、`reminders` 表里查，不做 `list_schedule`（p.16） | ✓ | | |
+| `set_proactivity` | 改主动找人的档位（`off` / `low` / `normal` / `high`） | 只在有人直接找它的那一轮能用 | ✓ | | |
 | `list_friends` | 读朋友 | 只有名字和编号 | ✓ | | |
 | `propose_activity` | 建议约活动 | 活动只能选固定几种，**没有自由文本**；本人在网页确认后才真正发给对方 | ✓ | | |
 | `list_activities` | 看约活动进度 | 只看自己参与的 | ✓ | | |
@@ -262,7 +263,7 @@ description: 复盘一周的习惯完成情况时使用。
 | --- | --- | --- |
 | `atomic-habits` | 帮人设计、调整或救回一个习惯时使用。 | 身份句、四定律、两分钟版本、不连续错过两次，用自己的话写，不抄原书 |
 | `daily-plan` | 对方说累了、睡得不好，或想安排今天明天时使用，要同时顾到运动、睡眠和饮食。 | 取代 `habitCouncil` 的三个角色：一个 Agent 从三个角度想 |
-| `proactive-judgment` | 被定时或事件叫醒，要决定现在值不值得开口时使用。 | 现有 `ASSESSMENT_SYSTEM` 的规则 |
+| `proactive-judgment` | 被定时或事件叫醒，要决定现在值不值得开口时使用。 | 第二块新写（`plugin/skills/proactive-judgment/SKILL.md`，草稿待确认），参考 `ASSESSMENT_SYSTEM` 和 Muse / OpenClaw 的开口规则 |
 | `weekly-review` | 复盘一周的习惯完成情况时使用。 | 新写，带统计脚本 |
 | `checkin-group-host` | 在打卡群里回复或做群总结时使用。 | 现有 `GROUP_SYSTEM` 的规则 |
 | `friend-activity` | 想和朋友约活动时使用。 | 现有协商和授权的说明 |
@@ -357,23 +358,26 @@ const dockerArgs = ({scope, dirs, pluginDir, socketDir, image, name, uid, gid, e
 
 ## 7. 什么时候醒
 
-Weave 服务只负责判断**该不该花这次钱叫醒它**，这部分复用现有 `claimAssessment` 的过滤：用户开启了吗、在允许时段吗、今天额度用完了吗、有新东西吗。
+Weave 服务只负责判断**该不该花这次钱叫醒它**（教材 p.20「Agent 启动之前 预处理」「基础设施 网关、计费、鉴权」）：档位开着吗、在允许时段吗、今天后台醒的次数用完了吗、她是不是连着两句没回或者 7 天没来。实现在 `hosted/lib/weave/proactive.mjs`，设计和数字见 [`docs/superpowers/specs/2026-11-03-proactive-wake-design.md`](superpowers/specs/2026-11-03-proactive-wake-design.md)（数字是草稿）。
 
-| 触发 | 来源 |
-| --- | --- |
-| 有人说话 | 网页、微信私聊、群里 @ |
-| 到点 | Agent 自己用 `schedule_wake` 排的 |
-| 定期检查 | 用户开启主动模式后的间隔 |
-| 事件 | 朋友确认了活动等 |
+| 触发 | 来源 | 状态 |
+| --- | --- | --- |
+| 有人说话 | 网页、微信私聊、群里 @ | 已上线 |
+| 到点（跟进） | Agent 自己用 `schedule_wake` 排的 | 第二块 |
+| 定期看看 | 档位决定：`low` 每天 1 次、`normal`（默认）2 次、`high` 4 次，时间跟着允许时段走 | 第二块 |
+| 事件 | 朋友确认了活动等 | 没做 |
+
+**谁来敲钟：** Agent 服务每分钟调一次 `POST /api/internal/tick`（`AGENT_TICK_SECONDS`，令牌就是 `AGENT_SERVICE_TOKEN`），它做到点的提醒和后台叫醒，不处理微信收到的消息；微信桥接的 `/api/internal/wechat/tick` 照旧只做提醒和微信消息；Cloudflare Cron 都做。两个 tick 同时跑时靠 `person.proactive.running` 租约（15 分钟）保证同一件事只醒一次，漏了 2 小时以上的不补，积压只补最近的一次。
+
+**后台那一轮：** 触发是 `<trigger kind="timer" | "check" channel="system" direct="false">`；`/wake` 带 `background: true`，Agent 服务从当天的会话分叉（`forkSession`），成功了存分叉后的会话，失败了原会话不动。
 
 醒了之后说不说、说什么，都是 Agent 的事，方法写在 `proactive-judgment` 这个 Skill 里。群里没 @ 的消息只存记录，不叫醒模型。
 
-**Jev 决策模型放在 `send_message` 的后端。** 主动发消息前问它一个是非题「现在值不值得开口」（`POST https://api.typesafe.ai/v1/systemone`，`noul` 分数）。
+**Jev 决策模型放在后台叫醒之前（2026-11-03 她定：「决策模型是用来做是否主动提醒用户的」）。** 到点的跟进和定期看看，先问它一个是非题「现在值不值得主动找她」（`POST https://api.typesafe.ai/v1/systemone`，`noul` 分数），低于阈值（默认 0.5，草稿）就这次不叫醒、记成 `jev-quiet`；问不到就照旧叫醒，交给 Agent。她让设的提醒不经过它。细节见设计稿第 7 节。
 
-- 先只记分不拦截（影子模式），因为还没有标注数据，官方给的阈值只是起点。
-- 有了真实标注，再决定拦截，或者挪到叫醒之前省钱。
-- **它是全仓库唯一不走 SDK 的模型调用。** Jev 不是 Anthropic 格式，也不是 Agent，只是一个工具后端里的打分，不参与决定下一步做什么。
-- 它是第三方服务，上线要写进隐私说明。
+- 位置是教材 p.20 的「Agent 启动之前 预处理」，不审 Agent 写出来的话，所以不是 p.26 的 auditor 反模式。
+- **它是全仓库唯一不走 SDK 的模型调用。** Jev 不是 Anthropic 格式，也不是 Agent，只决定要不要花这次钱叫醒，不决定醒了做什么。
+- 只在服务器配了 `TYPESAFE_API_KEY` 时启用。它是第三方服务，配 Key 之前隐私说明要加一句（草稿在设计稿第 7 节，待她确认）。
 
 ## 8. 多 Agent 的唯一例外：Deep Research
 
@@ -437,7 +441,7 @@ env: {
 | 配置目录 | SDK 的会话记录 | SDK |
 
 - **叫醒前的快照**（教材 p.16「查数留SQL,不要封成MCP」；p.20「Agent启动之前 预处理。不在循环中间,不影响灵活性」）：
-  - Agent 服务拿这一轮的通行证 `GET /api/internal/agent/snapshot`，返回 `{version: 1, today, timezone, tables, files}`。owner 范围给 `habits`（最后一列是 `goal_id`，没挂目标的是空）、`completions`、`goals`（全部目标，归档的也给，`archived` 是 0 / 1）、`reminders`（全部提醒，不分 `scheduled`、`delivered`、`cancelled`），group 范围不给任何人的私人资料（群消息 `group_messages` 由微信那边填）。
+  - Agent 服务拿这一轮的通行证 `GET /api/internal/agent/snapshot`，返回 `{version: 1, today, timezone, tables, files}`。owner 范围给 `habits`（最后一列是 `goal_id`，没挂目标的是空）、`completions`、`goals`（全部目标，归档的也给，`archived` 是 0 / 1）、`reminders`（全部提醒，不分 `scheduled`、`delivered`、`cancelled`）、`schedules`（重复的提醒和跟进，时间是带偏移的当地时间）、`proactive_settings`（一行：档位、允许时段、定期看看的时间、今天主动说了几句和上限、后台醒了几次和上限），group 范围不给任何人的私人资料（群消息 `group_messages` 由微信那边填）。
   - 写在哪：docker 下写到每个人根目录下的 `snapshot/`（工作目录外），只读挂到容器的 `/workspace/weave`；本机开发（local）直接写在工作目录的 `weave/`。旧的整个 rename 到工作目录外再删，不原地递归删（不跟随链接，目录链再深也挪得走）。
   - 写成 `weave.db`：`meta(key, value)` 加上给了的表。表和列写死在 `hosted/agent-service/snapshot.mjs` 的 `TABLES`，出现不认识的表名，整份快照无效，所以 Weave 这边（`hosted/lib/weave/agent-snapshot.mjs`）加了新表，Agent 服务这边必须同时加，否则每次叫醒都回 503。新列不会报错：`validateSnapshot` 只取 `TABLES` 里写了的列，多出来的列被悄悄丢掉，Agent 在 `weave.db` 里看不到它，所以加列也要两边一起改。新列只往后加，`weekly-review` 的 `stats.py` 按列名读，不受影响。
   - `files` 写成 `weave/<路径>`，目前没人用（Notion 定为 MCP 工具，按需读）。路径每段最多 200 字节，不能是 `.`、`..`，不含 `\`；最多 200 个文件、单个 1 MB、合计 5 MB。不合规的跳过并记日志。

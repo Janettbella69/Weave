@@ -286,12 +286,15 @@ test('Weave 这边 snapshotFor 给出的整份 owner 快照，这边原样收下
     reminders: ['scheduled', 'delivered', 'cancelled'].map((status, i) => ({id: 'r:' + i, text: '提醒' + i, dueAt: '2026-11-03T12:00:00.000Z', status, createdAt: '2026-11-02T00:00:00.000Z'})),
   };
   const sent = JSON.parse(JSON.stringify(snapshotFor(person, {scope: 'owner'}, NOW)));
-  assert.deepEqual(Object.keys(sent.tables), ['habits', 'completions', 'goals', 'reminders']);
+  assert.deepEqual(Object.keys(sent.tables), ['habits', 'completions', 'goals', 'reminders', 'schedules', 'proactive_settings']);
   assert.deepEqual(validateSnapshot(sent), sent, '这边认得的表和列，和 Weave 那边给的完全一样');
   const out = await write(tenant(), validateSnapshot(sent));
   assert.deepEqual(query(out.dbPath, 'select h.name, g.title, g.archived from habits h join goals g on g.goal_id = h.goal_id'), [{name: '走路', title: '每天动一动', archived: 0}]);
   assert.deepEqual(query(out.dbPath, 'select goal_id from goals where archived = 1'), [{goal_id: 'g:2'}]);
   assert.deepEqual(query(out.dbPath, 'select status from reminders order by reminder_id'), [{status: 'scheduled'}, {status: 'delivered'}, {status: 'cancelled'}]);
+  // 第二块：没排过东西的人，schedules 是空表；proactive_settings 正好一行，默认档位是 normal（设计文档 4.8）。
+  assert.equal(query(out.dbPath, 'select count(*) as n from schedules')[0].n, 0);
+  assert.deepEqual(query(out.dbPath, 'select level from proactive_settings'), [{level: 'normal'}]);
   // 群那一轮：Weave 不给这几张表，这边也不会凭空建出来。
   const group = validateSnapshot(JSON.parse(JSON.stringify(snapshotFor(person, {scope: 'group'}, NOW))));
   assert.deepEqual(group.tables, {});
@@ -309,6 +312,104 @@ test('Weave 后端真实返回的 save_goal、save_habit 结果，applyWrite 照
   const archived = saveGoal(person, {goal_id: goalResult.goal.goal_id, archived: true}, NOW);
   applyWrite(out.dbPath, 'save_goal', JSON.stringify(archived));
   assert.deepEqual(query(out.dbPath, 'select archived from goals'), [{archived: 1}]);
+});
+
+// 第二块（设计文档 2026-11-03-proactive-wake-design.md 4.8）：schedules 和 proactive_settings。
+const schedule = (id, extra = {}) => ({schedule_id: id, kind: 'wake', text: '看看走路记了没有', repeat: 'none', next_at: '2026-11-03T18:30:00+08:00', status: 'scheduled', created_by: 'chat', last_run_at: null, last_outcome: null, ...extra});
+const settings = (extra = {}) => ({level: 'normal', active_start: '09:00', active_end: '21:00', check_times: '10:00,19:30', message_cap: 2, sent_today: 1, wake_cap: 4, wakes_today: 1, ...extra});
+const SCHEDULE_COLUMNS = ['schedule_id', 'kind', 'text', 'repeat', 'next_at', 'status', 'created_by', 'last_run_at', 'last_outcome'];
+const SETTINGS_COLUMNS = ['level', 'active_start', 'active_end', 'check_times', 'message_cap', 'sent_today', 'wake_cap', 'wakes_today'];
+
+test('validateSnapshot 认识 schedules 和 proactive_settings；表外的列丢掉；值不对、名字写错的表照样让整份快照无效', () => {
+  const out = validateSnapshot({version: 1, today: '2026-11-02', timezone: 'Asia/Shanghai', files: {}, tables: {
+    schedules: [schedule('s:1', {extra: 'ignored'}), schedule('s:2', {kind: 'reminder', text: '喝水', repeat: 'daily', created_by: 'web', last_run_at: '2026-11-02T08:00:00+08:00', last_outcome: 'delivered'})],
+    proactive_settings: [settings({extra: 'ignored'})],
+  }});
+  assert.deepEqual(out.tables.schedules.map(s => Object.keys(s)), [SCHEDULE_COLUMNS, SCHEDULE_COLUMNS]);
+  assert.deepEqual(Object.keys(out.tables.proactive_settings[0]), SETTINGS_COLUMNS);
+  assert.deepEqual(out.tables.schedules[0], schedule('s:1'));
+  for (const bad of [
+    {schedules: {}}, {schedules: ['x']}, {schedules: [{text: {x: 1}}]}, {proactive_settings: {}}, {proactive_settings: [{message_cap: true}]},
+    {schedule: []}, {proactive: []}, {proactive_setting: [settings()]},
+  ]) assert.throws(() => validateSnapshot({version: 1, today: '2026-11-02', timezone: null, files: {}, tables: bad}), JSON.stringify(bad));
+});
+
+test('写出 weave.db：schedules 和 proactive_settings 的列和顺序固定，计数是整数；本人范围七张表都在', async () => {
+  const out = await write(tenant(), owner({
+    habits: [], completions: [], goals: [], reminders: [],
+    schedules: [schedule('s:1'), schedule('s:2', {kind: 'reminder', text: '喝水', repeat: 'monthly', created_by: 'web'})],
+    proactive_settings: [settings()],
+  }));
+  const columns = table => query(out.dbPath, `pragma table_info(${table})`).map(c => [c.name, c.type, c.pk]);
+  assert.deepEqual(columns('schedules'), SCHEDULE_COLUMNS.map(name => [name, 'TEXT', name === 'schedule_id' ? 1 : 0]));
+  assert.deepEqual(columns('proactive_settings'), SETTINGS_COLUMNS.map(name => [name, /_cap$|_today$/.test(name) ? 'INTEGER' : 'TEXT', 0]));
+  assert.deepEqual(tablesIn(out.dbPath), ['completions', 'goals', 'habits', 'meta', 'proactive_settings', 'reminders', 'schedules']);
+  assert.deepEqual(query(out.dbPath, "select schedule_id, kind, repeat, created_by from schedules where status = 'scheduled' order by schedule_id"), [
+    {schedule_id: 's:1', kind: 'wake', repeat: 'none', created_by: 'chat'}, {schedule_id: 's:2', kind: 'reminder', repeat: 'monthly', created_by: 'web'},
+  ]);
+  assert.deepEqual(query(out.dbPath, 'select level, check_times, sent_today < message_cap as can_speak, typeof(wake_cap) as t from proactive_settings'), [{level: 'normal', check_times: '10:00,19:30', can_speak: 1, t: 'integer'}]);
+});
+
+test('applyWrite：schedule_wake 写进 schedules，不知道的三列留空；set_reminder 不重复的进 reminders，重复的进 schedules', async () => {
+  const out = await write(tenant(), owner({reminders: [], schedules: []}));
+  const wakeResult = {schedule: {schedule_id: 's:1', kind: 'wake', text: '看看走路记了没有', repeat: 'none', next_at: '2026-11-03T18:30:00+08:00', status: 'scheduled'}};
+  applyWrite(out.dbPath, 'schedule_wake', JSON.stringify(wakeResult));
+  applyWrite(out.dbPath, 'schedule_wake', JSON.stringify(wakeResult));
+  applyWrite(out.dbPath, 'set_reminder', JSON.stringify({reminder: {reminder_id: 'r:1', text: '给妈妈打电话', due_at: '2026-11-03T12:00:00.000Z', status: 'scheduled'}}));
+  applyWrite(out.dbPath, 'set_reminder', JSON.stringify({schedule: {schedule_id: 's:2', kind: 'reminder', text: '喝水', repeat: 'daily', next_at: '2026-11-03T10:00:00+08:00', status: 'scheduled'}}));
+  assert.deepEqual(query(out.dbPath, 'select * from schedules order by schedule_id'), [
+    {...wakeResult.schedule, created_by: null, last_run_at: null, last_outcome: null},
+    {schedule_id: 's:2', kind: 'reminder', text: '喝水', repeat: 'daily', next_at: '2026-11-03T10:00:00+08:00', status: 'scheduled', created_by: null, last_run_at: null, last_outcome: null},
+  ]);
+  assert.deepEqual(query(out.dbPath, 'select reminder_id, status from reminders'), [{reminder_id: 'r:1', status: 'scheduled'}]);
+});
+
+test('applyWrite：cancel_schedule 按 table 改那张表的 status；别的 table 一律拒绝，两张表都不动', async () => {
+  const out = await write(tenant(), owner({reminders: [reminder('r:1', '给妈妈打电话')], schedules: [schedule('s:1'), schedule('s:2')]}));
+  applyWrite(out.dbPath, 'cancel_schedule', JSON.stringify({cancelled: {schedule_id: 'r:1', table: 'reminders'}}));
+  applyWrite(out.dbPath, 'cancel_schedule', JSON.stringify({cancelled: {schedule_id: 's:2', table: 'schedules'}}));
+  const state = () => [query(out.dbPath, 'select reminder_id, status from reminders'), query(out.dbPath, 'select schedule_id, status from schedules order by schedule_id')];
+  const after = [[{reminder_id: 'r:1', status: 'cancelled'}], [{schedule_id: 's:1', status: 'scheduled'}, {schedule_id: 's:2', status: 'cancelled'}]];
+  assert.deepEqual(state(), after);
+  for (const table of ['habits', 'goals', '__proto__', 'schedules; DROP TABLE habits', 'Schedules', '', null, undefined, ['schedules']]) {
+    assert.throws(() => applyWrite(out.dbPath, 'cancel_schedule', JSON.stringify({cancelled: {schedule_id: 's:1', table}})), /表不对/, String(table));
+  }
+  assert.deepEqual(state(), after);
+  assert.deepEqual(tablesIn(out.dbPath), ['meta', 'reminders', 'schedules']);
+});
+
+test('applyWrite：set_proactivity 只改档位、看看的时间和两个上限；今天的计数和允许时段不动；没有那一行就什么都不改', async () => {
+  const out = await write(tenant(), owner({proactive_settings: [settings()]}));
+  applyWrite(out.dbPath, 'set_proactivity', JSON.stringify({proactivity: {level: 'high', check_times: '10:00,13:00,16:30,19:30', message_cap: 4, wake_cap: 8}}));
+  assert.deepEqual(query(out.dbPath, 'select * from proactive_settings'), [settings({level: 'high', check_times: '10:00,13:00,16:30,19:30', message_cap: 4, wake_cap: 8})]);
+  applyWrite(out.dbPath, 'set_proactivity', JSON.stringify({proactivity: {level: 'off', check_times: '', message_cap: 0, wake_cap: 0}}));
+  assert.deepEqual(query(out.dbPath, 'select level, check_times, message_cap, wake_cap, sent_today, wakes_today from proactive_settings'), [{level: 'off', check_times: '', message_cap: 0, wake_cap: 0, sent_today: 1, wakes_today: 1}]);
+  const empty = await write(tenant(), owner({proactive_settings: []}));
+  applyWrite(empty.dbPath, 'set_proactivity', JSON.stringify({proactivity: {level: 'low', check_times: '19:30', message_cap: 1, wake_cap: 2}}));
+  assert.equal(query(empty.dbPath, 'select count(*) as n from proactive_settings')[0].n, 0);
+});
+
+test('mirroringRpc：第二块的四个写工具成功才同步，失败不动；结果里的表不对时只记日志，返回值不变', async t => {
+  const errors = t.mock.method(console, 'error', () => {});
+  const out = await write(tenant(), owner({reminders: [], schedules: [schedule('s:1')], proactive_settings: [settings()]}));
+  const replies = {
+    schedule_wake: {ok: true, text: JSON.stringify({schedule: {schedule_id: 's:9', kind: 'wake', text: '问问睡得怎么样', repeat: 'daily', next_at: '2026-11-03T10:00:00+08:00', status: 'scheduled'}})},
+    set_reminder: {ok: true, text: JSON.stringify({schedule: {schedule_id: 's:8', kind: 'reminder', text: '喝水', repeat: 'weekly', next_at: '2026-11-04T10:00:00+08:00', status: 'scheduled'}})},
+    cancel_schedule: {ok: true, text: JSON.stringify({cancelled: {schedule_id: 's:1', table: 'schedules'}})},
+    set_proactivity: {ok: false, text: '这件事只在对方直接找你的那一轮能做。'},
+  };
+  const rpc = mirroringRpc(async name => replies[name], out.dbPath);
+  for (const name of Object.keys(replies)) assert.deepEqual(await rpc(name, {}, 't-' + name), replies[name], name);
+  assert.deepEqual(query(out.dbPath, 'select schedule_id, status from schedules order by schedule_id'), [
+    {schedule_id: 's:1', status: 'cancelled'}, {schedule_id: 's:8', status: 'scheduled'}, {schedule_id: 's:9', status: 'scheduled'},
+  ]);
+  assert.deepEqual(query(out.dbPath, 'select level from proactive_settings'), [{level: 'normal'}], '失败的 set_proactivity 不改快照');
+  assert.equal(errors.mock.callCount(), 0);
+  const odd = {ok: true, text: JSON.stringify({cancelled: {schedule_id: 's:9', table: 'habits'}})};
+  assert.deepEqual(await mirroringRpc(async () => odd, out.dbPath)('cancel_schedule', {}, 't-odd'), odd);
+  assert.equal(errors.mock.callCount(), 1);
+  assert.match(errors.mock.calls[0].arguments.join(' '), /快照没同步（cancel_schedule）/);
+  assert.equal(query(out.dbPath, "select status from schedules where schedule_id = 's:9'")[0].status, 'scheduled');
 });
 
 test('fetchSnapshot：带 Bearer 通行证 GET 快照地址；非 200 或格式不对就报错', async () => {

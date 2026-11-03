@@ -113,8 +113,8 @@ test('saveGoal rejects bad input', () => {
   rejectsWith(() => saveGoal(p, {goal_id: first.goal_id, title: '   '}, NOW + 1000), GOAL_TEXT.title);
   assert.deepEqual(p.goals[0], {id: first.goal_id, title: '目标 0', category: 'health', archived: false, createdAt: '2026-11-02T07:30:00.000Z', updatedAt: '2026-11-02T07:30:00.000Z'});
 
-  // 没有这个目标：编号不存在、不是字符串，或者是别人的。
-  for (const goal_id of ['g:nope', '', 42, null]) rejectsWith(() => saveGoal(p, {goal_id, archived: true}, NOW), GOAL_TEXT.notFound);
+  // 没有这个目标：编号不存在、不是字符串，或者是别人的。（空字符串当作没给，见下面那条测试。）
+  for (const goal_id of ['g:nope', 42, null]) rejectsWith(() => saveGoal(p, {goal_id, archived: true}, NOW), GOAL_TEXT.notFound);
   const bob = person();
   rejectsWith(() => saveGoal(bob, {goal_id: first.goal_id, archived: true}, NOW), GOAL_TEXT.notFound);
   assert.equal(p.goals[0].archived, false);
@@ -160,6 +160,32 @@ test('saveHabit links a habit to a goal', () => {
   const bob = person();
   rejectsWith(() => saveHabit(bob, {name: '走路', goal_id: goal.goal_id}, NOW), GOAL_TEXT.notFound);
   assert.equal(bob.habits.length, 0);
+});
+
+test('an empty goal_id or habit_id counts as not given: saveGoal and saveHabit create, or keep what was there', () => {
+  // 模型有时把没有的编号写成 ''（工具参数的 z.string().optional() 收它）。以前这会回「没有这个目标…」，模型只好再试一次。
+  const p = person();
+  for (const goal_id of ['', '   ']) assert.match(saveGoal(p, {goal_id, title: '每天动一动', category: 'health'}, NOW).goal.goal_id, /^g:/, '新建：' + JSON.stringify(goal_id));
+  assert.equal(p.goals.length, 2);
+  // 只给了空编号和 archived：就是新建一个没名字的目标，回名字那句，不回「没有这个目标」。
+  rejectsWith(() => saveGoal(p, {goal_id: '', archived: true}, NOW), GOAL_TEXT.title);
+  assert.equal(p.goals.length, 2);
+
+  const goal = p.goals[0].id;
+  // 空的 habit_id 新建习惯，空的 goal_id 不挂目标。
+  const {habit} = saveHabit(p, {habit_id: '', name: '走路', goal_id: ''}, NOW);
+  assert.match(habit.habit_id, /^h:/);
+  assert.equal(habit.goal_id, null);
+  assert.equal('goalId' in p.habits[0], false);
+  assert.equal(saveHabit(p, {habit_id: ' ', name: '读书', goal_id: goal}, NOW).habit.goal_id, goal);
+  assert.equal(p.habits.length, 2);
+  // 改习惯时空的 goal_id 也当作没给：原来的目标不动。
+  const read = p.habits[1].id;
+  assert.deepEqual(saveHabit(p, {habit_id: read, name: '多读书', goal_id: '  '}, NOW).habit, {habit_id: read, name: '多读书', identity: '', trigger: '', minimum_action: '', goal_id: goal});
+  // 别的找不到的编号照旧拒绝，什么也不改。
+  rejectsWith(() => saveHabit(p, {habit_id: 'h:nope', name: '游泳'}, NOW), HABIT_NOT_FOUND);
+  rejectsWith(() => saveHabit(p, {name: '游泳', goal_id: 'g:nope'}, NOW), GOAL_TEXT.notFound);
+  assert.equal(p.habits.length, 2);
 });
 
 test("checkToday uses the person's local day", () => {

@@ -75,7 +75,7 @@ test('owner 通行证还拿到全部目标和提醒；习惯带 goal_id，列的
   for (const row of goals) assert.deepEqual(Object.keys(row), GOAL_COLUMNS);
   for (const row of reminders) assert.deepEqual(Object.keys(row), REMINDER_COLUMNS);
   for (const row of habits) assert.deepEqual(Object.keys(row), HABIT_COLUMNS);
-  assert.deepEqual(Object.keys(r.data.tables), ['habits', 'completions', 'goals', 'reminders']);
+  assert.deepEqual(Object.keys(r.data.tables), ['habits', 'completions', 'goals', 'reminders', 'schedules', 'proactive_settings']);
   // 全部目标都在，归档的也在，archived 是 0 / 1。
   assert.deepEqual(goals, [
     {goal_id: move.goal_id, title: '每天动一动', category: 'health', archived: 0, created_at: '2026-11-02T15:00:00.000Z'},
@@ -119,7 +119,7 @@ test('没有通行证、过期、篡改都是 401；POST 是 405；group 通行�
   const group = await s.snapshot(await s.cap(s.alice, {scope: 'group', group: 'g1'}));
   assert.equal(group.status, 200);
   assert.deepEqual(group.data.tables, {group_messages: []}, '没有开启的群就没有消息');
-  for (const table of ['habits', 'completions', 'goals', 'reminders']) assert.ok(!(table in group.data.tables), `群的快照里不该有 ${table} 表`);
+  for (const table of ['habits', 'completions', 'goals', 'reminders', 'schedules', 'proactive_settings']) assert.ok(!(table in group.data.tables), `群的快照里不该有 ${table} 表`);
   assert.equal(group.data.timezone, null);
   assert.deepEqual(group.data.files, {});
   for (const leak of ['走路', '私人目标', '私人提醒']) assert.ok(!JSON.stringify(group.data).includes(leak), leak);
