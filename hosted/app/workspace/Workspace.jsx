@@ -1,7 +1,7 @@
 'use client';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {apiRequest,normalizeStatus,unauthorizedAction,reloadAllowed} from './api-client.mjs';
-import {readView,viewSearch,hasTopBar} from './view-route.mjs';
+import {readView,viewSearch,hasTopBar,historyMode} from './view-route.mjs';
 import {NOTION_TEXT,readNotionReturn,resolveNotionReturn,waitForNotionPages} from './notion-return.mjs';
 import {beginPending,finishPending,dropSettled} from './chat-pending.mjs';
 import {formatHeaderShort} from './dates.mjs';
@@ -73,13 +73,21 @@ export default function Workspace({authKind='guest'}){
   inflight.current=request;
   return request;
  },[applyState]);
- // Opening a page keeps it in the address, so a reload lands on it again. Like every switch of page, it clears the banner.
- const navigate=useCallback(next=>{
+ // Shows another page. Like every switch of page, it clears the banner.
+ const show=useCallback(next=>{
   setError('');setNotice('');
   if(next!=='settings')setNotionReturn(null);
   setView(next);
-  history.replaceState(null,'',location.pathname+viewSearch(next));
  },[]);
+ // Opening a page keeps it in the address, so a reload lands on it again. Opening the assistant's home page adds an entry
+ // to the browser's history and every other switch takes the current entry's place (view-route.mjs, historyMode), so the
+ // phone's back gesture comes back from the assistant's home page instead of leaving the site.
+ const navigate=useCallback(next=>{
+  const mode=historyMode(readView(location.search),next),url=location.pathname+viewSearch(next);
+  show(next);
+  if(mode==='push')history.pushState(null,'',url);
+  else history.replaceState(null,'',url);
+ },[show]);
  // Changes go one after another and are never dropped. They do not wait for the (possibly slow) status refresh:
  // that runs in the background after each one.
  const act=useCallback((task,success='')=>{
@@ -120,6 +128,13 @@ export default function Workspace({authKind='guest'}){
   }
   return()=>{active=false;};
  },[refresh,navigate]);
+ // The phone's back gesture, or the browser's back and forward buttons, went to another entry of this page's history:
+ // show the page its address names.
+ useEffect(()=>{
+  const onPopState=()=>show(readView(location.search));
+  window.addEventListener('popstate',onPopState);
+  return()=>window.removeEventListener('popstate',onPopState);
+ },[show]);
  // Every 5 seconds while the tab is in view, and at once when it comes back into view. A failure here stays quiet:
  // the next round tries again.
  useEffect(()=>{
