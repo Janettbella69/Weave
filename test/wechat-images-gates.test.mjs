@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {hash} from '../hosted/lib/weave/crypto.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {GROUP_ENABLED_TEXT, GROUP_PHOTO_TEXT, wechatPhotosShown} from '../hosted/lib/weave/wechat.mjs';
-import {setup, reply, ROOM, bridgeToken} from './helpers/wechat-sdk.mjs';
+import {setup, reply, ROOM, bridgeToken, start} from './helpers/wechat-sdk.mjs';
 
 const jpeg = (size = 4000) => { const b = new Uint8Array(size).fill(9); b.set([0xff, 0xd8, 0xff, 0xe0]); return b; };
 const PHOTO = jpeg();
@@ -146,4 +146,32 @@ test('with photos on, every event also sweeps photos that expired', async () => 
   h.setNow(h.now + 10 * 60_000);
   await h.bridge('events', h.message('还在吗'));
   assert.equal(photoRows(h), 0);
+});
+
+test('a notice that keeps coming back unconfirmed is sent again at most once a Beijing day, and photos wait until one is confirmed', async () => {
+  const h = await setup({images: false});
+  await h.enableGroup();
+  h.images(true);
+  h.bridgePhotos(true);
+  const ask = text => h.bridge('events', h.group('wxid-bob', '@助理 ' + text, true, {photo: 'ready'}));
+  const notices = async () => (await h.bridge('claim', {})).data.jobs.filter(j => j.text === GROUP_PHOTO_TEXT);
+  // start is 08:00 in Beijing: the first notice, then one re-send the same day
+  assert.ok(!('photo' in (await ask('一')).data));
+  const [first] = await notices();
+  await h.bridge('receipt', {id: first.id, state: 'needs_review'});
+  assert.ok(!('photo' in (await ask('二')).data));
+  const [again] = await notices();
+  assert.ok(again, 'one re-send is allowed');
+  await h.bridge('receipt', {id: again.id, state: 'needs_review'});
+  // the same Beijing day: no third notice, and still no photos
+  h.setNow(start + 15 * 3600_000); // 23:00 in Beijing
+  assert.ok(!('photo' in (await ask('三')).data));
+  assert.deepEqual(await notices(), [], 'no second re-send on the same Beijing day');
+  // just past midnight in Beijing: one more try
+  h.setNow(start + 16 * 3600_000 + 60_000);
+  assert.ok(!('photo' in (await ask('四')).data));
+  const [nextDay] = await notices();
+  assert.ok(nextDay, 'a new Beijing day allows one more re-send');
+  await h.bridge('receipt', {id: nextDay.id, state: 'accepted'});
+  assert.equal((await ask('五')).data.photo, 'upload', 'photos only once a notice is confirmed');
 });

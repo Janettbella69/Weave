@@ -6,6 +6,7 @@ import {fail} from './domain.mjs';
 import {SAFETY_RULES} from './model.mjs';
 import {REPLIES,TICK_BUDGET_MS,START_BY_MS,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
 import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
+import {localClock,GROUP_TIMEZONE} from './proactivity.mjs';
 
 const stamp=now=>new Date(now).toISOString();
 const bindPattern=/^绑定\s*(?:weave\s*)?([a-f0-9]{48})$/i;
@@ -67,10 +68,19 @@ function holdForPhoto(entry,message,now){
 const overdue=(entry,now)=>entry.status==='awaiting-photo'&&!(entry.photoUntil>now);
 // 群里只有在这个群被告知过以后才用照片：开启时那段话带着照片的说明，或者看图打开以前就开启的群，第一次有人 @ 它时单独发一次。
 // 说明要等桥接回执说发出去了（receiveReceipt 记下 photosToldAt）才算；在那以前，这一句照常回答、不等照片。
+// 说明发了但没确认发出去（失败、取消、要人工确认）时，下一次有人 @ 它再发一次，但每个群每个北京时间的一天最多再发一次，
+// 免得群里反复看到同一句；在确认发出以前，这个群一直不用照片。
 async function holdGroupForPhoto(world,group,entry,message,{secret,now,aad}){
   if(!message.photo)return {};
   if(group.photosToldAt)return holdForPhoto(entry,message,now);
-  if(!group.photoNotice)group.photoNotice=await queueGroupText(world,message,GROUP_PHOTO_TEXT,secret,now,aad);
+  if(group.photoNotice)return {};
+  if(group.photoNoticeTried){
+    const day=localClock({profile:{timezone:GROUP_TIMEZONE}},now).day;
+    if(group.photoNoticeResentOn===day)return {};
+    group.photoNoticeResentOn=day;
+  }
+  group.photoNoticeTried=true;
+  group.photoNotice=await queueGroupText(world,message,GROUP_PHOTO_TEXT,secret,now,aad);
   return {};
 }
 const bridgeSaysPhotos=(world,now)=>{const at=world.runtime?.[BRIDGE_PHOTOS]?.seenAt;return typeof at==='number'&&now-at<=BRIDGE_PHOTOS_TTL;};
@@ -142,7 +152,7 @@ async function ingestGroup(world,message,{secret,now,images=false,dropped}){
     world.runtime[key]={ownerId,target:await seal(message.threadId,secret,aad),enabledAt:now};
     const opening=await queueGroupText(world,message,images?GROUP_ENABLED_TEXT+GROUP_PHOTO_TEXT:GROUP_ENABLED_TEXT,secret,now,aad);
     // 照片的说明跟开启的话一起发：桥接回执说发出去了，这个群才开始用照片。
-    if(images)world.runtime[key].photoNotice=opening;
+    if(images){world.runtime[key].photoNotice=opening;world.runtime[key].photoNoticeTried=true;}
     return {accepted:true,enabled:true};
   }
   // An unenabled group is dropped here: nothing about it is stored, not even a dedupe marker.
