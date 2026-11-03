@@ -4,6 +4,8 @@ import {D1} from './helpers/product-db.mjs';
 import {Store, withWorld} from '../hosted/lib/weave/store.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {issueCapability} from '../hosted/lib/weave/capability.mjs';
+import {STATUS_WINDOW_BACK} from '../hosted/app/workspace/records.mjs';
+import {addDays} from '../hosted/app/workspace/dates.mjs';
 
 const secret = 'ab'.repeat(32);
 // 15:00Z is 23:00 on 2026-11-02 in Shanghai, the default zone.
@@ -125,6 +127,21 @@ test('status.completions covers the last 62 days: today minus 61 is in, minus 62
   assert.deepEqual((await s.status('Alice')).completions.map(c => c.date), ['2026-09-02', '2026-11-01', '2026-11-02']);
   const exported = (await s.call('Alice', 'export')).data;
   assert.deepEqual(exported.completions.map(c => c.date), [...dates, '2026-11-02']);
+});
+
+test("the records page's STATUS_WINDOW_BACK is the window /api/status sends", async () => {
+  // The page (app/workspace/records.mjs) and the server (lib/weave/api.mjs) each keep the number: the page's bundle does
+  // not bring in server code. Held together here, at any day: the first day sent is today minus STATUS_WINDOW_BACK.
+  const s = await setup();
+  const walk = await s.habit('Alice');
+  for (const now of [NOW, LA_LATE, Date.parse('2027-03-01T04:00:00Z')]) {
+    const today = (await s.status('Alice', {now})).today;
+    const first = addDays(today, -STATUS_WINDOW_BACK), before = addDays(today, -STATUS_WINDOW_BACK - 1);
+    await withWorld(s.db, world => {
+      world.people[s.ids.Alice].completions = [before, first, today].map(date => ({id: 'old-' + date, habitId: walk, date, note: '', createdAt: date + 'T08:00:00.000Z', source: 'agent'}));
+    });
+    assert.deepEqual((await s.status('Alice', {now})).completions.map(c => c.date), [first, today], 'today is ' + today);
+  }
 });
 
 test("check, today and the 62-day window follow the person's zone, not UTC", async () => {

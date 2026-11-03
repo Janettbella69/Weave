@@ -326,6 +326,9 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-first-run{padding:32px 16px 24px}
   .wv-welcome h1{font-size:24px}
   .wv-plan,.wv-own{padding:18px 20px;border-radius:20px}
+  /* Safari on an iPhone zooms the page in when a text box under 16px gets focus, and does not zoom back out. So every
+     text box is 16px on a phone (test/frontend-copy.test.mjs checks them all); a wide screen keeps its 15px. */
+  .wv-input,.wv-first-run .wv-composer-box textarea{font-size:16px}
 }
 
 /* A page with a title (待办, 目标): the column, the title row, the sections */
@@ -447,6 +450,8 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-goal-talk .wv-bubble{max-width:90%}
   .wv-goal-talk-compose{padding:12px 14px 14px}
   .wv-goal-talk .wv-composer-box{padding:2px 2px 2px 16px;border-radius:25px;box-shadow:none}
+  /* 16px, so an iPhone does not zoom in on it (see the first run's boxes) */
+  .wv-goal-talk .wv-composer-box textarea{font-size:16px}
 }
 
 /* 记录 (pages/RecordsPage.jsx): the habit buttons (the first run's .wv-option pills), the three numbers, the month's
@@ -560,6 +565,8 @@ html:has(.wv),body:has(.wv){background:#FFFFFF}
   .wv-setting-text{flex-basis:180px}
   .wv-settings-text{font-size:14px}
   .wv-bind{padding:14px}
+  /* 16px, so an iPhone does not zoom in on it (see the first run's boxes) */
+  .wv-select select{font-size:16px}
 }
 
 /* 助理主页 (pages/AgentPage.jsx): the way back, Weave in the middle, the two tabs, and what each holds */

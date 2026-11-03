@@ -26,6 +26,15 @@ export function viewSearch(view) {
   return view !== 'chat' && VIEWS.includes(view) ? '?view=' + view : '';
 }
 
+// How a change of page from `from` to `to` goes into the browser's history (Workspace.jsx, navigate). Opening the
+// assistant's home page adds an entry ('push'), so the phone's back gesture, or the browser's back button, comes back to
+// the page it was opened from instead of leaving the site. Every other change takes the place of the current entry
+// ('replace'): moving between the five tabs, or from the assistant's home page to one of them, does not fill up the
+// history. Going back to an entry shows the page its address names (readView, on popstate).
+export function historyMode(from, to) {
+  return to === 'agent' && from !== 'agent' ? 'push' : 'replace';
+}
+
 // On a phone, the shell draws a bar at the top of a page (Weave, which opens the assistant's home page, and the date;
 // v3-Mobile, v3-GoalsMobile): on every page but the chat and the assistant's home page, which have a header of their
 // own. The first-run screen stands in for the chat and has no header, so it gets the bar too (`firstRun`). Nothing has

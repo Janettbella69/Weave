@@ -36,6 +36,9 @@ function optionalText(value, max, message) {
 const publicHabit = h => ({habit_id: h.id, name: h.name, identity: h.identity, trigger: h.trigger, minimum_action: h.minimumAction, goal_id: h.goalId ?? null});
 const publicCompletion = c => ({habit_id: c.habitId, date: c.date, note: c.note});
 const publicGoal = g => ({goal_id: g.id, title: g.title, category: g.category, archived: g.archived});
+// 模型有时把没有的编号写成空字符串（工具参数的 z.string().optional() 收 ''）。去掉空白后是空的，就当作没给；
+// 别的值照原样去找，找不到照旧回「没有这个…」。
+const givenId = value => (typeof value === 'string' && !value.trim() ? undefined : value);
 const findHabit = (person, id) => (person.habits || []).find(h => h.id === id);
 const findGoal = (person, id) => (person.goals || []).find(g => g.id === id);
 const activeGoalCount = person => (person.goals || []).filter(g => !g.archived).length;
@@ -58,8 +61,9 @@ function linkableGoalId(person, id) {
 
 export function saveGoal(person, args, now = Date.now()) {
   const at = new Date(now).toISOString();
-  if (args?.goal_id !== undefined) {
-    const goal = findGoal(person, args.goal_id);
+  const goalId = givenId(args?.goal_id);
+  if (goalId !== undefined) {
+    const goal = findGoal(person, goalId);
     if (!goal) fail(TEXT.goalNotFound);
     // 只改给了的字段，没给的保持原样。先全部检查完再改：失败时不留下改了一半的目标。
     const title = args.title === undefined ? goal.title : goalTitle(args.title);
@@ -89,11 +93,12 @@ export function saveHabit(person, args, now = Date.now()) {
   const identity = optionalText(args.identity, 200, TEXT.field);
   const trigger = optionalText(args.trigger, 200, TEXT.field);
   const minimumAction = optionalText(args.minimum_action, 200, TEXT.field);
-  const goalId = args.goal_id === undefined ? undefined : linkableGoalId(person, args.goal_id);
+  const givenGoal = givenId(args.goal_id), habitId = givenId(args.habit_id);
+  const goalId = givenGoal === undefined ? undefined : linkableGoalId(person, givenGoal);
   const at = new Date(now).toISOString();
   person.habits ??= [];
-  if (args.habit_id !== undefined) {
-    const habit = findHabit(person, args.habit_id);
+  if (habitId !== undefined) {
+    const habit = findHabit(person, habitId);
     if (!habit) fail(TEXT.notFound);
     // 只改给了的字段，没给的保持原样。
     habit.name = name;
