@@ -1,7 +1,7 @@
 // 叫醒前的数据快照（docs/ARCHITECTURE.md 第 10 节）。教材 p.16「查数留SQL,不要封成MCP」；
 // p.20 代码合法的位置之一「Agent启动之前 预处理。不在循环中间,不影响灵活性」。
 // Weave 服务按这一轮的通行证给一份 JSON，这里写成一个快照目录：
-//   weave.db  SQLite：meta，加上快照里给了的表（habits、completions、goals、reminders、group_messages）
+//   weave.db  SQLite：meta，加上快照里给了的表（habits、completions、goals、reminders、schedules、proactive_settings、group_messages）
 //   其他文件  比如 notion/*.md
 // docker：快照目录在工作目录外（scopeDirs 的 snapshot），只读挂到容器的 /workspace/weave。
 //   Agent 改不到它，写入后的同步也只碰宿主自己的文件（审查发现：同步若打开 Agent 改得到的
@@ -38,6 +38,17 @@ export const TABLES = Object.freeze({
   reminders: {
     columns: ['reminder_id', 'text', 'due_at', 'status'],
     ddl: 'reminder_id TEXT PRIMARY KEY, text TEXT, due_at TEXT, status TEXT',
+  },
+  // 重复的提醒（kind reminder）和 Weave 自己排的跟进（kind wake），全部状态都给。next_at 是带偏移的当地时间，
+  // created_by 是在哪种轮次里排的（chat / background / web）。见设计文档 2026-11-03-proactive-wake-design.md 4.8。
+  schedules: {
+    columns: ['schedule_id', 'kind', 'text', 'repeat', 'next_at', 'status', 'created_by', 'last_run_at', 'last_outcome'],
+    ddl: 'schedule_id TEXT PRIMARY KEY, kind TEXT, text TEXT, repeat TEXT, next_at TEXT, status TEXT, created_by TEXT, last_run_at TEXT, last_outcome TEXT',
+  },
+  // 只有一行：档位、允许打扰的时段、定期看看的时间（「10:00,19:30」），今天主动说了几句、后台醒了几次和上限。
+  proactive_settings: {
+    columns: ['level', 'active_start', 'active_end', 'check_times', 'message_cap', 'sent_today', 'wake_cap', 'wakes_today'],
+    ddl: 'level TEXT, active_start TEXT, active_end TEXT, check_times TEXT, message_cap INTEGER, sent_today INTEGER, wake_cap INTEGER, wakes_today INTEGER',
   },
   group_messages: {
     columns: ['seq', 'member', 'text', 'at'],
@@ -151,6 +162,16 @@ export async function writeSnapshot(dir, snapshot, now = Date.now(), {trashDir =
   return {dir, dbPath, skipped};
 }
 
+// 工具结果里的一条排期只有前六列（设计文档 4.8）；在哪种轮次里排的、上次跑的时间和结果，这边不知道，结果里没有就留空。
+const insertSchedule = (db, s) => db.prepare(`INSERT OR REPLACE INTO schedules (schedule_id, kind, text, repeat, next_at, status, created_by, last_run_at, last_outcome)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(s.schedule_id, s.kind, s.text, s.repeat, s.next_at, s.status, s.created_by ?? null, s.last_run_at ?? null, s.last_outcome ?? null);
+
+// cancel_schedule 改哪张表：只认这两个名字，表名不拼进 SQL。
+const CANCEL = Object.freeze({
+  reminders: "UPDATE reminders SET status = 'cancelled' WHERE reminder_id = ?",
+  schedules: "UPDATE schedules SET status = 'cancelled' WHERE schedule_id = ?",
+});
+
 // 写工具成功后同步进本地快照，同一轮里再查就看得到（我的看法：这是 p.20 说的「副作用」，不进循环）。
 export function applyWrite(dbPath, toolName, resultText) {
   const data = JSON.parse(resultText);
@@ -173,16 +194,32 @@ export function applyWrite(dbPath, toolName, resultText) {
         ON CONFLICT(goal_id) DO UPDATE SET title = excluded.title, category = excluded.category, archived = excluded.archived`)
         .run(g.goal_id, g.title, g.category, g.archived ? 1 : 0, at);
     } else if (toolName === 'set_reminder') {
-      const r = data.reminder;
-      db.prepare('INSERT OR REPLACE INTO reminders (reminder_id, text, due_at, status) VALUES (?, ?, ?, ?)')
-        .run(r.reminder_id, r.text, r.due_at, r.status);
+      // 只响一次的还在 reminders；每天、每周、每月的在 schedules（设计文档 4.1）。
+      if (data.reminder) {
+        const r = data.reminder;
+        db.prepare('INSERT OR REPLACE INTO reminders (reminder_id, text, due_at, status) VALUES (?, ?, ?, ?)')
+          .run(r.reminder_id, r.text, r.due_at, r.status);
+      } else if (data.schedule) {
+        insertSchedule(db, data.schedule);
+      }
+    } else if (toolName === 'schedule_wake') {
+      insertSchedule(db, data.schedule);
+    } else if (toolName === 'cancel_schedule') {
+      const {schedule_id: id, table} = data.cancelled;
+      if (typeof table !== 'string' || !Object.hasOwn(CANCEL, table)) throw Error('cancel_schedule 返回的表不对');
+      db.prepare(CANCEL[table]).run(id);
+    } else if (toolName === 'set_proactivity') {
+      // 这张表只有一行；没有行就什么都不改。今天的计数和允许时段不在结果里，原样留着。
+      const p = data.proactivity;
+      db.prepare('UPDATE proactive_settings SET level = ?, check_times = ?, message_cap = ?, wake_cap = ?')
+        .run(p.level, p.check_times, p.message_cap, p.wake_cap);
     }
   } finally {
     db.close();
   }
 }
 
-const MIRRORED = new Set(['save_habit', 'log_completion', 'save_goal', 'set_reminder']);
+const MIRRORED = new Set(['save_habit', 'log_completion', 'save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity']);
 
 export function mirroringRpc(rpc, dbPath) {
   return async (name, args, toolUseId) => {
