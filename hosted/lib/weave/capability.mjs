@@ -19,11 +19,13 @@ async function hmacKey(secret) {
   return crypto.subtle.importKey('raw', encoder.encode('weave-agent-capability-v1:' + secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign', 'verify']);
 }
 
+// 群范围的通行证要写明是哪个群（群 id 的哈希，不是微信的群号），别的范围不能带。
+const groupOk = c => c.scope === 'group' ? typeof c.group === 'string' && c.group.length > 0 && c.group.length <= 200 : c.group === undefined;
 const wellFormed = c => c && typeof c.owner === 'string' && c.owner.length > 0 && SCOPES.includes(c.scope)
-  && typeof c.runId === 'string' && c.runId.length > 0 && CHANNELS.includes(c.channel) && typeof c.direct === 'boolean';
+  && typeof c.runId === 'string' && c.runId.length > 0 && CHANNELS.includes(c.channel) && typeof c.direct === 'boolean' && groupOk(c);
 
-export async function issueCapability(secret, {owner, scope, runId, channel, direct}, now, ttlMs = 15 * 60 * 1000) {
-  const claims = {owner, scope, runId, channel, direct, exp: now + ttlMs};
+export async function issueCapability(secret, {owner, scope, runId, channel, direct, group}, now, ttlMs = 15 * 60 * 1000) {
+  const claims = {owner, scope, runId, channel, direct, ...(group === undefined ? {} : {group}), exp: now + ttlMs};
   if (!wellFormed(claims)) throw Error('通行证内容无效');
   const payload = toBase64Url(encoder.encode(JSON.stringify(claims)));
   const signature = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret), encoder.encode(`${PREFIX}.${payload}`)));
@@ -41,5 +43,5 @@ export async function verifyCapability(secret, token, now) {
   if (!await crypto.subtle.verify('HMAC', await hmacKey(secret), signature, encoder.encode(`${PREFIX}.${parts[1]}`))) invalid();
   try { claims = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[1]))); } catch { invalid(); }
   if (!wellFormed(claims) || !Number.isFinite(claims.exp) || claims.exp <= now) invalid();
-  return {owner: claims.owner, scope: claims.scope, runId: claims.runId, channel: claims.channel, direct: claims.direct, exp: claims.exp};
+  return {owner: claims.owner, scope: claims.scope, runId: claims.runId, channel: claims.channel, direct: claims.direct, ...(claims.group === undefined ? {} : {group: claims.group}), exp: claims.exp};
 }

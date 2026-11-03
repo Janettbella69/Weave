@@ -32,6 +32,24 @@ function harness(agent, {runtime = 'sdk', serviceUrl = SERVICE} = {}) {
 const wakes = h => h.calls.filter(c => c.path === '/wake');
 const ok = data => Response.json(data);
 
+test('GET /api/agent-memory 返回 Agent 自己记下的 MEMORY.md，只问本人的', async () => {
+  const h = harness(async call => call.path === '/memory' ? ok({text: '周末早上更容易走路'}) : ok({}));
+  const r = await h.api('Alice', 'agent-memory');
+  assert.deepEqual(r, {status: 200, data: {text: '周末早上更容易走路'}});
+  const me = (await h.api('Alice', 'status')).data.personId;
+  assert.deepEqual(h.calls.map(c => [c.path, c.body, c.auth]), [['/memory', {scope: 'owner', id: me}, 'Bearer ' + TOKEN]]);
+});
+
+test('GET /api/agent-memory：新版 Agent 没配置、或 Agent 服务出错时是 503', async () => {
+  const off = harness(async () => ok({text: 'x'}), {runtime: null});
+  assert.equal((await off.api('Alice', 'agent-memory')).status, 503);
+  assert.equal(off.calls.length, 0);
+  const broken = harness(async () => Response.json({error: 'boom'}, {status: 500}));
+  const r = await broken.api('Alice', 'agent-memory');
+  assert.equal(r.status, 503);
+  assert.match(r.data.error, /记忆/);
+});
+
 test('开关关着时 /api/chat 走旧路，一次 /wake 都不请求', async () => {
   const h = harness(async call => call.path === '/query' ? ok({output: '旧路的回复'}) : ok({}), {runtime: null});
   const r = await h.api('Alice', 'chat', {text: '你好'});
@@ -68,7 +86,7 @@ test('/wake 返回 500、连不上、或这一轮没成功：回复「结果不�
   for (const agent of [
     async () => new Response('boom', {status: 500}),
     async () => { throw Error('connect ECONNREFUSED'); },
-    async () => ok({outcome: 'error_max_turns', reply: '', sessionId: 's', tools: []}),
+    async () => ok({outcome: 'error_max_budget_usd', reply: '', sessionId: 's', tools: []}),
     async () => ok({outcome: 'success', reply: '   ', sessionId: 's', tools: []}),
   ]) {
     const h = harness(agent);

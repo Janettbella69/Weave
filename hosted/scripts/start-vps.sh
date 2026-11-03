@@ -24,6 +24,9 @@ AGENT_DAILY_CALLS_PER_ACCOUNT=${AGENT_DAILY_CALLS_PER_ACCOUNT-}
 AGENT_DAILY_CALLS_TOTAL=${AGENT_DAILY_CALLS_TOTAL-}
 HERMES_RUNNER_TOKEN=${HERMES_RUNNER_TOKEN-}
 WECHAT_BRIDGE_TOKEN=${WECHAT_BRIDGE_TOKEN-}
+TYPESAFE_API_KEY=${TYPESAFE_API_KEY-}
+JEV_MODEL=${JEV_MODEL-}
+JEV_THRESHOLD=${JEV_THRESHOLD-}
 NOTION_OAUTH_CLIENT_ID=${NOTION_OAUTH_CLIENT_ID-}
 NOTION_OAUTH_CLIENT_SECRET=${NOTION_OAUTH_CLIENT_SECRET-}
 NOTION_OAUTH_REDIRECT_URI=${NOTION_OAUTH_REDIRECT_URI-}
@@ -49,6 +52,13 @@ if [ ! -f "$marker1" ]; then
 fi
 
 node ./scripts/notion-oauth-proxy.mjs &
+
+# 开发代理的补丁没打上时，在日志里说清楚（不拦着启动：拦住只会让网站整个起不来）。
+node ./scripts/patch-wrangler-proxy.mjs --check || echo "警告：wrangler 开发代理没有打补丁，页面轮询可能偶尔卡 5 到 25 秒（见 scripts/patch-wrangler-proxy.mjs）。" >&2
+
+# workerd 被内存杀掉时 wrangler 不会跟着退出，网站会一直 502。看门狗发现网站连续不回答，就让 wrangler 退出，
+# 由 Docker 重启容器（见 scripts/web-watchdog.sh）。"$$" 在 exec 之后就是 wrangler 的进程号。
+./scripts/web-watchdog.sh "$$" &
 
 exec node ./node_modules/wrangler/bin/wrangler.js \
   dev --env-file /app/.dev.vars --config dist/server/wrangler.json --local --persist-to "$state_dir" \

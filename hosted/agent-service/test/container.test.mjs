@@ -20,7 +20,12 @@ let fake, weave, service, dataDir, outcome, results = [];
 before(async () => {
   if (!IMAGE) return;
   fake = await startFakeModel();
-  const server = http.createServer(async (req, res) => { for await (const _ of req) { /* drain */ } res.writeHead(200, {'Content-Type': 'application/json'}); res.end('{"ok":true,"text":"已记录"}'); });
+  const snapshot = {version: 1, today: '2026-11-02', timezone: 'Asia/Shanghai', tables: {habits: [{habit_id: 'walk', name: '走路'}], completions: []}, files: {}};
+  const server = http.createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    res.writeHead(200, {'Content-Type': 'application/json'});
+    res.end(req.method === 'GET' && req.url === '/api/internal/agent/snapshot' ? JSON.stringify(snapshot) : '{"ok":true,"text":"已记录"}');
+  });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   weave = {url: `http://127.0.0.1:${server.address().port}`, close: () => { server.closeAllConnections(); return new Promise(r => server.close(r)); }};
   dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-container-')));
@@ -33,6 +38,7 @@ before(async () => {
     {tool: 'Write', input: {file_path: '/workspace/MEMORY.md', content: '周末早上更容易走路\n'}},
     {tool: 'Bash', input: {command: 'echo x > /etc/weave-test; echo ETC=$?', description: 'ro'}},
     {tool: 'mcp__weave__log_completion', input: {habit_id: 'walk', date: '2026-11-02'}},
+    {tool: 'Bash', input: {command: 'sqlite3 weave/weave.db "select name from habits"; echo DB=$?; touch weave/x 2>/dev/null; echo RO=$?; sqlite3 weave/weave.db "create trigger t after insert on habits begin select 1; end" 2>/dev/null; echo TRIGGER=$?', description: 'db'}},
     {text: '完成'},
   ]));
   const r = await fetch(service.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify({
@@ -62,6 +68,14 @@ test('一个容器删不掉、也换不了大家共用的代理 socket，这一�
   assert.match(attack, /RM=[1-9]/, attack);
   assert.match(attack, /TOUCH=[1-9]/, attack);
   assert.equal(outcome.outcome, 'success');
+});
+
+test('容器里的 Agent 用 sqlite3 查得到 weave.db，但改不了它：只读挂载，写文件、埋触发器都失败', {skip}, () => {
+  const db = results.find(x => x.includes('DB=')) || '';
+  assert.match(db, /走路/, db);
+  assert.match(db, /DB=0/, db);
+  assert.match(db, /RO=[1-9]/, db);
+  assert.match(db, /TRIGGER=[1-9]/, db);
 });
 
 test('同一天第二次唤醒在容器里接上同一段会话（socket 也还在）', {skip}, async () => {

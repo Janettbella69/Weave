@@ -4,7 +4,8 @@
 
 | 文件 | 干什么 |
 | --- | --- |
-| `server.mjs` | `POST /wake`、`POST /forget`、`GET /health`；每人串行、全局并发。旧路 `POST /query` 第 2 步删 |
+| `server.mjs` | `POST /wake`（带 `background: true` 是后台那一轮：从当天的会话分叉，失败了原会话不动）、`POST /forget`、`POST /memory`（读本人的 MEMORY.md）、`GET /health`；每人串行、全局并发；服务器自己的闹钟（每分钟 `POST` 一次网站的 `/api/internal/tick`）。旧路 `POST /query` 第 2 步删 |
+| `snapshot.mjs` | 叫醒前的数据快照：向 Weave 取、写成 SQLite；docker 下放在工作目录外、只读挂到 `/workspace/weave`；写工具成功后同步 |
 | `runner.mjs` | 一次唤醒，也就是架构文档第 2 节那段配置 |
 | `scopes.mjs` | 本人（owner）和打卡群（group）两种范围 |
 | `providers.mjs` | DeepSeek、Kimi、GLM、千问，都是 Anthropic 格式 |
@@ -12,7 +13,7 @@
 | `model-proxy.mjs`、`ledger.mjs` | CLI 只拿到一轮一换的运行令牌，代理换成真 Key，按 token 记额度 |
 | `sandbox.mjs` | 隔离：`docker`（每次唤醒一个容器）或 `local`（只给本机开发） |
 | `mcp/` | weave 工具的薄壳，规则在 Weave 服务的 `/api/internal/agent/tools/<name>` |
-| `plugin/` | Skill 和参考代码（现在只有 `weekly-review`） |
+| `plugin/` | Skill 和参考代码：`weekly-review`，`proactive-judgment`（后台那一轮值不值得开口，全文是草稿，待确认） |
 | `workspace.mjs`、`queue.mjs` | 每人的目录、MEMORY.md、当天的会话；排队 |
 | `Dockerfile.agent`、`container/` | 一次性容器的镜像和入口 |
 
@@ -36,6 +37,8 @@ Agent 服务要自己启动容器，所以它跑在宿主机上，不放进容�
    - `WEAVE_API_URL`：Weave 服务在本机的地址，MCP 工具回调用
    - `DEEPSEEK_API_KEY`：托管的模型 Key，只有模型代理读得到
    - `AGENT_DATA_DIR`：每个人的工作目录都在这里，要备份；注销时 Weave 会调 `/forget` 删掉对应目录
+
+   `AGENT_TICK_SECONDS` 不用设：默认每 60 秒用 `AGENT_SERVICE_TOKEN` 敲一次 `WEAVE_API_URL` 的 `/api/internal/tick`，到点的提醒、后台叫醒都靠它；设成 0 就关掉。
 4. Weave 服务那边设 `WEAVE_AGENT_RUNTIME=sdk`、`AGENT_SERVICE_URL=http://127.0.0.1:4320`（同一台机器上可以用 http）、`AGENT_SERVICE_TOKEN`。不设 `WEAVE_AGENT_RUNTIME` 就还走旧路。
 
 `AGENT_ISOLATION=local` 只用于没有 Docker 的本机开发：Bash 靠 SDK 的 sandbox 断网，文件工具靠路径规则限制在工作目录，没有容器那层。

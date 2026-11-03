@@ -79,6 +79,18 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 打开 https://weave.azorashopping.site ，浏览器会弹出账号密码框，填第 2 步打印的那组。
 
+## 接入微信（可选，试点）
+
+微信通道的两个程序（wx 守护进程和桥接）跑在你自己的 Mac 上，只向外连接这个网站；服务器这边只多一个 `WECHAT_BRIDGE_TOKEN`。整套步骤（装、配令牌、扫码、验证、回退、该警惕的征兆）在 [`deploy/wechat-mac/README.md`](../wechat-mac/README.md)。
+
+服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
+
+## 主动提醒和 Jev
+
+主动提醒不用额外配置：部署以后，Agent 服务每分钟敲一次网站的 `/api/internal/tick`，到点的提醒、跟进和定期看看都由它触发，不再依赖 Mac。想关掉：`agent.env` 里加一行 `AGENT_TICK_SECONDS=0`，再部署一次。看它在不在跑：`docker logs weave-agent-1 | tail`，启动那一行写着 `tick: every 60s`，后台叫醒时会有 `tick started 1 background wake(s)`。
+
+Jev（TypeSafe 的判断模型）在后台叫醒 Weave 之前判断「现在值不值得主动找你」，可选。在 console.typesafe.ai 拿到 Key 以后，登上服务器用 `nano ~/weave/deploy/tencent/web.env` 加一行 `TYPESAFE_API_KEY=你的 Key`，再部署一次。不加就不启用，由 Weave 自己判断。可选的还有 `JEV_THRESHOLD`（0 到 1，默认 0.5，低于它就这次不打扰）和 `JEV_MODEL`（默认钉 `jev-1.14.0`）。Key 是密钥，在服务器上自己改，不要贴进聊天。
+
 ## 以后更新
 
 ```
@@ -106,3 +118,35 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/weave/deploy/t
 ## 内存
 
 这台可用内存约 2.2 GB，Azora 也要用。所以 Weave 同时只跑 1 轮，网站最多 768 MB，Agent 服务最多 384 MB，每轮的一次性容器最多 768 MB。
+
+## 页面偶尔卡 5～25 秒
+
+现象：网站日志里偶尔有 `GET /api/status 200 OK (25008ms)` 这样的一行，页面这时发不出消息。原因：页面每 5 秒拉一次状态，而网站里 wrangler 的代理和网站程序之间有一条闲了约 5 秒就被关掉的连接，
+拉取正好撞上时转发会失败；wrangler 4.92.0 把这个 GET 挂起来，等下一个请求才放出去，Chrome 又把同一地址的后续拉取扣在浏览器里 20 秒，于是最常见的是 5 + 20 = 25 秒。
+镜像构建时已经打上补丁（`hosted/scripts/patch-wrangler-proxy.mjs`），被掐断的 GET 会马上重试。要确认补丁在起作用（都是只读命令）：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs weave-web-1 2>&1 | grep -c "weave patch"'
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs weave-web-1 2>&1 | grep -E "\([0-9]{5,}ms\)" | tail'
+```
+
+第一条是补丁救回来的次数（不是 0 就说明它在工作，每一次原来都会卡 5 秒以上）；第二条列出超过 10 秒的请求，修好以后不应该再有新的。
+
+## 网站一直 502
+
+现象：网站一直 502，`weave-web-1` 却显示在运行。原因：wrangler 底下的 workerd 进程内存越用越多，容器到了 768 MB 上限时被内核杀掉，而 wrangler 不会跟着退出，Docker 以为容器没事，不会重启它（2026-11-03 出过一次，持续约一个半小时；内存为什么涨还没查清楚）。
+
+现在容器里有个看门狗（`hosted/scripts/web-watchdog.sh`）：每 10 秒请求一次本机的网站，网站第一次回答以后开始盯着；之后连续 3 次没有正常回答，就让 wrangler 退出，Docker 会自动把容器重新拉起来。它还每 5 分钟在日志里记一行内存。看它做过什么、内存怎么涨（都是只读命令）：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs -t weave-web-1 2>&1 | grep "weave watchdog"; docker inspect -f "自动重启过 {{.RestartCount}} 次" weave-web-1'
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs -t weave-web-1 2>&1 | grep "weave memory" | tail -30'
+```
+
+第二条每行带时间：`容器` 是整个网站容器占的内存（含文件缓存，比 `docker stats` 的数字高一些），`workerd` 是所有 workerd 进程加起来占的内存，有两个时括号里分开列（11-03 那两次，被杀的 workerd 都涨到了四百 MB 上下）。
+
+网站 502 超过五分钟还没好，就手动重启网站容器，数据不会丢：
+
+```
+ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker restart weave-web-1'
+```

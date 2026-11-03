@@ -3,7 +3,22 @@ import assert from 'node:assert/strict';
 import {existsSync, mkdtempSync, writeFileSync, realpathSync, mkdirSync, chmodSync, symlinkSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, relative, isAbsolute} from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {scopeDirs, prepare, readMemory, sessionFor, saveSession, clearSession, forget} from '../workspace.mjs';
+
+const WORKSPACE_MODULE = pathToFileURL(fileURLToPath(new URL('../workspace.mjs', import.meta.url))).href;
+
+// MEMORY.md 换成命名管道时，没有 O_NONBLOCK 的 open 会一直等写入方，占住一个 libuv 线程。
+// 在子进程里读，卡住就被 SIGKILL，不拖住这个测试进程。
+test('MEMORY.md 被换成命名管道（FIFO）时立刻返回空字符串，不卡住线程池', async () => {
+  const dirs = scopeDirs(dataDir(), 'owner', 'u:fifo');
+  await prepare(dirs);
+  execFileSync('mkfifo', [join(dirs.workspace, 'MEMORY.md')]);
+  const script = `import {readMemory} from ${JSON.stringify(WORKSPACE_MODULE)}; console.log(JSON.stringify(await readMemory(${JSON.stringify(dirs)})));`;
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL'});
+  assert.equal(out.trim(), '""');
+});
 
 const dataDir = () => realpathSync(mkdtempSync(join(tmpdir(), 'weave-data-')));
 const inside = (parent, child) => { const r = relative(parent, child); return !!r && !r.startsWith('..') && !isAbsolute(r); };
@@ -14,6 +29,8 @@ test('不同的人目录不重叠；id 里有 ../ 也跑不出数据目录', () 
   assert.notEqual(a.root, b.root);
   for (const dirs of [a, b, evil]) for (const dir of Object.values(dirs)) assert.ok(inside(data, dir), dir);
   assert.notEqual(scopeDirs(data, 'group', 'u:alice').root, a.root);
+  // 快照目录在这个人的根目录里、工作目录外：容器挂不到它的可写副本。
+  assert.ok(inside(a.root, a.snapshot) && !inside(a.workspace, a.snapshot), a.snapshot);
   assert.throws(() => scopeDirs(data, 'research', 'u:alice'));
   assert.throws(() => scopeDirs(data, 'owner', ''));
 });

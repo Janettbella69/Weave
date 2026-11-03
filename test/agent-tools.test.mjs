@@ -47,13 +47,13 @@ test('未知工具 404；group 通行证调 log_completion 是 403', async () =>
   const s = await setup();
   assert.equal((await s.tool('delete_everything', {}, {token: await s.cap(s.alice)})).status, 404);
   assert.equal((await s.tool('__proto__', {}, {token: await s.cap(s.alice)})).status, 404);
-  assert.equal((await s.tool('log_completion', {habit_id: 'h', date: '2026-11-01'}, {token: await s.cap(s.alice, {scope: 'group'})})).status, 403);
+  assert.equal((await s.tool('log_completion', {habit_id: 'h', date: '2026-11-01'}, {token: await s.cap(s.alice, {scope: 'group', group: 'g1'})})).status, 403);
 });
 
 test('参数不对是 400：args 不是对象、缺 toolUseId', async () => {
   const s = await setup(), token = await s.cap(s.alice);
   for (const body of [{args: [], toolUseId: 't'}, {args: {}, toolUseId: ''}, {args: {}}]) {
-    const r = await handleAPI(new Request('https://weave.test/api/internal/agent/tools/list_habits', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify(body)}), {db: s.db, secret, now: NOW});
+    const r = await handleAPI(new Request('https://weave.test/api/internal/agent/tools/save_habit', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token}, body: JSON.stringify(body)}), {db: s.db, secret, now: NOW});
     assert.equal(r.status, 400, JSON.stringify(body));
   }
 });
@@ -83,15 +83,157 @@ test('规则失败返回 200 加 ok:false，把中文原因交给模型（未来
   assert.equal((await s.world()).people[s.alice].completions?.length ?? 0, 0);
 });
 
-test('list_habits 和 query_completions 只读，不留回执', async () => {
+test('只读工具已经去掉：list_habits、query_completions 打过来是 404（数据走叫醒前的快照）', async () => {
   const s = await setup(), token = await s.cap(s.alice);
-  await s.tool('save_habit', {name: '走路'}, {token, toolUseId: 'toolu_a'});
-  const before = (await s.world()).people[s.alice].toolReceipts.length;
-  const listed = await s.tool('list_habits', {}, {token, toolUseId: 'toolu_c'});
-  assert.equal(JSON.parse(listed.data.text).habits[0].name, '走路');
-  const queried = await s.tool('query_completions', {from: '2026-10-27', to: '2026-11-02'}, {token, toolUseId: 'toolu_d'});
-  assert.deepEqual(JSON.parse(queried.data.text), {today: '2026-11-02', completions: []});
-  assert.equal((await s.world()).people[s.alice].toolReceipts.length, before);
+  for (const name of ['list_habits', 'query_completions']) assert.equal((await s.tool(name, {}, {token})).status, 404, name);
+});
+
+test('习惯编号不对时，提示去 weave.db 里查', async () => {
+  const s = await setup();
+  const r = await s.tool('log_completion', {habit_id: 'h:nope', date: '2026-11-01'}, {token: await s.cap(s.alice)});
+  assert.equal(r.data.ok, false);
+  assert.match(r.data.text, /weave\.db/);
+});
+
+// domain.validTime compares with Date.now(), not with the `now` handed to the backend, so a reminder time has to be
+// relative to the real clock. One day ahead, written the way the model writes it: Shanghai wall clock plus +08:00.
+const inOneDay = () => new Date(Date.now() + 24 * 3600_000 + 8 * 3600_000).toISOString().slice(0, 19) + '+08:00';
+
+test('save_goal via the tool endpoint stores a goal', async () => {
+  const s = await setup(), token = await s.cap(s.alice);
+  const r = await s.tool('save_goal', {title: '每天动一动', category: 'health'}, {token, toolUseId: 'toolu_a'});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, true, r.data.text);
+  const {goal} = JSON.parse(r.data.text);
+  assert.deepEqual({...goal, goal_id: 'x'}, {goal_id: 'x', title: '每天动一动', category: 'health', archived: false});
+  const person = (await s.world()).people[s.alice];
+  assert.equal(person.goals.length, 1);
+  assert.equal(person.goals[0].id, goal.goal_id);
+  assert.equal((await s.world()).people[s.bob].goals, undefined, 'Bob 的记录没有被动');
+  // 同一次调用重放：原样返回，不会多存一个。
+  assert.deepEqual(await s.tool('save_goal', {title: '每天动一动', category: 'health'}, {token, toolUseId: 'toolu_a'}), r);
+  assert.equal((await s.world()).people[s.alice].goals.length, 1);
+  // 带 goal_id 就是修改，只改给了的字段。
+  const archived = await s.tool('save_goal', {goal_id: goal.goal_id, archived: true}, {token, toolUseId: 'toolu_b'});
+  assert.deepEqual(JSON.parse(archived.data.text), {goal: {goal_id: goal.goal_id, title: '每天动一动', category: 'health', archived: true}});
+  assert.equal((await s.world()).people[s.alice].goals.length, 1);
+});
+
+test('save_goal: a rule failure comes back as ok:false with the reason, and stores nothing', async () => {
+  const s = await setup(), token = await s.cap(s.alice);
+  const r = await s.tool('save_goal', {title: 'x'.repeat(31), category: 'health'}, {token});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, false);
+  assert.match(r.data.text, /1–30/);
+  assert.equal((await s.world()).people[s.alice].goals, undefined);
+});
+
+test('save_habit with goal_id links the habit to the goal; a goal_id that is not there is refused', async () => {
+  const s = await setup(), token = await s.cap(s.alice);
+  const goalId = JSON.parse((await s.tool('save_goal', {title: '每天动一动', category: 'health'}, {token, toolUseId: 'toolu_a'})).data.text).goal.goal_id;
+  const linked = await s.tool('save_habit', {name: '走路', goal_id: goalId}, {token, toolUseId: 'toolu_b'});
+  assert.equal(linked.data.ok, true, linked.data.text);
+  assert.equal(JSON.parse(linked.data.text).habit.goal_id, goalId);
+  assert.equal((await s.world()).people[s.alice].habits[0].goalId, goalId);
+  const missing = await s.tool('save_habit', {name: '读书', goal_id: 'g:nope'}, {token, toolUseId: 'toolu_c'});
+  assert.equal(missing.data.ok, false);
+  assert.match(missing.data.text, /weave\.db/);
+  assert.equal((await s.world()).people[s.alice].habits.length, 1);
+});
+
+test('set_reminder stores a scheduled reminder', async () => {
+  const s = await setup(), token = await s.cap(s.alice), dueAt = inOneDay();
+  const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at: dueAt}, {token, toolUseId: 'toolu_a'});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, true, r.data.text);
+  const person = (await s.world()).people[s.alice];
+  assert.equal(person.reminders.length, 1);
+  assert.equal(person.reminders[0].status, 'scheduled');
+  assert.equal(person.reminders[0].text, '给妈妈打电话');
+  assert.equal(person.reminders[0].dueAt, new Date(dueAt).toISOString());
+  assert.deepEqual(JSON.parse(r.data.text), {reminder: {reminder_id: person.reminders[0].id, text: '给妈妈打电话', due_at: new Date(dueAt).toISOString(), status: 'scheduled'}});
+  assert.equal((await s.world()).people[s.bob].reminders.length, 0, 'Bob 没有被排上提醒');
+  // 同一次调用重放：原样返回，不会多排一条。
+  assert.deepEqual(await s.tool('set_reminder', {text: '给妈妈打电话', due_at: dueAt}, {token, toolUseId: 'toolu_a'}), r);
+  assert.equal((await s.world()).people[s.alice].reminders.length, 1);
+});
+
+test('set_reminder in the past is refused', async () => {
+  const s = await setup(), token = await s.cap(s.alice);
+  const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at: '2020-01-01T20:00:00+08:00'}, {token});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, false);
+  assert.match(r.data.text, /有效的未来时间/);
+  assert.equal((await s.world()).people[s.alice].reminders.length, 0);
+});
+
+test('set_reminder: empty text, over 500 characters, no due_at, or a time without an offset are all refused', async () => {
+  const s = await setup(), token = await s.cap(s.alice), good = inOneDay();
+  const bad = [
+    {text: '', due_at: good}, {text: '   ', due_at: good}, {text: 'x'.repeat(501), due_at: good},
+    {text: '喝水'}, {text: '喝水', due_at: 42}, {text: '喝水', due_at: good.slice(0, 19)}, {text: 7, due_at: good},
+  ];
+  for (const [i, args] of bad.entries()) {
+    const r = await s.tool('set_reminder', args, {token, toolUseId: 'toolu_' + i});
+    assert.equal(r.status, 200, JSON.stringify(args));
+    assert.equal(r.data.ok, false, JSON.stringify(args));
+    assert.match(r.data.text, /有效的未来时间/, JSON.stringify(args));
+  }
+  assert.equal((await s.world()).people[s.alice].reminders.length, 0);
+});
+
+// "Tomorrow" for a person in Shanghai: the Shanghai date of the real clock plus one day. Tomorrow at 20:00 is at least
+// 20 hours away, so a reminder there is always in the future whatever time of day the test runs.
+const tomorrowShanghai = () => new Date(Date.now() + 24 * 3600_000 + 8 * 3600_000).toISOString().slice(0, 10);
+
+test('set_reminder accepts a due_at without seconds and stores the same instant as with seconds', async () => {
+  const s = await setup(), token = await s.cap(s.alice), day = tomorrowShanghai();
+  // The model writes "明天晚上 8 点" as 20:00 with a zone and no seconds.
+  const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at: day + 'T20:00+08:00'}, {token, toolUseId: 'toolu_a'});
+  assert.equal(r.status, 200);
+  assert.equal(r.data.ok, true, r.data.text);
+  const instant = new Date(day + 'T20:00:00+08:00').toISOString();
+  const person = (await s.world()).people[s.alice];
+  assert.equal(person.reminders.length, 1);
+  assert.equal(person.reminders[0].status, 'scheduled');
+  assert.equal(person.reminders[0].dueAt, instant);
+  assert.deepEqual(JSON.parse(r.data.text), {reminder: {reminder_id: person.reminders[0].id, text: '给妈妈打电话', due_at: instant, status: 'scheduled'}});
+  // The other two spellings of a zone, Z and a negative offset, work the same way.
+  for (const [i, [short, full]] of [['2099-12-31T23:59Z', '2099-12-31T23:59:00Z'], ['2099-12-31T15:30-08:00', '2099-12-31T15:30:00-08:00']].entries()) {
+    const zoned = await s.tool('set_reminder', {text: '喝水', due_at: short}, {token, toolUseId: 'toolu_z' + i});
+    assert.equal(zoned.data.ok, true, short + ': ' + zoned.data.text);
+    assert.equal(JSON.parse(zoned.data.text).reminder.due_at, new Date(full).toISOString(), short);
+  }
+  assert.equal((await s.world()).people[s.alice].reminders.length, 3);
+});
+
+test('set_reminder: a due_at to the minute with no zone, in the past, or impossible is still refused, with the same text', async () => {
+  const s = await setup(), token = await s.cap(s.alice), day = tomorrowShanghai();
+  const bad = [
+    day + 'T20:00',                // to the minute, no zone
+    day + 'T20:00:00',             // with seconds, no zone (as before)
+    '2020-01-01T20:00+08:00',      // in the past, to the minute
+    '2099-02-30T20:00+08:00',      // no such day
+    '2099-01-01T24:00+08:00',      // no such hour
+    day + 'T20:00 +08:00',         // a stray space before the zone
+  ];
+  for (const [i, due_at] of bad.entries()) {
+    const r = await s.tool('set_reminder', {text: '给妈妈打电话', due_at}, {token, toolUseId: 'toolu_' + i});
+    assert.equal(r.status, 200, due_at);
+    assert.equal(r.data.ok, false, due_at);
+    assert.equal(r.data.text, '请输入1–500字提醒内容和有效的未来时间', due_at);
+  }
+  assert.equal((await s.world()).people[s.alice].reminders.length, 0);
+});
+
+test('a group capability cannot call save_goal or set_reminder (403), and nothing is written', async () => {
+  const s = await setup(), token = await s.cap(s.alice, {scope: 'group', group: 'g1'});
+  for (const [name, args] of [['save_goal', {title: '每天动一动', category: 'health'}], ['set_reminder', {text: '喝水', due_at: inOneDay()}]]) {
+    assert.equal((await s.tool(name, args, {token})).status, 403, name);
+  }
+  const person = (await s.world()).people[s.alice];
+  assert.equal(person.goals, undefined);
+  assert.equal(person.reminders.length, 0);
 });
 
 test('send_message 只发给通行证上的本人：进本人的 messages 和通知，另一个账号看不到', async () => {

@@ -1,5 +1,6 @@
-// Times in the workspace are all in the account's time zone (profile.timezone): what the lists show, what the
-// reminder form takes, and what the Agent and quiet hours use on the server. This file keeps the form in step.
+// Times in the workspace are all in the account's time zone (profile.timezone): what the pages show, and what the
+// Agent and quiet hours use on the server. That zone is Beijing time until the person picks another one in settings;
+// the browser's own zone is never taken over on its own.
 
 // The zone every new account starts with (hosted/lib/weave/domain.mjs, ensurePerson).
 export const SERVER_DEFAULT_TIMEZONE = 'Asia/Shanghai';
@@ -11,13 +12,6 @@ export function isValidTimezone(timeZone) {
 
 export function deviceTimezone() {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; }
-}
-
-// A profile nobody has saved yet (revision 1) that still has the server's default zone belongs to someone who
-// never chose one, so the browser's zone is a better starting point. Anyone who saved their profile, or
-// chose a zone, is left alone.
-export function shouldAdoptDeviceTimezone(profile, device = deviceTimezone()) {
-  return !!profile && profile.revision === 1 && profile.timezone === SERVER_DEFAULT_TIMEZONE && isValidTimezone(device) && device !== profile.timezone;
 }
 
 // "2026-11-02T09:30" as seen on a wall clock in `timeZone`, for the given instant. This is the format of <input type="datetime-local">.

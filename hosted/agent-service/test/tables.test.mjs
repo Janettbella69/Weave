@@ -4,7 +4,7 @@ import {scopeFor} from '../scopes.mjs';
 import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
 import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['list_habits', 'save_habit', 'log_completion', 'query_completions'];
+const PRIVATE_TOOLS = ['save_habit', 'log_completion', 'save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity'];
 
 test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
   const s = scopeFor('owner');
@@ -12,8 +12,8 @@ test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络�
   for (const t of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch']) assert.ok(s.builtins.includes(t), t);
   for (const t of ['WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.deepEqual([...s.skills], ['weave:weekly-review']);
-  assert.equal(s.maxTurns, 20);
+  assert.deepEqual([...s.skills], ['weave:weekly-review', 'weave:proactive-judgment']);
+  assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
   assert.equal(s.circuitBreakerUsd, 2);
 });
 
@@ -22,7 +22,7 @@ test('group 范围：群消息谁都能写，所以只有 send_message，没有 
   assert.deepEqual([...s.tools], ['send_message']);
   for (const t of ['WebSearch', 'WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.equal(s.maxTurns, 8);
+  assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
   assert.equal(s.circuitBreakerUsd, 1);
 });
 
@@ -116,4 +116,24 @@ test('renderTrigger：kind、channel、direct、at 不合法直接报错', () =>
   assert.throws(() => renderTrigger({...ok, at: '2026-11-01 20:13'}));
   assert.throws(() => renderTrigger({...ok, direct: 'yes'}));
   assert.throws(() => renderTrigger({...ok, text: 42}));
+});
+
+test('系统提示告诉 Agent：数据在 weave/weave.db，自己写 SQL 查；记录和对外说话用 weave 工具', () => {
+  for (const kind of ['owner', 'group']) {
+    const p = systemPromptFor(scopeFor(kind), '');
+    assert.ok(p.includes('weave/weave.db') && p.includes('SQL') && p.includes('weave 工具'), kind);
+    assert.ok(!p.includes('list_habits') && !p.includes('query_completions'), kind);
+  }
+});
+
+test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL），排过的跟进也是，没有 list_schedule', () => {
+  assert.deepEqual([...scopeFor('owner').tools].sort(), ['cancel_schedule', 'log_completion', 'save_goal', 'save_habit', 'schedule_wake', 'send_message', 'set_proactivity', 'set_reminder']);
+});
+
+test('save_goal、set_reminder 和第二块的三个工具只给 owner 范围：群里不存在，群里也没有 Skill', () => {
+  for (const t of ['save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity']) {
+    assert.ok(scopeFor('owner').tools.includes(t), t);
+    assert.ok(!scopeFor('group').tools.includes(t), t);
+  }
+  assert.deepEqual([...scopeFor('group').skills], []);
 });
