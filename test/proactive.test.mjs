@@ -5,7 +5,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {Store} from '../hosted/lib/weave/store.mjs';
 import {setup, ok, until, SERVICE_TOKEN} from './helpers/wechat-sdk.mjs';
-import {checkTimes, quietReason, limitsFor} from '../hosted/lib/weave/proactive.mjs';
+import {checkTimes, quietReason, limitsFor, runProactive, publicActivity} from '../hosted/lib/weave/proactive.mjs';
+import {JEV_URL, JEV_MODEL, jevConfig} from '../hosted/lib/weave/jev.mjs';
+import {SERVICE, secret as SECRET} from './helpers/wechat-sdk.mjs';
+import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {following, nextAfter, zonedTime, localParts} from '../hosted/lib/weave/repeat.mjs';
 import {basicAuthGate} from '../hosted/lib/weave/basic-auth.mjs';
 import {issueCapability} from '../hosted/lib/weave/capability.mjs';
@@ -328,4 +331,122 @@ test('快照：本人有 schedules（当地时间）和 proactive_settings 一�
   const [row] = snap.data.tables.schedules;
   assert.deepEqual({...row, schedule_id: 'x'}, {schedule_id: 'x', kind: 'wake', text: '看看走路', repeat: 'weekly', next_at: '2030-01-01T19:00:00+08:00', status: 'scheduled', created_by: 'chat', last_run_at: null, last_outcome: null});
   assert.deepEqual(snap.data.tables.proactive_settings, [{level: 'normal', active_start: '09:00', active_end: '21:00', check_times: '10:00,19:30', message_cap: 2, sent_today: 0, wake_cap: 4, wakes_today: 0}]);
+});
+
+// ---- Jev：叫醒之前先判断「现在值不值得主动找她」（她 11-03 定），以及助理面板的「动态」。----
+const JEV_KEY = 'ts_' + 'k'.repeat(30);
+// 假的 Jev 和假的 Agent 服务：Jev 回 noul（或者一个错误码），/wake 一律不说话。
+function jevFetcher({noul = 0.2, status = 200} = {}) {
+  const jevCalls = [], wakes = [];
+  const fetcher = async (url, options) => {
+    if (url === JEV_URL) {
+      jevCalls.push({auth: options.headers.Authorization, body: JSON.parse(options.body)});
+      return status === 200 ? Response.json({model: JEV_MODEL, answers: {reach_out: {type: 'noul', noul}}, usage: {input_tokens: 120, output_tokens: 1}}) : new Response('{}', {status});
+    }
+    if (String(url).startsWith(SERVICE)) { wakes.push(JSON.parse(options.body)); return quiet(); }
+    throw Error('unexpected fetch ' + url);
+  };
+  return {fetcher, jevCalls, wakes};
+}
+const runWithJev = (s, fake) => runProactive({db: s.db, secret: SECRET, service: {url: SERVICE, token: SERVICE_TOKEN}, fetcher: fake.fetcher, now: s.now, jev: jevConfig({TYPESAFE_API_KEY: JEV_KEY})});
+
+test('jevConfig：没配 Key、Key 太短或带空格就不启用；默认钉 jev-1.14.0、阈值 0.5；阈值和模型名不对时用默认', () => {
+  assert.equal(jevConfig({}), null);
+  assert.equal(jevConfig({TYPESAFE_API_KEY: 'short'}), null);
+  assert.equal(jevConfig({TYPESAFE_API_KEY: 'has space ' + 'x'.repeat(20)}), null);
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY}), {key: JEV_KEY, model: 'jev-1.14.0', threshold: 0.5});
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '0.7', JEV_MODEL: 'jev-latest'}), {key: JEV_KEY, model: 'jev-latest', threshold: 0.7});
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '7', JEV_MODEL: 'gpt; rm -rf'}), {key: JEV_KEY, model: 'jev-1.14.0', threshold: 0.5});
+});
+
+test('Jev 说不值得（低于阈值）：这次不叫醒 Weave，记成 jev-quiet，不占今天的后台次数；请求格式按官方文档，状态里没有聊天原文', async () => {
+  const s = await harness();
+  s.setNow(at(1, '10:00')); await s.active();
+  await s.edit(p => {
+    p.habits = [{id: 'h1', name: '走路', minimumAction: '走到楼下', trigger: '吃完饭'}];
+    p.completions = [{id: 'c0', habitId: 'h1', date: '2029-12-31', createdAt: new Date(at(1, '00:00') - 3600_000).toISOString(), source: 'web'}];
+    p.messages.push({id: 'secret-msg', role: 'user', text: 'PRIVATE_CHAT_TEXT', createdAt: new Date(at(1, '09:30')).toISOString()});
+  });
+  const fake = jevFetcher({noul: 0.2});
+  assert.equal(await runWithJev(s, fake), 0);
+  assert.equal(fake.wakes.length, 0, 'Jev 说不值得就不叫醒模型');
+  const [call] = fake.jevCalls;
+  assert.equal(call.auth, 'Bearer ' + JEV_KEY);
+  assert.deepEqual(Object.keys(call.body).sort(), ['model', 'questions', 'state']);
+  assert.equal(call.body.model, 'jev-1.14.0');
+  assert.equal(call.body.questions.reach_out.type, 'noul');
+  assert.deepEqual(Object.keys(call.body.questions.reach_out.criteria), ['true', 'false']);
+  assert.deepEqual(call.body.state.habits, [{name: '走路', minimum_action: '走到楼下', trigger: '吃完饭', done_today: false, days_done_last_7: 1}]);
+  assert.deepEqual([call.body.state.reason, call.body.state.local_time, call.body.state.proactive_messages_today], ['Periodic check-in 1 of 2 today.', '2030-01-01T10:00:00+08:00', {sent: 0, limit: 2}]);
+  assert.ok(!JSON.stringify(call.body).includes('PRIVATE_CHAT_TEXT'), '不把聊天原文发给 Jev');
+  const p = await s.person();
+  assert.deepEqual([p.proactive.wakes, p.proactive.running, p.proactive.checksDone], [0, null, ['10:00']]);
+  assert.deepEqual({...p.proactive.log.at(-1), at: 0}, {at: 0, kind: 'check', scheduleId: null, outcome: 'jev-quiet', spoke: false, jev: {noul: 0.2, model: 'jev-1.14.0', threshold: 0.5}});
+  // 助理面板的「动态」里有这一条。
+  const activity = (await s.call('alice', 'status')).data.activity;
+  assert.deepEqual(activity.map(a => [a.kind, a.outcome]), [['check', 'jev-quiet']]);
+});
+
+test('Jev 说值得：照常叫醒 Weave（由它写那句话、也还能决定不说）；Jev 出错时照旧交给 Weave', async () => {
+  const s = await harness();
+  s.setNow(at(1, '10:00')); await s.active();
+  const yes = jevFetcher({noul: 0.9});
+  assert.equal(await runWithJev(s, yes), 1);
+  assert.equal(yes.wakes.length, 1);
+  assert.deepEqual([yes.wakes[0].background, yes.wakes[0].trigger.kind], [true, 'check']);
+  assert.equal((await s.person()).proactive.log.at(-1).jev.noul, 0.9);
+  s.setNow(at(1, '19:30'));
+  const broken = jevFetcher({status: 500});
+  assert.equal(await runWithJev(s, broken), 1);
+  assert.equal(broken.wakes.length, 1, 'Jev 出错不拦着');
+  assert.deepEqual((await s.person()).proactive.log.at(-1).jev, {error: true});
+});
+
+test('跟进被 Jev 拦下：一次性的照样结束（jev-quiet），不会下一分钟再问一遍；闹钟入口把 Jev 传到了这里', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00'));
+  const chat = await issueCapability('ab'.repeat(32), {owner: s.id, scope: 'owner', runId: 'r1', channel: 'web', direct: true}, s.now);
+  await s.tool('schedule_wake', {note: '看看走了没有', at: '2030-01-01T18:30:00+08:00'}, chat, 't1');
+  s.setNow(at(1, '18:30'));
+  const fake = jevFetcher({noul: 0.1});
+  const r = await handleAPI(new Request('https://weave.example/api/internal/tick', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + SERVICE_TOKEN}, body: '{}'}), {...s.options(), fetcher: fake.fetcher, jev: jevConfig({TYPESAFE_API_KEY: JEV_KEY})});
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).proactive.started, 0);
+  assert.equal(fake.jevCalls.length, 1);
+  assert.equal(fake.jevCalls[0].body.state.assistant_note, '看看走了没有');
+  assert.equal(fake.wakes.length, 0);
+  const p = await s.person();
+  assert.deepEqual([p.schedules[0].status, p.schedules[0].lastOutcome], ['done', 'jev-quiet']);
+  s.setNow(at(1, '18:31'));
+  await runWithJev(s, fake);
+  assert.equal(fake.jevCalls.length, 1, '同一条跟进不再问第二遍');
+});
+
+test('动态：主动说的话、到点的提醒、看过没说的、Weave 帮你记的完成；新的在前；只要最近 14 天', () => {
+  const now = at(15, '12:00'), iso = ms => new Date(ms).toISOString();
+  const person = {
+    profile: {timezone: 'Asia/Shanghai'},
+    habits: [{id: 'h1', name: '走路'}],
+    messages: [
+      {id: 'a', role: 'assistant', text: '今天走了吗？', proactive: true, createdAt: iso(at(15, '10:00'))},
+      {id: 'b', role: 'assistant', text: '提醒你：吃药', createdAt: iso(at(15, '08:00'))},
+      {id: 'c', role: 'assistant', text: '好的，记下了', createdAt: iso(at(15, '09:00'))},
+      {id: 'd', role: 'user', text: '在', createdAt: iso(at(15, '09:01'))},
+      {id: 'old', role: 'assistant', text: '提醒你：很久以前', createdAt: iso(at(1, '08:00'))},
+    ],
+    proactive: {log: [
+      {at: at(15, '11:00'), kind: 'check', outcome: 'quiet', spoke: false},
+      {at: at(15, '10:00'), kind: 'check', outcome: 'sent', spoke: true},
+      {at: at(14, '19:30'), kind: 'timer', outcome: 'jev-quiet', spoke: false},
+      {at: at(14, '19:00'), kind: 'check', outcome: 'cap', spoke: false},
+    ]},
+    completions: [{id: 'c1', habitId: 'h1', date: '2030-01-14', createdAt: iso(at(14, '21:00')), source: 'agent'}, {id: 'c2', habitId: 'h1', date: '2030-01-15', createdAt: iso(at(15, '07:00')), source: 'web'}],
+  };
+  assert.deepEqual(publicActivity(person, now).map(({id, ...rest}) => rest), [
+    {at: iso(at(15, '11:00')), kind: 'check', outcome: 'quiet'},
+    {at: iso(at(15, '10:00')), kind: 'message', text: '今天走了吗？'},
+    {at: iso(at(15, '08:00')), kind: 'reminder', text: '吃药'},
+    {at: iso(at(14, '21:00')), kind: 'completion', habit: '走路', date: '2030-01-14'},
+    {at: iso(at(14, '19:30')), kind: 'followup', outcome: 'jev-quiet'},
+  ]);
 });

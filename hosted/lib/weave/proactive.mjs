@@ -8,6 +8,7 @@ import {fail, record, notify} from './domain.mjs';
 import {activeNow, localClock, proactiveState} from './proactivity.mjs';
 import {wake, localISO, START_BY_MS, TICK_BUDGET_MS} from './dispatcher.mjs';
 import {localParts, localHHMM, nextAfter} from './repeat.mjs';
+import {askJev} from './jev.mjs';
 
 export const LEVELS = ['off', 'low', 'normal', 'high'];
 export const DEFAULT_LEVEL = 'normal';
@@ -28,6 +29,8 @@ const IGNORED_AFTER = 2;             // 连着几句主动消息没回，就先�
 const INACTIVE_MS = 7 * DAY;         // 多久没来，就先不定期看看
 const MAX_ACTIVE_WAKES = 10, MAX_ACTIVE = 30, KEEP_FINISHED = 50, LOG_SIZE = 30;
 export const MAX_WAKES_PER_TICK = 2;
+const MAX_CLAIMS_PER_TICK = 6;       // 含 Jev 判断不用打扰、没叫醒模型的那些
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const REPEATS = {reminder: ['daily', 'weekly', 'monthly'], wake: ['none', 'daily', 'weekly']};
 
@@ -207,11 +210,14 @@ function claimFor(person, now) {
   if (p.level === 'off') { for (const s of due) settle(person, s, 'off', now); return null; }
   // 不在允许时段：先不动，到了时段再看（晚太久的那时会记成 missed）。
   if (!activeNow(person, now)) return null;
-  const begin = (kind, s, text) => {
+  const begin = (kind, s, text, check) => {
     p.running = {kind, scheduleId: s?.id ?? null, since: now, sentBefore: p.sent};
     p.wakes++;
     if (s) s.lastRunAt = iso(now);
-    return {ownerId: person.id, kind, scheduleId: s?.id ?? null, since: now, channel: person.settings?.wechatWxidHash ? 'wechat' : 'web', text};
+    return {
+      ownerId: person.id, kind, scheduleId: s?.id ?? null, since: now, channel: person.settings?.wechatWxidHash ? 'wechat' : 'web', text,
+      jevState: jevStateFor(person, p, {kind, note: s?.text, check}, now),
+    };
   };
   for (const s of due) {
     if (now - Date.parse(s.nextAt) > GRACE_MS) { settle(person, s, 'missed', now); continue; }
@@ -231,10 +237,36 @@ function claimFor(person, now) {
   p.checksDone.push(...passed);
   if ((rel(nowMinute) - rel(toMinutes(latest))) * MINUTE > GRACE_MS) return null;
   if (p.wakes >= limits.wakes) { log(p, {at: now, kind: 'check', outcome: 'cap', spoke: false}); return null; }
-  return begin('check', null, TRIGGER_TEXT.check(times.indexOf(latest) + 1, times.length, p.sent, limits.messages));
+  const check = {number: times.indexOf(latest) + 1, of: times.length};
+  return begin('check', null, TRIGGER_TEXT.check(check.number, check.of, p.sent, limits.messages), check);
 }
 
 function log(p, item) { p.log = [...p.log, item].slice(-LOG_SIZE); }
+
+// 给 Jev 看的状态（jev.mjs）。英文字段、尽量是结构化的事实：习惯名和今天做没做、最近 7 天做了几次、跟进的备忘、
+// 今天已经主动说了几句、她多久没说话、有几句主动的话还没回。不放聊天原文。
+function jevStateFor(person, p, {kind, note, check}, now) {
+  const timezone = person.profile.timezone, today = localClock(person, now).day, {activeStart, activeEnd} = proactiveState(person);
+  const weekAgo = localClock(person, now - 6 * DAY).day, since = lastOwnActivity(person);
+  const done = (person.completions || []).filter(c => c.date >= weekAgo && c.date <= today);
+  const unanswered = (person.messages || []).filter(m => m.proactive === true && (Date.parse(m.createdAt) || 0) > since).length;
+  return {
+    local_time: localISO(timezone, now),
+    weekday: WEEKDAY_NAMES[localParts(now, timezone).weekday],
+    reason: kind === 'timer' ? 'A follow-up the assistant scheduled for itself is due.' : `Periodic check-in ${check.number} of ${check.of} today.`,
+    ...(kind === 'timer' ? {assistant_note: note} : {}),
+    allowed_hours: `${activeStart}-${activeEnd}`,
+    proactive_messages_today: {sent: p.sent, limit: limitsFor(p.level).messages},
+    minutes_since_user_last_spoke: since ? Math.round((now - since) / MINUTE) : null,
+    unanswered_proactive_messages: unanswered,
+    goals: (person.goals || []).filter(g => !g.archived).map(g => g.title),
+    habits: (person.habits || []).map(h => ({
+      name: h.name, minimum_action: h.minimumAction || '', trigger: h.trigger || '',
+      done_today: done.some(c => c.habitId === h.id && c.date === today),
+      days_done_last_7: done.filter(c => c.habitId === h.id).length,
+    })),
+  };
+}
 
 // 一轮后台醒来回来以后：放掉租约，跟进排到下一次，记一笔（说了没有）。
 function finish(world, claim, result, now) {
@@ -244,23 +276,25 @@ function finish(world, claim, result, now) {
   // 租约已经被当成超时放掉了：那边已经记过，这里不再动。
   if (!p.running || p.running.since !== claim.since || p.running.kind !== claim.kind) return;
   const spoke = p.sent > (p.running.sentBefore ?? p.sent);
-  const outcome = result.uncertain ? 'uncertain' : result.outcome === 'success' ? (spoke ? 'sent' : 'quiet') : result.outcome;
+  const outcome = result.skipped ? 'jev-quiet' : result.uncertain ? 'uncertain' : result.outcome === 'success' ? (spoke ? 'sent' : 'quiet') : result.outcome;
   const s = claim.scheduleId ? schedulesOf(person).find(x => x.id === claim.scheduleId) : null;
   if (s && isActive(s)) settle(person, s, outcome, now);
-  // Agent 服务明确说没开始跑（排队满、没配好）：这一次不算进今天的后台次数。
-  if (result.retryable) p.wakes = Math.max(0, p.wakes - 1);
-  log(p, {at: now, kind: claim.kind, scheduleId: claim.scheduleId, outcome, spoke});
+  // 没叫醒模型（Jev 判断不用打扰），或者 Agent 服务明确说没开始跑：这一次不算进今天的后台次数。
+  if (result.skipped || result.retryable) p.wakes = Math.max(0, p.wakes - 1);
+  log(p, {at: now, kind: claim.kind, scheduleId: claim.scheduleId, outcome, spoke, ...(claim.jev ? {jev: claim.jev} : {})});
   p.running = null;
 }
 
 // 一次 tick 里的后台叫醒（只有服务器自己的闹钟和 Cloudflare Cron 调，微信桥接的 tick 不调）。返回开始了几轮。
 // startBy / deadline 和 wechat.processInboundSdk 一样：60 秒后不再开始新的一轮，每一轮最多等到 tick 结束。
-export async function runProactive({db, secret, service, fetcher = fetch, now = Date.now(), clock = Date.now, startBy, deadline, maxWakes = MAX_WAKES_PER_TICK}) {
+// jev（jev.mjs 的 jevConfig）：配了就先问 Jev 现在值不值得主动找她，分数低于阈值就这次不叫醒（记成 jev-quiet）；
+// 问不到（超时、出错）就照旧叫醒，交给 Weave 自己判断。
+export async function runProactive({db, secret, service, fetcher = fetch, now = Date.now(), clock = Date.now, startBy, deadline, maxWakes = MAX_WAKES_PER_TICK, jev = null}) {
   const began = clock();
   startBy ??= began + START_BY_MS;
   deadline ??= began + TICK_BUDGET_MS;
-  let started = 0;
-  while (started < maxWakes && (started === 0 || clock() < startBy)) {
+  let started = 0, claims = 0;
+  while (started < maxWakes && claims < MAX_CLAIMS_PER_TICK && (claims === 0 || clock() < startBy)) {
     const claim = await withWorld(db, world => {
       for (const id of Object.keys(world.people || {}).sort()) {
         const found = claimFor(world.people[id], now);
@@ -269,6 +303,20 @@ export async function runProactive({db, secret, service, fetcher = fetch, now = 
       return null;
     });
     if (!claim) break;
+    claims++;
+    if (jev) {
+      try {
+        const answer = await askJev(jev, claim.jevState, {fetcher});
+        claim.jev = {noul: answer.noul, model: answer.model, threshold: jev.threshold};
+      } catch (error) {
+        console.error('Jev 这次没判断，照旧交给 Weave：' + (error instanceof Error ? error.message : 'unknown'));
+        claim.jev = {error: true};
+      }
+      if (typeof claim.jev.noul === 'number' && claim.jev.noul < jev.threshold) {
+        await withWorld(db, world => finish(world, claim, {skipped: true}, now));
+        continue;
+      }
+    }
     started++;
     let result;
     try {
@@ -303,6 +351,33 @@ export function settingsRow(person, now) {
 }
 // 工具返回的一条排期，和快照的列一致。
 export const scheduleResult = (person, s) => ({schedule_id: s.id, kind: s.kind, text: s.text, repeat: s.repeat, next_at: localISO(person.profile.timezone, Date.parse(s.nextAt)), status: s.status});
+
+// 网页（GET /api/status）的「动态」：Weave 最近 14 天主动做过的事，新的在前，最多 50 条。文字由网页按 kind 配：
+//   message     它自己找你说的一句（聊天里带 proactive 标记的那些）
+//   reminder    到点提醒了你（只响一次的和重复的都是「提醒你：…」）
+//   check       定期看看、followup 到点的跟进：只列没开口的那些（outcome quiet = 看过没说，jev-quiet = Jev 判断不用打扰）；
+//               开口了的已经作为 message 列出
+//   completion  它在聊天里帮你记的一次完成
+const ACTIVITY_DAYS = 14, ACTIVITY_MAX = 50, QUIET_OUTCOMES = new Set(['quiet', 'jev-quiet']), REMINDER_PREFIX = '提醒你：';
+export function publicActivity(person, now) {
+  const since = now - ACTIVITY_DAYS * DAY, items = [];
+  for (const m of person.messages || []) {
+    const at = Date.parse(m.createdAt);
+    if (m.role !== 'assistant' || !(at >= since) || typeof m.text !== 'string') continue;
+    if (m.proactive === true) items.push({id: 'm:' + m.id, at: m.createdAt, kind: 'message', text: m.text.slice(0, 300)});
+    else if (m.text.startsWith(REMINDER_PREFIX)) items.push({id: 'm:' + m.id, at: m.createdAt, kind: 'reminder', text: m.text.slice(REMINDER_PREFIX.length, REMINDER_PREFIX.length + 300)});
+  }
+  for (const entry of person.proactive?.log || []) {
+    if (entry.spoke || !QUIET_OUTCOMES.has(entry.outcome) || !(entry.at >= since)) continue;
+    items.push({id: `l:${entry.at}:${entry.kind}`, at: iso(entry.at), kind: entry.kind === 'timer' ? 'followup' : 'check', outcome: entry.outcome});
+  }
+  const habitNames = new Map((person.habits || []).map(h => [h.id, h.name]));
+  for (const c of person.completions || []) {
+    if (c.source !== 'agent' || !(Date.parse(c.createdAt) >= since)) continue;
+    items.push({id: 'c:' + c.id, at: c.createdAt, kind: 'completion', habit: habitNames.get(c.habitId) ?? '', date: c.date});
+  }
+  return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, ACTIVITY_MAX);
+}
 
 // 网页（GET /api/status）：有效的排期，加最近 20 条结束的。
 export function publicSchedules(person) {

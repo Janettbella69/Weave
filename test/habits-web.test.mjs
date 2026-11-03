@@ -16,7 +16,7 @@ const HABIT_NOT_FOUND = '没有这个习惯。先查 weave/weave.db 的 habits �
 const OLD_STATUS_KEYS = ['profile', 'personId', 'people', 'messages', 'plans', 'checkins', 'calendar', 'reminders', 'notifications', 'negotiations', 'settings', 'invites', 'agentRuntime'];
 const NEW_STATUS_KEYS = ['goals', 'habits', 'completions', 'today'];
 // 第二块（主动服务）：排期和档位。
-const PROACTIVE_STATUS_KEYS = ['schedules', 'proactive'];
+const PROACTIVE_STATUS_KEYS = ['schedules', 'proactive', 'activity'];
 
 async function setup() {
   const db = new D1();

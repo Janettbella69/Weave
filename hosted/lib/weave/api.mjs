@@ -11,7 +11,7 @@ import {wechatQueue,startBinding,unbind,publicBinding,GROUP_SYSTEM} from './wech
 import {SAFETY_RULES} from './model.mjs';
 import {spendManagedCall} from './budget.mjs';
 import {runScheduled} from './scheduler.mjs';
-import {deliverRoutines,publicProactive,publicSchedules,publicSchedule,setLevel,cancelSchedule,pauseSchedule} from './proactive.mjs';
+import {deliverRoutines,publicProactive,publicSchedules,publicSchedule,publicActivity,setLevel,cancelSchedule,pauseSchedule} from './proactive.mjs';
 import {handleAgentTool} from './agent-tools.mjs';
 import {handleAgentSnapshot} from './agent-snapshot.mjs';
 import {readAgentMemory} from './agent-memory.mjs';
@@ -76,7 +76,7 @@ async function internalTick(request,{tick,agentRuntime,agentServiceUrl,agentServ
   catch(error){console.error('Weave tick failed:',error instanceof Error?error.message:'unknown');return json({error:'这次没有跑完，下一分钟再试'},503);}
 }
 
-export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,agentRuntime,now=Date.now()}){
+export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentServiceUrl,agentServiceToken,agentProviderApiKey,runnerToken,wechat,modelBudget,notionOAuth,agentRuntime,jev=null,now=Date.now()}){
   try{
     const managedAgent=typeof agentServiceUrl==='string'&&agentServiceUrl.startsWith('https://')&&typeof agentServiceToken==='string'&&agentServiceToken.length>0;
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
@@ -87,7 +87,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     if(requestPath==='/api/internal/agent/snapshot')return handleAgentSnapshot(request,{db,secret,now});
     if(requestPath.startsWith('/api/internal/hermes/'))return hermesQueue(request,{db,secret,runnerToken,agentProviderApiKey,modelBudget,readBody:body,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
-    const tick=(flags={})=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now,...flags});
+    const tick=(flags={})=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,AGENT_DAILY_CALLS_PER_ACCOUNT:modelBudget?.perAccount,AGENT_DAILY_CALLS_TOTAL:modelBudget?.total,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentRuntime,agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher,now,jev,...flags});
     // The server's own clock: the Agent service calls this every minute (proactive design §4.7). Reminders and the
     // background wakes; queued WeChat messages stay with the Mac bridge's tick below.
     if(requestPath==='/api/internal/tick')return internalTick(request,{tick,agentRuntime,agentServiceUrl,agentServiceToken});
@@ -120,7 +120,7 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
         // The pages draw the last 62 days of check-ins: today and the 61 days before it. The export has them all.
         // goals and habits go out whole, archived goals included: the pages hide an archived goal's habits, which they can only do if they see the goal and its flag.
         const today=localClock(person,now).day,since=daysBefore(today,61);
-        return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user',goals:person.goals||[],habits:person.habits||[],completions:(person.completions||[]).filter(c=>c.date>=since),today,schedules:publicSchedules(person),proactive:publicProactive(person,now)});
+        return json({profile:person.profile,personId:id,people:domain.friends(world,id).map(peer=>({id:peer,name:world.people[peer].profile.name})),messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),calendar:domain.calendar(world,id),reminders:person.reminders,notifications:person.notifications.slice(-100),negotiations:Object.values(world.negotiations).filter(n=>n.participants.includes(id)).map(n=>domain.publicNegotiation(n,id)),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},invites:Object.values(world.invites).filter(x=>x.from===id&&!x.usedBy&&x.expiresAt>Date.now()).map(({id,expiresAt})=>({id,expiresAt})),agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user',goals:person.goals||[],habits:person.habits||[],completions:(person.completions||[]).filter(c=>c.date>=since),today,schedules:publicSchedules(person),proactive:publicProactive(person,now),activity:publicActivity(person,now)});
       }
       if(path==='connections/notion/pending'){
         const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now){if(value.reason)continue;return json({ready:true,pages:value.pages||[]});}delete world.runtime[key];}

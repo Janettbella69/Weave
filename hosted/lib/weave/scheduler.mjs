@@ -6,6 +6,7 @@ import {chatFor,groupChatFor} from './api.mjs';
 import {modelBudgetConfig} from './budget.mjs';
 import {notionOAuthConfig} from './notion.mjs';
 import {deliverRoutines,runProactive} from './proactive.mjs';
+import {jevConfig} from './jev.mjs';
 
 // Reminders that came due go to WeChat too: the one-off ones once (wechatQueued), each occurrence of a repeating one
 // once (unsent, set by proactive.deliverRoutines).
@@ -34,7 +35,8 @@ function queueReminderMessages(world,now,enabled){
 //                  server's own clock (/api/internal/tick, from the Agent service) and Cloudflare Cron ask for it.
 //   wechatInbound  answer queued WeChat messages. The server's own clock leaves those to the Mac bridge's tick, so the
 //                  two never race to answer and a reply is claimed right after the tick that wrote it.
-async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive=false,wechatInbound=true}){
+//   jev            the Jev decision before each background wake (jev.mjs), or null to leave it to the Agent.
+async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive=false,wechatInbound=true,jev=null}){
   const enabled=!!(wechatConfig(env).token&&secret);
   const {delivered,routines,queued}=await withWorld(db,world=>{
     const delivered=deliverReminders(world,now),routines=deliverRoutines(world,now);
@@ -46,13 +48,13 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
     if(service)processed=await processInboundSdk({db,secret,service,fetcher,now});
     else console.error('WEAVE_AGENT_RUNTIME=sdk，但 Agent 服务没有配置好，微信消息先留在队列里。');
   }
-  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now}):0;
+  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now,jev}):0;
   return {delivered,routines,queued,processed,proactive:{started}};
 }
 
-export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true}){
+export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true,jev=jevConfig(env)}){
   if(!db)throw Error('Reminder database is unavailable');
-  if(agentRuntime==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive,wechatInbound});
+  if(agentRuntime==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive,wechatInbound,jev});
   const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now,apiProxy:notionOAuthConfig(env).apiProxyUrl||''};
   for(let attempt=0;attempt<3;attempt++)try{
     const store=new Store(db),world=await store.load();
