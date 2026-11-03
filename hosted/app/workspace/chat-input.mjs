@@ -14,3 +14,7 @@ export function shouldSendOnEnter(event, composing = false) {
   if (!event || event.key !== 'Enter' || event.shiftKey) return false;
   return !(composing || isImeComposing(event));
 }
+
+// The most a message to Weave can hold: POST /api/chat refuses more than 4000 characters (hosted/lib/weave/api.mjs).
+// The boxes count the way the server does, in JavaScript string length.
+export const MESSAGE_MAX_LENGTH = 4000;

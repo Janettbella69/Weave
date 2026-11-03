@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {isImeComposing,shouldSendOnEnter} from '../hosted/app/workspace/chat-input.mjs';
 import {beginPending,finishPending,dropSettled,visibleMessages,isReplying} from '../hosted/app/workspace/chat-pending.mjs';
 import {agentStatus} from '../hosted/app/workspace/agent-status.mjs';
+import {sendChat} from '../hosted/app/workspace/chat-send.mjs';
+import {ApiError} from '../hosted/app/workspace/api-client.mjs';
 
 const key=(init={})=>({key:'Enter',shiftKey:false,...init});
 const react=(init={},native={})=>({...key(init),nativeEvent:{isComposing:false,keyCode:13,...native}});
@@ -97,4 +99,65 @@ test('the Agent status says the same thing in the header and in settings, and ne
   assert.equal(agentStatus({ready:true,replying:true}).label,'Agent 正在回复…');
   assert.equal(agentStatus({ready:true,replying:true}).rowLabel,'已连接');
   for(const input of [{ready:true},{ready:false},{ready:true,replying:true},{}])assert.ok(!JSON.stringify(agentStatus(input)).includes('测试'));
+});
+
+// ---- sending (chat-send.mjs) ----
+
+// A stand-in for the shell's `chat` prop (Workspace.jsx): the same calls, each written down, on a real pending list.
+function fakeShell({messages=[],agent=true}={}){
+  const log=[];
+  const shell={state:{messages,settings:{agent}},pendings:[],draft:'',error:'',requests:0};
+  const chat={
+    get pendings(){return shell.pendings;},
+    begin(text){log.push(['begin',text]);const entry=beginPending(shell.state.messages,text);shell.pendings=[...shell.pendings,entry];return entry;},
+    finish(entry,reply){log.push(['finish',reply]);shell.pendings=finishPending(shell.pendings,entry.key,reply,shell.requests);},
+    cancel(entry,error){log.push(['cancel',error.message]);shell.pendings=shell.pendings.filter(p=>p.key!==entry.key);shell.error=error.message;},
+    restore(text){log.push(['restore',text]);shell.draft=shell.draft||text;},
+  };
+  return {shell,chat,log};
+}
+
+test('sendChat: the message and the thinking bubble show at once, the reply when the request comes back',async()=>{
+  const {shell,chat,log}=fakeShell({messages:[msg('1','user','早')]});
+  let answer;
+  const api=(path,body)=>{log.push(['api',path,body]);return new Promise(resolve=>{answer=resolve;});};
+  const sent=sendChat({state:shell.state,api,chat},'  今天想散步  ');
+  assert.deepEqual(log,[['begin','今天想散步'],['api','chat',{text:'今天想散步'}]],'on screen before the request goes out, and trimmed');
+  assert.deepEqual(visibleMessages(shell.state.messages,shell.pendings).map(m=>[m.role,m.text,!!m.thinking]),[['user','早',false],['user','今天想散步',false],['assistant','',true]]);
+  answer({reply:'**好**，走起'});
+  assert.equal(await sent,true);
+  assert.deepEqual(log.slice(2),[['finish','**好**，走起']]);
+  assert.deepEqual(visibleMessages(shell.state.messages,shell.pendings).slice(1).map(m=>[m.role,m.text,!!m.thinking]),[['user','今天想散步',false],['assistant','**好**，走起',false]]);
+  assert.equal(shell.draft,'','nothing is put back after a send that worked');
+});
+
+test('sendChat: nothing goes out without an Agent or while Weave is still answering, and the text stays in the chat box',async()=>{
+  const busy=fakeShell();busy.shell.pendings=[beginPending([],'上一句')];
+  for(const [what,{shell,chat,log}] of [['no Agent',fakeShell({agent:false})],['still answering',busy]]){
+    const calls=[];
+    const ok=await sendChat({state:shell.state,api:async(...args)=>{calls.push(args);return {reply:''};},chat},'你好');
+    assert.equal(ok,false,what);
+    assert.deepEqual(calls,[],what+': no request');
+    assert.deepEqual(log,[['restore','你好']],what+': nothing on screen, the text kept');
+    assert.equal(shell.draft,'你好',what);
+  }
+  const blank=fakeShell();
+  assert.equal(await sendChat({state:blank.shell.state,api:async()=>{throw Error('not called');},chat:blank.chat},'  \n '),false);
+  assert.deepEqual(blank.log,[],'a blank text is no message at all');
+});
+
+test('sendChat: a failed send takes the message off the screen, says why, and puts the text back in the chat box',async()=>{
+  const {shell,chat,log}=fakeShell();
+  const ok=await sendChat({state:shell.state,api:async()=>{throw new ApiError('服务暂时不可用，请稍后重试',503);},chat},'帮我定个目标');
+  assert.equal(ok,false);
+  assert.deepEqual(log,[['begin','帮我定个目标'],['cancel','服务暂时不可用，请稍后重试'],['restore','帮我定个目标']]);
+  assert.deepEqual(shell.pendings,[]);
+  assert.equal(shell.error,'服务暂时不可用，请稍后重试','the server\'s own words, as the old send showed them');
+  assert.equal(shell.draft,'帮我定个目标');
+});
+
+test('sendChat: an answer without a reply text leaves no empty bubble behind',async()=>{
+  const {shell,chat}=fakeShell();
+  assert.equal(await sendChat({state:shell.state,api:async()=>({}),chat},'在吗'),true);
+  assert.deepEqual(visibleMessages([],shell.pendings).map(m=>[m.role,m.text]),[['user','在吗']]);
 });

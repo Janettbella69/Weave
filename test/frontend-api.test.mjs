@@ -2,7 +2,6 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {apiRequest,ApiError,unauthorizedAction,reloadAllowed,normalizeStatus} from '../hosted/app/workspace/api-client.mjs';
 import {readNotionReturn,normalizePages,waitForNotionPages} from '../hosted/app/workspace/notion-return.mjs';
-import {FEATURES,navViews} from '../hosted/app/workspace/features.mjs';
 
 const answer=(body,init={})=>async()=>new Response(typeof body==='string'?body:JSON.stringify(body),{status:200,...init});
 const recorder=(handler)=>{const calls=[];const fetchImpl=async(url,options)=>{calls.push({url,options});return handler(url,options);};return {fetchImpl,calls};};
@@ -101,17 +100,29 @@ test('a connection the server finished by itself is recognised, and asked about 
   assert.deepEqual(await waitForNotionPages(async()=>({ready:true,pages:[{id:'a',title:'b'}]}),{sleep,isConnected}),{pages:[{id:'a',title:'b'}]});
 });
 
-test('friends and the background page are not offered for now',()=>{
-  assert.equal(FEATURES.collaboration,false);assert.equal(FEATURES.proactive,false);
-  assert.deepEqual(navViews().map(([id])=>id),['chat','calendar','memory']);
-  assert.deepEqual(navViews({collaboration:true,proactive:true}).map(([id])=>id),['chat','connections','calendar','proactive','memory']);
-});
-
 test('a status answer is only used when it has what the workspace shows; friend lists may be missing',()=>{
   const real={profile:{name:'Me',timezone:'Asia/Shanghai',slots:[],activities:['散步']},settings:{agent:true},messages:[],plans:[],checkins:[],calendar:[],reminders:[],notifications:[],people:[],invites:[],negotiations:[]};
-  assert.deepEqual(normalizeStatus(real),real);
+  assert.deepEqual(normalizeStatus(real),{...real,goals:[],habits:[],completions:[],today:''},'what an older server does not send is filled in');
   const slim={profile:{name:'Me',timezone:'UTC'},settings:{},messages:[],plans:[],checkins:[],reminders:[],notifications:[]};
   const filled=normalizeStatus(slim);
-  assert.deepEqual([filled.people,filled.invites,filled.negotiations,filled.calendar,filled.profile.slots,filled.profile.activities],[[],[],[],[],[],[]]);
+  assert.deepEqual([filled.people,filled.invites,filled.negotiations,filled.calendar,filled.profile.slots,filled.profile.activities,filled.goals,filled.habits,filled.completions],[[],[],[],[],[],[],[],[],[]]);
+  assert.equal(filled.today,'');
   for(const bad of [null,undefined,{},[],'x',{...real,settings:undefined},{...real,messages:null},{...real,reminders:'no'},{...real,profile:{timezone:'UTC'}},{...real,profile:{name:'x'}}])assert.equal(normalizeStatus(bad),null);
+});
+
+test('the goals, habits, completions and today of a status answer are kept; a missing or mistyped one becomes empty',()=>{
+  const base={profile:{name:'Me',timezone:'Asia/Shanghai'},settings:{},messages:[],plans:[],checkins:[],reminders:[],notifications:[]};
+  const sent=normalizeStatus({...base,goals:[{id:'g:1'}],habits:[{id:'h:1'}],completions:[{id:'c:1'}],today:'2026-11-02'});
+  assert.deepEqual([sent.goals,sent.habits,sent.completions,sent.today],[[{id:'g:1'}],[{id:'h:1'}],[{id:'c:1'}],'2026-11-02']);
+  const mistyped=normalizeStatus({...base,goals:'x',habits:{id:'h:1'},completions:null,today:20261102});
+  assert.deepEqual([mistyped.goals,mistyped.habits,mistyped.completions,mistyped.today],[[],[],[],'']);
+  const missing=normalizeStatus(base);
+  assert.deepEqual([missing.goals,missing.habits,missing.completions,missing.today],[[],[],[],'']);
+  assert.equal(normalizeStatus({...base,today:null}).today,'');
+});
+
+test('the agent memory is a read-only path: GET, with no body',async()=>{
+  const {fetchImpl,calls}=recorder(answer({text:'记得她喜欢饭后散步'}));
+  assert.deepEqual(await apiRequest('agent-memory',undefined,{fetchImpl}),{text:'记得她喜欢饭后散步'});
+  assert.deepEqual(calls[0],{url:'/api/agent-memory',options:{}});
 });

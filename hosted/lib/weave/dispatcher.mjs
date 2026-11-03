@@ -55,11 +55,12 @@ export function localISO(timezone, now) {
 //   channel   通行证上的通道（web / wechat），决定 send_message 发到哪。
 //   trigger   {kind, channel, direct, text}：kind 默认 message，direct 默认 true；at 由这里补上：本人范围按本人时区，群范围按北京时间。
 //   beforeWake  可选，在读模型设置的同一个事务里先跑（网页和微信用它先存用户的消息）。
+//   background  后台那一轮（定时、定期看看，proactive.mjs）：Agent 服务从当天的会话分叉出去，失败了不碰原会话。
 //   image     可选，{mediaType, data}（base64）：微信看图时这一轮带的那张照片。带照片的一轮一律用 IMAGE_MODEL。
 // 返回 {outcome, reply, uncertain, retryable, runId}：
 //   retryable  Agent 服务明确说没开始跑（429 / 400 401 403 404 413 503），可以说「没有处理」，稍后重试也安全；
 //   uncertain  其余没拿到完整结果的情况（超时、断线、500、这一轮没成功）可能已经做了一部分，不自动重试。
-export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake, image}) {
+export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake, background = false, image}) {
   if (!SCOPES.includes(scope)) throw Error(`不支持的范围：${scope}`);
   if (!CHANNELS.includes(channel)) throw Error(`不支持的通道：${channel}`);
   if (scope === 'group' && (typeof groupId !== 'string' || !groupId)) throw Error('群范围需要 groupId');
@@ -89,6 +90,7 @@ export async function wake({db, secret, service, fetcher = fetch, now = Date.now
         scope, id: scope === 'group' ? groupId : ownerId, capability, localDate: run.localDate,
         trigger: {kind: trigger.kind ?? 'message', channel: trigger.channel, direct, at: run.at, text: trigger.text},
         provider: 'deepseek', model: image ? IMAGE_MODEL : run.model, ...(run.userKey ? {userKey: run.userKey} : {}),
+        ...(background ? {background: true} : {}),
         ...(image ? {image} : {}),
       }),
     });

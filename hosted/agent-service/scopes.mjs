@@ -12,9 +12,11 @@ export const SCOPES = deepFreeze({
     kind: 'owner',
     builtins: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch'],
     denied: ['WebFetch', 'Agent'],
-    // 只有会写东西的工具；读数据走叫醒前的快照 weave/weave.db（教材 p.16「查数留SQL,不要封成MCP」）。
-    tools: ['send_message', 'save_habit', 'log_completion'],
-    skills: ['weave:weekly-review'],
+    // 只有会写东西的工具；读数据走叫醒前的快照 weave/weave.db（教材 p.16「查数留SQL,不要封成MCP」），
+    // 排过的跟进也是（schedules 表），所以没有 list_schedule。
+    // set_reminder、set_proactivity 只在有人直接找它的那一轮能用，后台那一轮由工具后端拒绝（设计文档 4.5）。
+    tools: ['send_message', 'save_habit', 'log_completion', 'save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity'],
+    skills: ['weave:weekly-review', 'weave:proactive-judgment'],
     circuitBreakerUsd: 2,
     network: 'none',
   },

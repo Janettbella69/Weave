@@ -1,10 +1,12 @@
 // Agent 服务（docs/ARCHITECTURE.md 第 1、11 节）：全仓库唯一调用 query() 的地方。
 //   POST /wake    叫醒一轮。Weave 服务决定该不该叫醒，醒了做什么由 Agent 自己决定。
+//                 background: true 是后台那一轮（定时、定期看看）：从当天的会话分叉，失败了原会话不动。
 //   POST /forget  注销时删掉这个人的工作目录和会话记录。
 //   POST /memory  读本人的 MEMORY.md，给网页看。
 //   GET  /health
 //   POST /query   旧路，第 2 步删（runtime.mjs）。
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
+// 服务器自己的闹钟也在这里：每隔 AGENT_TICK_SECONDS 秒 POST 一次网站的 /api/internal/tick（createTicker）。
 import http from 'node:http';
 import {timingSafeEqual, createHash, randomUUID} from 'node:crypto';
 import {mkdir, chmod, rm} from 'node:fs/promises';
@@ -66,6 +68,7 @@ function checkWake(input) {
   try { provider = providerFor(input.provider); } catch { fail(400, '模型提供方无效'); }
   if (!modelAllowed(provider, input.model)) fail(400, '模型无效');
   if (input.userKey !== undefined && (typeof input.userKey !== 'string' || input.userKey.length < 12 || input.userKey.length > 512 || /\s/.test(input.userKey))) fail(400, 'Key 无效');
+  if (input.background !== undefined && typeof input.background !== 'boolean') fail(400, 'background 无效');
   let image;
   if (input.image !== undefined) {
     // 只有能看图的模型收照片：DeepSeek 只有 deepseek-flash 能看，v4-pro 会把照片换成「[Unsupported Image]」（DeepSeek 文档）。
@@ -73,18 +76,65 @@ function checkWake(input) {
     try { image = checkImage(input.image); } catch { fail(400, '照片无效'); }
   }
   // 叫 photo，不叫 image：createAgentService 里的 image 是容器镜像的名字。
-  return {scope, provider, photo: image};
+  return {scope, provider, background: input.background === true, photo: image};
+}
+
+const TICK_TIMEOUT_MS = 170_000;
+const TICK_LOG_EVERY_MS = 10 * 60 * 1000;
+// setInterval 超过这个数会悄悄改成 1 毫秒一次。
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+// 服务器自己的闹钟（设计文档 2026-11-03-proactive-wake-design.md 4.7）：每隔一段时间 POST 一次网站的 /api/internal/tick。
+// 到点的提醒、排进微信、该不该后台叫醒，都由网站那边的代码判断（教材 p.20：代码合法的位置「Agent启动之前 预处理」），
+// 这里只管敲。上一次没回来就跳过这一拍；失败只记第一次，之后最多 10 分钟记一行，只写状态码或错误名，不写正文和令牌。
+export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now}) {
+  const url = `${weaveUrl.replace(/\/+$/, '')}/api/internal/tick`;
+  let busy = false, stopped = false, loggedAt = -Infinity, controller = null;
+  const failed = reason => {
+    const at = now();
+    if (stopped || at - loggedAt < TICK_LOG_EVERY_MS) return;
+    loggedAt = at;
+    console.error('Agent service: tick failed:', reason);
+  };
+  async function beat() {
+    if (busy || stopped) return;
+    busy = true;
+    controller = new AbortController();
+    try {
+      const response = await fetcher(url, {
+        method: 'POST', redirect: 'manual',
+        headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token},
+        body: '{}',
+        // 关服务时断掉还在等的这一次，不让它拖住进程。
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TICK_TIMEOUT_MS)]),
+      });
+      if (response.status !== 200) {
+        response.body?.cancel().catch(() => {});
+        failed(`HTTP ${response.status}`);
+        return;
+      }
+      const started = (await response.json())?.proactive?.started;
+      if (typeof started === 'number' && started > 0) console.log(`Agent service: tick started ${started} background wake(s)`);
+    } catch (error) {
+      failed(error?.name || 'Error');
+    } finally {
+      busy = false;
+      controller = null;
+    }
+  }
+  return {beat, stop() { stopped = true; controller?.abort(); }};
 }
 
 export async function createAgentService({
   token, dataDir, isolation = 'docker', image = 'weave-agent:0.3.316', weaveUrl, keys = {}, upstreams,
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
-  fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g',
+  fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g', tickEveryMs = 0,
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
 }) {
   if (typeof token !== 'string' || token.length < 32) throw Error('请配置至少32字符的 AGENT_SERVICE_TOKEN');
   if (!['docker', 'local'].includes(isolation)) throw Error(`不支持的隔离方式：${isolation}`);
   if (!/^\d+[kmg]$/i.test(containerMemory)) throw Error(`AGENT_CONTAINER_MEMORY 写成 768m、1g 这样：${containerMemory}`);
+  if (!Number.isInteger(tickEveryMs) || tickEveryMs < 0 || tickEveryMs > MAX_TIMER_MS) throw Error(`AGENT_TICK_SECONDS 写成 0 到 ${Math.floor(MAX_TIMER_MS / 1000)} 之间的整数，0 是关掉`);
   await mkdir(dataDir, {recursive: true, mode: 0o700});
   const ledger = createLedger({file: join(dataDir, 'usage.json')});
   const proxy = createModelProxy({keys, upstreams, ledger, limits, fetcher});
@@ -106,7 +156,7 @@ export async function createAgentService({
   let legacyActive = 0;
 
   async function handleWake(input) {
-    const {scope, provider, photo} = checkWake(input);
+    const {scope, provider, background, photo} = checkWake(input);
     // 带照片的一轮一律用能看图的模型，不管这个人选的是哪个。
     const model = photo ? provider.vision : input.model;
     if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
@@ -133,15 +183,21 @@ export async function createAgentService({
       const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, image: photo, queryFn,
+          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, queryFn,
+          // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
+          forkSession: background,
+          // 微信看图：这一轮带的那张照片（没有就是 undefined）。
+          image: photo,
           isolation: runIsolation,
           rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
+        // 成功了就接着用这段（后台那一轮是分叉出来的那段）：她回「走了」，下一轮接得上 Weave 刚才问的话。
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
+        // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
         if (photo) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
-        else await workspace.clearSession(dirs);
+        else if (!background) await workspace.clearSession(dirs);
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
       } finally {
         run.close();
@@ -191,10 +247,18 @@ export async function createAgentService({
   });
   await new Promise(ok => server.listen(port, host, ok));
 
+  // 能接 /wake 了再开始敲：网站那边的后台叫醒会回头调这里的 /wake。默认关（0），只有入口按 AGENT_TICK_SECONDS 打开。
+  const ticker = tickEveryMs > 0 && weaveUrl ? createTicker({weaveUrl, token, fetcher}) : null;
+  const tickTimer = ticker ? setInterval(ticker.beat, tickEveryMs) : null;
+  // 闹钟本身不让进程一直活着。
+  tickTimer?.unref();
+
   return {
     server,
     url: `http://${host}:${server.address().port}`,
     async close() {
+      clearInterval(tickTimer);
+      ticker?.stop();
       server.closeAllConnections(); proxyServer.closeAllConnections();
       await Promise.all([new Promise(r => server.close(r)), new Promise(r => proxyServer.close(r))]);
     },
@@ -206,6 +270,7 @@ const count = (value, fallback) => { const n = Number(value); return value !== u
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const env = process.env;
   const isolation = env.AGENT_ISOLATION || 'docker';
+  const tickSeconds = count(env.AGENT_TICK_SECONDS, 60);
   const service = await createAgentService({
     token: env.AGENT_SERVICE_TOKEN,
     dataDir: resolve(env.AGENT_DATA_DIR || './data'),
@@ -216,11 +281,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     limits: {perAccount: count(env.AGENT_DAILY_TOKENS_PER_ACCOUNT, 400000), total: count(env.AGENT_DAILY_TOKENS_TOTAL, 6000000)},
     maxConcurrent: count(env.AGENT_MAX_CONCURRENCY, 3) || 3,
     containerMemory: env.AGENT_CONTAINER_MEMORY || '1g',
+    // 每隔几秒敲一次网站的 /api/internal/tick（服务器自己的闹钟），默认 60，0 是关掉。
+    tickEveryMs: tickSeconds * 1000,
     // 服务本身跑在容器里时，插件要放在宿主机看得到的路径上（见 Dockerfile 的入口脚本）。
     ...(env.AGENT_PLUGIN_DIR ? {pluginDir: env.AGENT_PLUGIN_DIR} : {}),
     host: env.HOST || '127.0.0.1',
     port: Number(env.PORT) || 4320,
   });
-  console.log(`Weave Agent service started on ${service.url} (isolation: ${isolation})`);
+  console.log(`Weave Agent service started on ${service.url} (isolation: ${isolation}, tick: ${tickSeconds && env.WEAVE_API_URL ? `every ${tickSeconds}s` : 'off'})`);
   if (isolation === 'local') console.warn('AGENT_ISOLATION=local 只用于本机开发：Bash 靠 SDK 的 sandbox 隔离，没有容器。');
 }

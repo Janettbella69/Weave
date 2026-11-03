@@ -8,8 +8,11 @@ import {weaveServer} from './mcp/tools.mjs';
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
 const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 
+// forkSession：后台那一轮（定时、定期看看）从 sessionId 分叉出一段新会话，原会话不动（设计文档 2026-11-03-proactive-wake-design.md 4.6）。
+// SDK 文档原文：fork「creates a new session that starts with a copy of the original's history. The original stays unchanged.」
+// 要和 resume 一起用（sdk.d.ts：「Use with `resume`」），所以没有 sessionId 时不设；返回的 sessionId 是分叉出来的那段。
 // image：可选，{mediaType, data}（base64），这一轮带的那张照片（微信看图，docs/superpowers/specs/2026-11-03-wechat-images-design.md）。
-export async function wake({scope, trigger, memory = '', provider, model, runToken, isolation, rpc, sessionId, image, queryFn = sdkQuery}) {
+export async function wake({scope, trigger, memory = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery}) {
   const tools = [];
   const audit = async input => { if (input?.tool_name) tools.push(input.tool_name); return {}; };
   const abortController = new AbortController();
@@ -33,7 +36,7 @@ export async function wake({scope, trigger, memory = '', provider, model, runTok
     env: cliEnv({provider, model, runToken, baseUrl: isolation.baseUrl, home: isolation.home, configDir: isolation.configDir, path: isolation.path}),
     ...(isolation.spawnClaudeCodeProcess ? {spawnClaudeCodeProcess: isolation.spawnClaudeCodeProcess} : {}),
     ...(isolation.sandbox ? {sandbox: isolation.sandbox} : {}),
-    ...(sessionId ? {resume: sessionId} : {}),
+    ...(sessionId ? {resume: sessionId, ...(forkSession ? {forkSession: true} : {})} : {}),
     // 带照片的一轮不写会话记录：照片不落在这台机器的磁盘上，下一轮接着用叫醒前那段会话（SDK 文档 sessions：
     // persistSession: false「The session exists only in memory for the duration of the call」）。server.mjs 也不动 sessions.json。
     ...(image ? {persistSession: false} : {}),
