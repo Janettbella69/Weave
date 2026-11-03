@@ -167,7 +167,7 @@ test('an old account with habits but no goals: status.goals is [] and the habits
   assert.deepEqual((await s.call('Alice', 'export')).data.goals, []);
 });
 
-test('status.goals leaves out archived goals, status.habits keeps every habit, export.goals has all goals', async () => {
+test('status.goals has every stored goal, archived ones too, so their habits can be matched; status.habits keeps every habit; export.goals has all goals', async () => {
   const s = await setup();
   const {goal: move} = await s.tool('Alice', 'save_goal', {title: '每天动一动', category: 'health'});
   const {goal: read} = await s.tool('Alice', 'save_goal', {title: '多读书', category: 'interests'});
@@ -179,12 +179,15 @@ test('status.goals leaves out archived goals, status.habits keeps every habit, e
   const stored = await s.person('Alice');
   assert.equal(stored.goals.length, 2);
   const status = await s.status('Alice');
-  // The stored goal, as is: id, title, category, archived, createdAt, updatedAt.
-  assert.deepEqual(status.goals, [stored.goals[0]]);
-  assert.deepEqual(status.goals.map(g => [g.id, g.title, g.category, g.archived]), [[move.goal_id, '每天动一动', 'health', false]]);
-  // An archived goal's habit is still there, still pointing at it.
+  // Every goal as stored (id, title, category, archived, createdAt, updatedAt), the archived one with its flag.
+  assert.deepEqual(status.goals, stored.goals);
+  assert.deepEqual(status.goals.map(g => [g.id, g.title, g.category, g.archived]), [[move.goal_id, '每天动一动', 'health', false], [read.goal_id, '多读书', 'interests', true]]);
+  // Every habit as stored, and each goalId can be looked up in status.goals: a habit of an archived goal is not mistaken for a goal-less one.
   assert.deepEqual(status.habits, stored.habits);
   assert.deepEqual(status.habits.map(h => [h.id, h.goalId]), [[walk, move.goal_id], [book, read.goal_id], [loose, undefined]]);
+  const goalOf = habit => status.goals.find(g => g.id === status.habits.find(h => h.id === habit).goalId);
+  assert.equal(goalOf(book).archived, true);
+  assert.equal(goalOf(walk).archived, false);
   const exported = (await s.call('Alice', 'export')).data;
   assert.deepEqual(exported.goals, stored.goals);
   assert.deepEqual(exported.goals.map(g => g.archived), [false, true]);
