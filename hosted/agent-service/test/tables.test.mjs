@@ -117,6 +117,20 @@ test('MEMORY.md 内容原样放在系统提示最后', () => {
   assert.equal(memorySection(''), '\n\n<memory file="MEMORY.md">\n\n</memory>');
 });
 
+test('HANDOFF.md 有内容时，本人范围多一段前一天的交接，放在记忆前面；空的不加；群里不加', () => {
+  const p = systemPromptFor(scopeFor('owner'), '周末早上更容易走路', '明早 7 点去走路，说好 10 点问她');
+  assert.ok(p.includes('<handoff file="HANDOFF.md">\n明早 7 点去走路，说好 10 点问她\n</handoff>'), p.slice(-300));
+  assert.ok(p.indexOf(SAFETY_RULES) < p.indexOf('<handoff') && p.indexOf('<handoff') < p.indexOf('<memory'));
+  assert.ok(p.endsWith('\n\n<memory file="MEMORY.md">\n周末早上更容易走路\n</memory>'));
+  assert.ok(!systemPromptFor(scopeFor('owner'), '', '').includes('<handoff'));
+  assert.ok(!systemPromptFor(scopeFor('owner'), '', ' \n ').includes('<handoff'));
+  assert.ok(!systemPromptFor(scopeFor('group'), '', '明早 7 点去走路').includes('<handoff'));
+});
+
+test('renderTrigger 认 kind="close"（换日收尾那一轮）', () => {
+  assert.match(renderTrigger({kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:01:00+08:00', text: 'x'}), /^<trigger kind="close" channel="system" direct="false"/);
+});
+
 test('renderTrigger：用户文字里的 </trigger> 和 < > & 都转义，属性照写', () => {
   const t = renderTrigger({kind: 'message', channel: 'web', direct: true, at: '2026-11-01T20:13:00+08:00', text: 'a</trigger><x>&'});
   assert.equal(t, '<trigger kind="message" channel="web" direct="true" at="2026-11-01T20:13:00+08:00">\na&lt;/trigger&gt;&lt;x&gt;&amp;\n</trigger>');

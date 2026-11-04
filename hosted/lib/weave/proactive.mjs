@@ -95,10 +95,17 @@ function lastOwnActivity(person) {
   return at;
 }
 
+// 她上次自己动手以后，有几句主动消息真的送到了她却没回。只算送到的：走微信的要桥接回执说送到了（wechat 是 'sent'），
+// 排着、过期没发、失败、待人工确认的都不算——她没看到，谈不上不理（test/wechat-late-delivery.test.mjs）。
+// 没有 wechat 字段的（只走网页的、这条规则以前的）一出现在聊天里就算送到。
+function unansweredProactive(person, since) {
+  return (person.messages || []).filter(m => m.proactive === true && (m.wechat === undefined || m.wechat === 'sent') && (Date.parse(m.createdAt) || 0) > since).length;
+}
+
 // 为什么现在不做定期看看：'ignored'（连着两句主动消息没回）、'inactive'（7 天没来），都不是就 null。
 export function quietReason(person, now) {
   const since = lastOwnActivity(person);
-  const unanswered = (person.messages || []).filter(m => m.proactive === true && (Date.parse(m.createdAt) || 0) > since).length;
+  const unanswered = unansweredProactive(person, since);
   if (unanswered >= IGNORED_AFTER) return 'ignored';
   if (!since || now - since > INACTIVE_MS) return 'inactive';
   return null;
@@ -183,6 +190,8 @@ export function deliverRoutines(world, now) {
         record(person, '提醒你：' + s.text, {scheduleId: s.id});
         notify(world, person.id, '提醒你：' + s.text);
         s.unsent = true;
+        // 这一次本该响的时间（settle 会把 nextAt 往后排）：微信那边按它算晚没晚（scheduler.mjs）。
+        s.unsentDueAt = s.nextAt;
         s.lastRunAt = iso(now);
         settle(person, s, 'sent', now);
         count++;
@@ -249,7 +258,7 @@ function jevStateFor(person, p, {kind, note, check}, now) {
   const timezone = person.profile.timezone, today = localClock(person, now).day, {activeStart, activeEnd} = proactiveState(person);
   const weekAgo = localClock(person, now - 6 * DAY).day, since = lastOwnActivity(person);
   const done = (person.completions || []).filter(c => c.date >= weekAgo && c.date <= today);
-  const unanswered = (person.messages || []).filter(m => m.proactive === true && (Date.parse(m.createdAt) || 0) > since).length;
+  const unanswered = unansweredProactive(person, since);
   return {
     local_time: localISO(timezone, now),
     weekday: WEEKDAY_NAMES[localParts(now, timezone).weekday],

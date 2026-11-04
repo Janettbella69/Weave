@@ -12,6 +12,9 @@ const stamp=now=>new Date(now).toISOString();
 const bindPattern=/^绑定\s*(?:weave\s*)?([a-f0-9]{48})$/i;
 const GROUP_SUFFIX='@chatroom',CONTEXT_LIMIT=50,CONTEXT_MS=14*86400000,SEEN_LIMIT=200,TEXT_LIMIT=500;
 const STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
+// 草稿数字，待她定：主动消息和提醒（带 dueAt 的发送任务）比本该送到的时间晚了这么久还没领走（Mac 睡着、桥接断了），就不发了。
+// 和 proactive.mjs 的 GRACE_MS 一样是 2 小时：晚了 2 小时的「今天走了吗」「提醒你：吃药」比不发更打扰。普通回复、绑定确认、群消息不带 dueAt，不过期。
+const LATE_MS=2*3600000;
 // Agent SDK path: a run that has been 'processing' this long lost its worker; it is never retried.
 const ORPHAN_MS=10*60000,MAX_WAKES_PER_TICK=5,GROUP_RECEIPTS=50;
 // 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）：一条在等照片的消息最多等多久。
@@ -234,8 +237,18 @@ export async function groupSnapshotMessages(world,{groupId,ownerId,secret}){
 }
 
 // send_message from an owner run on the WeChat channel: the recipient is the owner, never chosen by the model.
-export function queueOwnerText(world,person,text,now){
-  if(person.settings?.wechatWxidHash)queueOut(world,{ownerId:person.id,text:text.slice(0,4000),source:'agent'},now);
+// message：聊天里记下的那一条。主动消息（没人直接找它的那一轮说的）的发送任务带 dueAt（说出口的时间，晚了就不发）和 messageId
+// （回执回写到那一条的 wechat 上，「连着两句没回」只算送到的）。返回有没有排进队列。
+export function queueOwnerText(world,person,text,now,{message,proactive=false}={}){
+  if(!person.settings?.wechatWxidHash)return false;
+  queueOut(world,{ownerId:person.id,text:text.slice(0,4000),source:'agent',...(proactive&&message?{dueAt:stamp(now),messageId:message.id}:{})},now);
+  return true;
+}
+// 主动消息在微信上送到了没有，写回聊天里那一条：queued（排着）、sent、failed、uncertain（要人工确认）、expired（晚了没发）。
+function markDelivery(world,entry,state){
+  if(!entry.messageId)return;
+  const message=world.people?.[entry.ownerId]?.messages?.find(m=>m.id===entry.messageId);
+  if(message)message.wechat=state;
 }
 
 // Tools in a group run (only send_message for now). The recipient is the group named by the capability, the
@@ -362,6 +375,7 @@ export async function claimOutbound(world,{secret,now=Date.now(),limit=CLAIM_LIM
   const due=Object.values(world.wechat).filter(x=>x.direction==='outbound'&&(x.status==='queued'||(x.status==='sending'&&x.leaseUntil<now))).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
   for(const entry of due){
     if(jobs.length>=limit)break;
+    if(entry.dueAt&&now-Date.parse(entry.dueAt)>LATE_MS){entry.status='expired';delete entry.text;delete entry.leaseUntil;markDelivery(world,entry,'expired');continue;}
     let threadId='',mentions;
     if(entry.groupAad){
       threadId=await unseal(entry.target,secret,entry.groupAad);
@@ -384,6 +398,7 @@ export function receiveReceipt(world,{id,state},now=Date.now()){
   else if(state==='failed'||state==='cancelled')entry.status='failed';
   else return {ok:false};
   delete entry.leaseUntil;
+  markDelivery(world,entry,entry.status);
   // 看图的群说明：发出去了，这个群从现在起用照片；没发出去（失败、取消、要人工确认），下一次有人 @ 它时再发。
   const group=entry.groupAad?world.runtime?.[entry.groupAad]:undefined;
   if(group?.photoNotice===id){if(entry.status==='sent')group.photosToldAt=now;delete group.photoNotice;}

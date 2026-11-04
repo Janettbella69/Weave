@@ -296,6 +296,15 @@ weave/ 是这次醒来时从 Weave 取的数据快照，每次醒来都会重建
 你现在在一个打卡群里。这里没有任何人的个人资料，群里的人只以「成员1」这样的编号出现。回复不超过 150 字。
 ```
 
+本人那一轮，工作目录里的 `HANDOFF.md`（换日收尾写的交接，见第 7 节）有内容时，在记忆前面再加一段（草稿，待确认）：
+
+```text
+前一天收尾时写的交接在下面：说好要做的事、你答应对方的事、没聊完的话。它可能已经过时，和 weave/weave.db 里的记录对不上时以记录为准。
+<handoff file="HANDOFF.md">
+（HANDOFF.md 原文）
+</handoff>
+```
+
 第一句那样写是因为：SDK 用自定义提示时，仍然会在最前面加一句 `You are a Claude agent, built on Anthropic's Claude Agent SDK`，这句去不掉（实测）。不说清楚的话，用户问「你是谁」，DeepSeek 可能答自己是 Claude。这一点要进评测。
 
 ## 6. 内置能力和边界
@@ -367,11 +376,19 @@ Weave 服务只负责判断**该不该花这次钱叫醒它**（教材 p.20「Ag
 | 有人说话 | 网页、微信私聊、群里 @ | 已上线 |
 | 到点（跟进） | Agent 自己用 `schedule_wake` 排的 | 第二块 |
 | 定期看看 | 档位决定：`low` 每天 1 次、`normal`（默认）2 次、`high` 4 次，时间跟着允许时段走 | 第二块 |
+| 换日收尾 | 她直接跟 Weave 说过话的那一天过完以后，服务器闹钟的下一拍（`hosted/lib/weave/day-close.mjs`） | 2026-11-04 加 |
 | 事件 | 朋友确认了活动等 | 没做 |
 
 **谁来敲钟：** Agent 服务每分钟调一次 `POST /api/internal/tick`（`AGENT_TICK_SECONDS`，令牌就是 `AGENT_SERVICE_TOKEN`），它做到点的提醒和后台叫醒，不处理微信收到的消息；微信桥接的 `/api/internal/wechat/tick` 照旧只做提醒和微信消息；Cloudflare Cron 都做。两个 tick 同时跑时靠 `person.proactive.running` 租约（15 分钟）保证同一件事只醒一次，漏了 2 小时以上的不补，积压只补最近的一次。
 
 **后台那一轮：** 触发是 `<trigger kind="timer" | "check" channel="system" direct="false">`；`/wake` 带 `background: true`，Agent 服务从当天的会话分叉（`forkSession`），成功了存分叉后的会话，失败了原会话不动。
+
+**换日收尾（2026-11-04 她定）：** 会话按当地日期换，第二天开新的。以前中间没有任何一步，她晚上说的「明天早上 7 点去走路」第二天就没了（`MEMORY.md` 只写长期的事）。教材 p.47「Handoff ≠ 记忆」：handoff 是「下一次 session 参考的交接文档」，对话结尾要「写一个 handoff 文档方便新开的对话接着做任务，同时把…值得写到记忆的东西写到记忆里」；p.53：让 AI 自己记得去做的事「他有可能忘记调用……做成 Hook，他就是百分之百」。所以「什么时候收尾」由代码定，写什么由 Agent 定：
+
+- 她直接找它的那一轮（网页、微信私聊）记下 `person.agentDay`。那一天过完以后，服务器闹钟的下一拍叫醒一轮收尾：`<trigger kind="close" channel="system" direct="false">`，`/wake` 带 `background: true`，`localDate` 是要收的那一天，Agent 服务从那一天的会话分叉；那一天没有会话（没聊过、出错清掉了、新的一天已经开了一段）就不叫醒模型，回 `skipped`。跑完不改 `sessions.json`。
+- Agent 把还要接着的事写进工作目录的 `HANDOFF.md`（整个重写，只留没结束的），把稳定的事实写进 `MEMORY.md`，说了具体时间的可以用 `schedule_wake` 排一次跟进。通行证带 `purpose: close`，`send_message` 一律拒绝；照旧不能替她设提醒、改档位。
+- 收尾不找人：不受档位和安静时段限制，不算今天的后台次数，不进「动态」。每个她说过话的日子收一次；Agent 服务明确说没开始跑（503、429）就下一拍再试，其余结果都只试一次。后台看看过、她没说话的那天不收尾，上一份 `HANDOFF.md` 留着。
+- SDK 的 `SessionEnd` 钩子不合用：它在每次 `query()` 结束时跑、只给 1.5 秒，而「一天」是 Weave 自己按当地日期定的。SDK 会话文档也建议「Capture the results you need … as application state and pass them into a fresh session's prompt」。
 
 醒了之后说不说、说什么，都是 Agent 的事，方法写在 `proactive-judgment` 这个 Skill 里。群里没 @ 的消息只存记录，不叫醒模型。
 
@@ -439,6 +456,7 @@ env: {
 | D1 | 目标、习惯、完成记录、提醒、朋友、授权、日程 | 写：只经 MCP 工具，规则在工具后端。读：叫醒前导出成快照。这些要准确，要在网页上显示 |
 | 快照目录（容器里是 `weave/`） | 叫醒前的数据快照：`weave.db`（SQLite），以后可能有别的文件 | 只有 Agent 服务写：每次叫醒前整个换掉，写工具成功后同步。docker 下放在工作目录外、只读挂进容器，Agent 改不了 |
 | 工作目录 `MEMORY.md` | 这个人的目标、什么有效、什么没用 | Agent 用 Edit 改；本人可看（`GET /api/agent-memory`），可改、可删还没做 |
+| 工作目录 `HANDOFF.md` | 换日收尾时写的交接：说好要做的事、答应的事、没聊完的话（第 7 节） | Agent 在收尾那一轮重写；第二天放进本人那一轮的系统提示（最多 8000 字）；网页上还看不到 |
 | 工作目录其他文件 | 笔记、脚本、图表 | Agent |
 | 配置目录 | SDK 的会话记录 | SDK |
 
@@ -450,7 +468,7 @@ env: {
   - 取不到或格式不对就不叫醒，`/wake` 回 503，dispatcher 当成「没有处理」。
   - `save_habit`、`log_completion`、`save_goal`、`set_reminder` 成功后，Agent 服务把结果同步进快照的 `weave.db`，同一轮里再查就看得到（我的看法：这是 p.20 说的副作用，放在工具外壳里，不进循环）。同步只碰宿主自己的那份：如果宿主去打开 Agent 改得到的文件，Agent 埋一个触发器就能卡住整个服务（审查发现，所以 docker 下快照只读挂载）。
 - `settingSources: []` 时 `CLAUDE.md` 不加载（实测），所以 Agent 服务读 `MEMORY.md` 放进系统提示。
-- **会话：** 同一个人同一个当地日期 `resume` 同一段（实测能接上），第二天开新的，靠 `MEMORY.md` 带过去。这样上下文不会无限变长。
+- **会话：** 同一个人同一个当地日期 `resume` 同一段（实测能接上），第二天开新的，靠 `MEMORY.md` 和换日收尾写的 `HANDOFF.md` 带过去（第 7 节）。这样上下文不会无限变长。
 - **打卡群：** 有自己的空间，14 天清理，关闭即删，沿用 [`WECHAT.md`](WECHAT.md) 现有规则。
 - **注销和导出：** 现有的删除和导出接口要连工作目录和配置目录一起处理。隐私说明要加上这部分。
 - **以后接真正的记忆系统：** 包成一个 MCP 工具或 Skill 就行，不用改架构。

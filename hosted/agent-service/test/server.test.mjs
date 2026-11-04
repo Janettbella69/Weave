@@ -153,6 +153,22 @@ test('MEMORY.md 里的内容进了这一轮的系统提示', async () => {
   assert.ok(JSON.stringify(modelCalls()[0].body.system).includes('周末早上更容易走路'));
 });
 
+test('HANDOFF.md 里前一天的交接进了本人这一轮的系统提示；群的工作目录里有也不放', async () => {
+  const owner = scopeDirs(dataDir, 'owner', 'u:hana');
+  mkdirSync(owner.workspace, {recursive: true});
+  writeFileSync(join(owner.workspace, 'HANDOFF.md'), '她说明早 7 点去走路，说好 10 点问一句');
+  fresh(steps([{text: 'ok'}]));
+  await post('/wake', wakeBody({id: 'u:hana'}));
+  assert.ok(JSON.stringify(modelCalls()[0].body.system).includes('她说明早 7 点去走路，说好 10 点问一句'));
+  const group = scopeDirs(dataDir, 'group', 'g:hana');
+  mkdirSync(group.workspace, {recursive: true});
+  writeFileSync(join(group.workspace, 'HANDOFF.md'), 'GROUP_HANDOFF_TEXT');
+  fresh(steps([{text: 'ok'}]));
+  await post('/wake', wakeBody({scope: 'group', id: 'g:hana', trigger: {kind: 'message', channel: 'group', direct: true, at: '2026-11-02T08:00:00+08:00', text: '今天谁走了'}}));
+  assert.ok(modelCalls().length > 0);
+  assert.ok(!JSON.stringify(modelCalls()[0].body.system).includes('GROUP_HANDOFF_TEXT'));
+});
+
 test('用户自己的 Key 经过代理时，上游看到的是用户 Key', async () => {
   fresh(steps([{text: 'ok'}]));
   assert.equal((await post('/wake', wakeBody({id: 'u:gina', userKey: 'user-own-key-123456'}))).status, 200);
@@ -220,6 +236,39 @@ test('background：有当天的会话就带 resume + forkSession，成功存分�
   w = await wakeMia({background: true, localDate: '2026-11-03', trigger: check('定期看看')}, failed('bg-2'));
   assert.deepEqual([w.options.resume, 'forkSession' in w.options], [undefined, false]);
   assert.equal(await sessionFor(dirs, day), 'yesterday', '失败的后台那一轮不碰会话文件');
+});
+
+test('收尾那一轮（kind close）：那一天没有会话就不跑模型、回 skipped；有就接着它分叉，跑完不改 sessions.json；群里或不是后台的是 400', async t => {
+  const seen = [], results = [];
+  const queryFn = async function* ({options}) { seen.push(options); yield results.shift(); };
+  const ok = id => ({type: 'result', subtype: 'success', is_error: false, result: '收好了', session_id: id, total_cost_usd: 0});
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-close-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn});
+  t.after(() => svc.close());
+  const dirs = scopeDirs(dir, 'owner', 'u:lily'), yesterday = '2026-11-02';
+  const close = {kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:01:00+08:00', text: '这一天结束了'};
+  const send = extra => fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:lily', localDate: yesterday, background: true, trigger: close, ...extra}))});
+
+  // 那一天没有会话（没聊过）：不叫醒模型。
+  let r = await send();
+  assert.equal(r.status, 200);
+  assert.deepEqual([(await r.json()).outcome, seen.length], ['skipped', 0]);
+  // 新的一天已经开了一段（她过了零点先说了话）：前一天的会话已经不在 sessions.json 里，同样不跑。
+  await saveSession(dirs, '2026-11-03', 'today-1');
+  assert.deepEqual([(await (await send()).json()).outcome, seen.length], ['skipped', 0]);
+  assert.equal(await sessionFor(dirs, '2026-11-03'), 'today-1');
+
+  // 有那一天的会话：接着它分叉；跑完 sessions.json 不动。
+  await saveSession(dirs, yesterday, 'day-1');
+  results.push(ok('fork-close'));
+  const out = await (await send()).json();
+  assert.deepEqual([out.outcome, out.reply, seen.at(-1).resume, seen.at(-1).forkSession], ['success', '', 'day-1', true]);
+  assert.equal(await sessionFor(dirs, yesterday), 'day-1', '收尾不改会话记录');
+
+  // 收尾只给本人、只在后台。
+  assert.equal((await send({scope: 'group', id: 'g:lily'})).status, 400);
+  assert.equal((await send({background: false})).status, 400);
+  assert.equal(seen.length, 1);
 });
 
 test('后台那一轮（实测）：成功了，下一轮接上分叉出来的会话，两轮都看得到', async () => {

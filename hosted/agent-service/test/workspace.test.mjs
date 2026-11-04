@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join, relative, isAbsolute} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import {scopeDirs, prepare, readMemory, sessionFor, saveSession, clearSession, forget} from '../workspace.mjs';
+import {scopeDirs, prepare, readMemory, readHandoff, sessionFor, saveSession, clearSession, forget} from '../workspace.mjs';
 
 const WORKSPACE_MODULE = pathToFileURL(fileURLToPath(new URL('../workspace.mjs', import.meta.url))).href;
 
@@ -43,6 +43,22 @@ test('没有 MEMORY.md 时是空字符串；超过 20000 字只取前 20000 字'
   const memory = await readMemory(dirs);
   assert.equal(memory.length, 20000);
   assert.ok(memory.startsWith('早x'));
+});
+
+test('HANDOFF.md 和 MEMORY.md 一样读：没有是空字符串；是链接不读；超过 8000 字只取前 8000 字', async () => {
+  const dirs = scopeDirs(dataDir(), 'owner', 'u:alice');
+  await prepare(dirs);
+  assert.equal(await readHandoff(dirs), '');
+  writeFileSync(join(dirs.workspace, 'HANDOFF.md'), '明' + 'x'.repeat(9000));
+  const handoff = await readHandoff(dirs);
+  assert.equal(handoff.length, 8000);
+  assert.ok(handoff.startsWith('明x'));
+  const secret = join(dataDir(), 'secret.txt');
+  writeFileSync(secret, 'SERVICE_SECRET');
+  const linked = scopeDirs(dataDir(), 'owner', 'u:link');
+  await prepare(linked);
+  symlinkSync(secret, join(linked.workspace, 'HANDOFF.md'));
+  assert.equal(await readHandoff(linked), '');
 });
 
 test('同一个当地日期拿到同一段会话，换一天、清掉之后都是 null', async () => {

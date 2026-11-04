@@ -60,10 +60,14 @@ export function localISO(timezone, now) {
 //   beforeWake  可选，在读模型设置的同一个事务里先跑（网页和微信用它先存用户的消息）。
 //   background  后台那一轮（定时、定期看看，proactive.mjs）：Agent 服务从当天的会话分叉出去，失败了不碰原会话。
 //   image     可选，{mediaType, data}（base64）：微信看图时这一轮带的那张照片。带照片的一轮一律用 IMAGE_MODEL。
+//   purpose   可选，写进通行证：'close' 是换日收尾那一轮（day-close.mjs），工具后端不让它发消息。
+//   sessionDate  可选，接哪一天的会话（收尾那一轮接前一天的）；不给就是今天。
+// 本人直接找它的那一轮（网页、微信私聊），记下她这一天跟 Weave 说过话（person.agentDay），换日后由 day-close.mjs 收尾。
+// 后台那一轮（定期看看、跟进、收尾）不算：她没说话的那天没有新的「说好的事」，上一份 HANDOFF.md 留着就行。
 // 返回 {outcome, reply, uncertain, retryable, runId}：
 //   retryable  Agent 服务明确说没开始跑（429 / 400 401 403 404 413 503），可以说「没有处理」，稍后重试也安全；
 //   uncertain  其余没拿到完整结果的情况（超时、断线、500、这一轮没成功）可能已经做了一部分，不自动重试。
-export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake, background = false, image}) {
+export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake, background = false, image, purpose, sessionDate}) {
   if (!SCOPES.includes(scope)) throw Error(`不支持的范围：${scope}`);
   if (!CHANNELS.includes(channel)) throw Error(`不支持的通道：${channel}`);
   if (scope === 'group' && (typeof groupId !== 'string' || !groupId)) throw Error('群范围需要 groupId');
@@ -73,16 +77,18 @@ export async function wake({db, secret, service, fetcher = fetch, now = Date.now
     const person = world.people[ownerId];
     if (!person) fail('账号不存在', 404);
     await beforeWake?.(world, person);
+    // 群里的日期和时间按北京时间，不用开启者的时区（GROUP_TIMEZONE）。
+    const localDate = localClock(scope === 'group' ? {profile: {timezone: GROUP_TIMEZONE}} : person, now).day;
+    if (scope === 'owner' && direct) person.agentDay = localDate;
     return {
       model: person.settings?.model || DEFAULT_MODEL,
       // 用自己 Key 的人自己付费，模型代理不计他的额度（沿用 budget.mjs 的口径）。
       userKey: person.settings?.deepseekKey ? await unseal(person.settings.deepseekKey, secret, ownerId) : undefined,
-      // 群里的日期和时间按北京时间，不用开启者的时区（GROUP_TIMEZONE）。
-      localDate: localClock(scope === 'group' ? {profile: {timezone: GROUP_TIMEZONE}} : person, now).day,
+      localDate: sessionDate ?? localDate,
       at: localISO(scope === 'group' ? GROUP_TIMEZONE : person.profile.timezone, now),
     };
   });
-  const capability = await issueCapability(secret, {owner: ownerId, scope, runId, channel, direct, ...(scope === 'group' ? {group: groupId} : {})}, now);
+  const capability = await issueCapability(secret, {owner: ownerId, scope, runId, channel, direct, ...(scope === 'group' ? {group: groupId} : {}), ...(purpose ? {purpose} : {})}, now);
 
   let outcome = 'error', reply = null, retryable = false;
   try {
