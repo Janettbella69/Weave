@@ -11,19 +11,21 @@ import {jevConfig} from './jev.mjs';
 
 // Reminders that came due go to WeChat too: the one-off ones once (wechatQueued), each occurrence of a repeating one
 // once (unsent, set by proactive.deliverRoutines).
+// dueAt：这一次本该提醒的时间（一次性的是 dueAt，重复的是 deliverRoutines 记下的 unsentDueAt），不是排进队列的时间。
+// 比它晚太久还没领走就不发了（wechat.mjs 的 LATE_MS）。旧数据没有 unsentDueAt 时按排队的时间算。
 function queueReminderMessages(world,now,enabled){
   if(!enabled)return 0;
   world.wechat??={};let queued=0;
-  const queue=(person,text)=>{const id='out:'+crypto.randomUUID();world.wechat[id]={id,direction:'outbound',ownerId:person.id,text:`提醒你：${text}`,status:'queued',createdAt:new Date(now).toISOString(),source:'reminder'};queued++;};
+  const queue=(person,text,dueAt)=>{const id='out:'+crypto.randomUUID(),createdAt=new Date(now).toISOString();world.wechat[id]={id,direction:'outbound',ownerId:person.id,text:`提醒你：${text}`,status:'queued',createdAt,dueAt:dueAt||createdAt,source:'reminder'};queued++;};
   for(const person of Object.values(world.people||{})){
     if(!person.settings?.wechatWxidHash)continue;
     for(const reminder of person.reminders||[]){
       if(reminder.status!=='delivered'||reminder.wechatQueued||!reminder.deliveredAt)continue;
-      reminder.wechatQueued=true;queue(person,reminder.text);
+      reminder.wechatQueued=true;queue(person,reminder.text,reminder.dueAt);
     }
     for(const routine of person.schedules||[]){
       if(routine.kind!=='reminder'||!routine.unsent)continue;
-      routine.unsent=false;queue(person,routine.text);
+      routine.unsent=false;queue(person,routine.text,routine.unsentDueAt);delete routine.unsentDueAt;
     }
   }
   return queued;

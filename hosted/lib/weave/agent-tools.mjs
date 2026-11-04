@@ -60,9 +60,12 @@ function sendMessage(world, person, claims, args, now) {
   outbox.recent.push({text, at: now});
   person.agentOutbox = outbox;
   if (proactive) proactive.sent++;
-  record(person, text, {source: 'agent', runId: claims.runId, ...(proactive ? {proactive: true} : {})});
-  if (claims.channel === 'wechat') queueOwnerText(world, person, text, now);
-  else notify(world, person.id, text);
+  // 时间用这一轮的时钟：「连着两句没回」和微信发送过期都按它算（test/wechat-late-delivery.test.mjs）。
+  const message = record(person, text, {source: 'agent', runId: claims.runId, createdAt: new Date(now).toISOString(), ...(proactive ? {proactive: true} : {})});
+  if (claims.channel === 'wechat') {
+    // 主动消息走微信：先记成「排着」，桥接回执说送到了才算她看到了（proactive.mjs 的「连着两句没回」）。
+    if (queueOwnerText(world, person, text, now, {message, proactive: !!proactive}) && proactive) message.wechat = 'queued';
+  } else notify(world, person.id, text);
   return TEXT.sent;
 }
 
