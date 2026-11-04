@@ -29,6 +29,14 @@ test('a group capability names its group, and an owner capability never does', a
   assert.equal('group' in await verifyCapability(secret, await issueCapability(secret, claims, now), now), false);
 });
 
+test('收尾那一轮的通行证写明 purpose: close，验证后原样拿回；不认识的 purpose 签不出来；平时的通行证没有这一项', async () => {
+  const close = await issueCapability(secret, {...claims, direct: false, purpose: 'close'}, now);
+  assert.equal((await verifyCapability(secret, close, now)).purpose, 'close');
+  await assert.rejects(issueCapability(secret, {...claims, purpose: 'admin'}, now), /通行证内容无效/);
+  await assert.rejects(issueCapability(secret, {...claims, purpose: ''}, now), /通行证内容无效/);
+  assert.equal('purpose' in await verifyCapability(secret, await issueCapability(secret, claims, now), now), false);
+});
+
 test('a forged group claim added to an owner capability is rejected even with a valid signature shape', async () => {
   const token = await issueCapability(secret, claims, now);
   const [prefix, , signature] = token.split('.');

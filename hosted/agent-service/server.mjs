@@ -69,6 +69,9 @@ function checkWake(input) {
   if (!modelAllowed(provider, input.model)) fail(400, '模型无效');
   if (input.userKey !== undefined && (typeof input.userKey !== 'string' || input.userKey.length < 12 || input.userKey.length > 512 || /\s/.test(input.userKey))) fail(400, 'Key 无效');
   if (input.background !== undefined && typeof input.background !== 'boolean') fail(400, 'background 无效');
+  // 换日收尾（hosted/lib/weave/day-close.mjs）只给本人、只在后台；localDate 是要收的那一天。
+  const close = input.trigger.kind === 'close';
+  if (close && (scope.kind !== 'owner' || input.background !== true)) fail(400, '收尾只给本人那一轮，而且是后台');
   let image;
   if (input.image !== undefined) {
     // 只有能看图的模型收照片：DeepSeek 只有 deepseek-flash 能看，v4-pro 会把照片换成「[Unsupported Image]」（DeepSeek 文档）。
@@ -76,7 +79,7 @@ function checkWake(input) {
     try { image = checkImage(input.image); } catch { fail(400, '照片无效'); }
   }
   // 叫 photo，不叫 image：createAgentService 里的 image 是容器镜像的名字。
-  return {scope, provider, background: input.background === true, photo: image};
+  return {scope, provider, background: input.background === true, photo: image, close};
 }
 
 const TICK_TIMEOUT_MS = 170_000;
@@ -156,7 +159,7 @@ export async function createAgentService({
   let legacyActive = 0;
 
   async function handleWake(input) {
-    const {scope, provider, background, photo} = checkWake(input);
+    const {scope, provider, background, photo, close} = checkWake(input);
     // 带照片的一轮一律用能看图的模型，不管这个人选的是哪个。
     const model = photo ? provider.vision : input.model;
     if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
@@ -165,6 +168,9 @@ export async function createAgentService({
     return queue.run(`${scope.kind}:${input.id}`, async () => {
       const dirs = workspace.scopeDirs(dataDir, scope.kind, input.id);
       await workspace.prepare(dirs);
+      // 收尾那一轮只接要收的那一天的会话。那一天没有会话（没聊过、出错清掉了、新的一天已经开了一段），
+      // 就没什么可收的：不叫醒模型，也不重写上一份 HANDOFF.md。
+      if (close && !(await workspace.sessionFor(dirs, input.localDate))) return {outcome: 'skipped', reply: '', sessionId: null, tools: []};
       const name = 'weave-run-' + randomUUID().replaceAll('-', '').slice(0, 12);
       const runIsolation = isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory});
       // 叫醒前把数据写成快照（教材 p.16、p.20）。docker 下快照在工作目录外，只读挂到 /workspace/weave，
@@ -179,11 +185,13 @@ export async function createAgentService({
         fail(503, '取不到 Weave 的数据快照，这一轮没有叫醒');
       }
       const memory = await workspace.readMemory(dirs);
+      // 前一天收尾写的交接：只给本人那一轮（群里没有收尾）。
+      const handoff = scope.kind === 'owner' ? await workspace.readHandoff(dirs) : '';
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
       const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, provider, model, runToken: run.token, sessionId, queryFn,
+          scope, trigger: input.trigger, memory, handoff, provider, model, runToken: run.token, sessionId, queryFn,
           // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
           forkSession: background,
           // 微信看图：这一轮带的那张照片（没有就是 undefined）。
@@ -195,7 +203,8 @@ export async function createAgentService({
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
         // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
-        if (photo) { /* sessions.json stays as it was */ }
+        // 收尾那一轮也不动：那一天已经结束，下一轮是新的一天，开新的一段。
+        if (photo || close) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
         else if (!background) await workspace.clearSession(dirs);
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};

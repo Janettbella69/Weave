@@ -1,7 +1,8 @@
 import {Store,withWorld} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
 import {processInbound,processInboundSdk,wechatConfig} from './wechat.mjs';
-import {agentServiceConfig} from './dispatcher.mjs';
+import {agentServiceConfig,START_BY_MS,TICK_BUDGET_MS} from './dispatcher.mjs';
+import {runDayClose} from './day-close.mjs';
 import {chatFor,groupChatFor} from './api.mjs';
 import {modelBudgetConfig} from './budget.mjs';
 import {notionOAuthConfig} from './notion.mjs';
@@ -51,8 +52,12 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
     if(service)processed=await processInboundSdk({db,secret,service,fetcher,now});
     else console.error('WEAVE_AGENT_RUNTIME=sdk，但 Agent 服务没有配置好，微信消息先留在队列里。');
   }
-  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now,jev}):0;
-  return {delivered,routines,queued,processed,proactive:{started}};
+  // 后台叫醒（到点的跟进、定期看看）有时效，先跑；换日收尾（day-close.mjs）不急，用这一拍剩下的时间，
+  // 过了 60 秒就留到下一拍。两者共用同一个预算，整拍不超过 TICK_BUDGET_MS。
+  const began=Date.now(),budget={startBy:began+START_BY_MS,deadline:began+TICK_BUDGET_MS};
+  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now,jev,...budget}):0;
+  const closed=proactive&&service?await runDayClose({db,secret,service,fetcher,now,...budget}):0;
+  return {delivered,routines,queued,processed,proactive:{started,closed}};
 }
 
 export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true,jev=jevConfig(env)}){
