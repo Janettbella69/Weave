@@ -138,7 +138,7 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'docker logs weave-w
 
 ## 网站一直 502
 
-现象：网站一直 502，`weave-web-1` 却显示在运行。原因：wrangler 底下的 workerd 进程内存越用越多，容器到了 768 MB 上限时被内核杀掉，而 wrangler 不会跟着退出，Docker 以为容器没事，不会重启它（2026-11-03 出过一次，持续约一个半小时；内存为什么涨还没查清楚）。
+现象：网站一直 502，`weave-web-1` 却显示在运行。原因：wrangler 底下的 workerd 进程内存越用越多，容器到了 768 MB 上限时被内核杀掉，而 wrangler 不会跟着退出，Docker 以为容器没事，不会重启它（2026-11-03 出过一次，持续约一个半小时）。内存为什么涨：wrangler 的调试代理没人打开 DevTools 时也把网站程序每一次 D1 查询连同回答存着，从不清空；镜像构建时已经打上补丁（`hosted/scripts/patch-wrangler-proxy.mjs`，和上游 wrangler 4.100.0 的修法一样）。
 
 现在容器里有个看门狗（`hosted/scripts/web-watchdog.sh`）：每 10 秒请求一次本机的网站，网站第一次回答以后开始盯着；之后连续 3 次没有正常回答，就让 wrangler 退出，Docker 会自动把容器重新拉起来。它还每 5 分钟在日志里记一行内存。看它做过什么、内存怎么涨（都是只读命令）：
 
