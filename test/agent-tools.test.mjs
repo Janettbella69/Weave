@@ -287,6 +287,18 @@ test('send_message：有人直接找它的那一轮（网页、微信私聊）�
   assert.deepEqual(alice.toolReceipts.map(r => [r.key, r.ok, r.text]), Array.from({length: n}, (_, i) => ['run-1:toolu_' + i, false, SAY_IT_LAST]));
 });
 
+test('send_message：换日收尾那一轮（purpose: close）照旧回收尾的那句；通行证上万一同时带着 direct: true，也先按收尾答', async () => {
+  const s = await setup();
+  // Close runs are direct: false (day-close.mjs); a capability carrying both still gets the close answer, not SAY_IT_LAST.
+  for (const direct of [false, true]) {
+    const r = await s.tool('send_message', {text: '晚安'}, {token: await s.cap(s.alice, {direct, purpose: 'close'}, NOON), toolUseId: 'toolu_close_' + direct, now: NOON});
+    assert.equal(r.data.ok, false, String(direct));
+    assert.match(r.data.text, /收尾/, String(direct));
+    assert.notEqual(r.data.text, SAY_IT_LAST, String(direct));
+  }
+  assert.ok(!(await s.world()).people[s.alice].messages.some(m => m.text === '晚安'));
+});
+
 test('send_message：没人直接找它的那一轮，同一句 24 小时内不重复；每天最多 20 条', async () => {
   const s = await setup(), token = await s.cap(s.bob, {direct: false}, NOON), at = {token, now: NOON};
   assert.equal((await s.tool('send_message', {text: '早'}, {...at, toolUseId: 'toolu_0'})).data.ok, true);
