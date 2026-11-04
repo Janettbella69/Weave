@@ -8,6 +8,7 @@ import {fail, record, notify, addReminder} from './domain.mjs';
 import {activeNow, localClock} from './proactivity.mjs';
 import {saveGoal, saveHabit, logCompletion} from './habits.mjs';
 import {groupTool, queueOwnerText} from './wechat.mjs';
+import {DIRECT_SEND_TEXT} from './dispatcher.mjs';
 import {proactiveOf, limitsFor, addSchedule, cancelSchedule, setLevel, scheduleResult, TEXT as SCHEDULE_TEXT} from './proactive.mjs';
 
 // 这一轮能用哪些工具，按通行证上的范围。群范围只有 send_message，而且只能发给通行证上的那个群。
@@ -42,10 +43,13 @@ const TEXT = {
 };
 
 // 收件人由通行证决定，模型选不了（文档第 4 节工具表）。通行证上的通道是微信就发到本人的微信，是网页就发网页通知。
+// 有人直接找它的那一轮（网页、微信私聊）什么都不发：最后一段话就是回复，再发就成了两条（DIRECT_SEND_TEXT）。
 // 没人直接找它的那一轮（后台的定时、定期看看）发出的是主动消息：档位关了不发，按档位每天有上限，聊天里标成主动来问。
 function sendMessage(world, person, claims, args, now) {
   // 换日收尾那一轮（通行证 purpose: close）没人在场，也不是来找人的：一律不发。
   if (claims.purpose === 'close') fail(TEXT.closeNoSend);
+  // 收尾那一轮是 direct: false；万一两样都带，按收尾的那句答（上一行先查）。
+  if (claims.direct) fail(DIRECT_SEND_TEXT);
   const text = typeof args.text === 'string' ? args.text.trim() : '';
   if (!text || text.length > 700) fail(TEXT.length);
   const proactive = !claims.direct ? proactiveOf(person, now) : null;

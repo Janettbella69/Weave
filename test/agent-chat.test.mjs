@@ -82,6 +82,22 @@ test('开关打开：先存用户消息，再叫醒，回来重读再存回复�
   assert.equal(wakes(h).length, 1);
 });
 
+test('网页聊天里 Agent 又调了 send_message：那一句不发，回模型「把话写在最后一段就行。」，聊天里只有最后一段话这一条', async () => {
+  const final = '你好呀～我在。今天吃了什么、动了多少，随时报给我记着。', answers = [];
+  const h = harness(async call => {
+    answers.push(await h.tool('send_message', {text: '你好呀～我在。'}, call.body.capability, 'toolu_hi'));
+    return ok({outcome: 'success', reply: final, sessionId: 's-1', tools: ['mcp__weave__send_message']});
+  });
+  await h.api('Alice', 'status');
+  const before = Object.values((await h.world()).people)[0];
+  const r = await h.api('Alice', 'chat', {text: '你好'});
+  assert.deepEqual(r, {status: 200, data: {reply: final}});
+  assert.deepEqual(answers, [{ok: false, text: '把话写在最后一段就行。'}]);
+  const person = Object.values((await h.world()).people)[0];
+  assert.deepEqual(person.messages.slice(before.messages.length).map(m => [m.role, m.text]), [['user', '你好'], ['assistant', final]]);
+  assert.deepEqual(person.notifications, before.notifications);
+});
+
 test('/wake 返回 500、连不上、或这一轮没成功：回复「结果不确定」并标 uncertain，/wake 只请求一次', async () => {
   for (const agent of [
     async () => new Response('boom', {status: 500}),

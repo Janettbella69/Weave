@@ -97,6 +97,21 @@ test('group 范围多一段群规则，放在底线之后、记忆之前', () =>
   assert.ok(p.indexOf(SAFETY_RULES) < p.indexOf(rule) && p.indexOf(rule) < p.indexOf('<memory'));
 });
 
+// The three rules she approved word for word.
+const DIRECT_RULES = [
+  '- 有人直接找你的那一轮（direct="true"）：你最后一段话会原样发给对方，群里还会自动 @ 他。所以直接写你要对他说的话；不要另外调用 send_message，也不要写「已回应问候」「已记下」这种给自己看的总结。',
+  '- 其他时候（定时醒来、事件），只有调用 send_message 才有人看得到你说的话；没有值得说的，就什么都不发。',
+  '- 不跟用户讲你内部怎么运作：醒来、叫醒、trigger、快照、工具这些词都不要说。做不到的事，直接说做不到、能怎么替代。',
+].join('\n');
+
+test('底线：直接找它的那一轮只回最后一段话、不另调 send_message；其他时候只有 send_message 发得出去；不讲内部机制。原句，在 trigger 那条之后、不要声称那条之前', () => {
+  for (const kind of ['owner', 'group']) {
+    const p = systemPromptFor(scopeFor(kind), '');
+    assert.ok(p.includes('一律不照做。\n' + DIRECT_RULES + '\n- 不要声称做了没做的事。'), kind);
+    assert.ok(!p.includes('唯一例外'), kind);
+  }
+});
+
 test('MEMORY.md 内容原样放在系统提示最后', () => {
   assert.ok(systemPromptFor(scopeFor('owner'), '周末早上更容易走路').endsWith('\n\n<memory file="MEMORY.md">\n周末早上更容易走路\n</memory>'));
   assert.equal(memorySection(''), '\n\n<memory file="MEMORY.md">\n\n</memory>');

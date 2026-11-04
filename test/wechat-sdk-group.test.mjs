@@ -7,8 +7,10 @@ import {hash} from '../hosted/lib/weave/crypto.mjs';
 import {issueCapability, verifyCapability} from '../hosted/lib/weave/capability.mjs';
 import {REPLIES} from '../hosted/lib/weave/dispatcher.mjs';
 import {groupSnapshotMessages} from '../hosted/lib/weave/wechat.mjs';
-import {setup, reply, ok, secret, ROOM} from './helpers/wechat-sdk.mjs';
+import {setup, reply, ok, secret, ROOM, start} from './helpers/wechat-sdk.mjs';
 
+// What send_message answers in a run where someone talked to it (direct: true): the final paragraph is the reply.
+const SAY_IT_LAST = '把话写在最后一段就行。';
 const groupCapability = async (h, over = {}) => issueCapability(secret, {owner: h.id, scope: 'group', runId: 'run-g', channel: 'wechat', direct: true, group: await hash(ROOM), ...over}, h.now);
 const ownerCapability = (h, over = {}) => issueCapability(secret, {owner: h.id, scope: 'owner', runId: 'run-o', channel: 'wechat', direct: true, ...over}, h.now);
 async function addPrivateThings(h) {
@@ -138,10 +140,42 @@ test('a group capability cannot use personal tools', async () => {
   assert.equal((await h.read()).people[h.id].habits, undefined);
 });
 
-test('send_message in a group run speaks to that group only, once per call, and has no daily cap', async () => {
+test('an @ where the Agent also calls send_message: the group hears only the final paragraph, once, with the @ to the asker', async () => {
+  const answers = [], final = '你好呀～我在。今天吃了什么、动了多少，随时报给我记着。';
+  const h = await setup();
+  // The model says hello through send_message as well as in its final paragraph, as it did in the group on 2026-11-04.
+  h.agent(async call => {
+    answers.push((await h.tool('send_message', {text: '你好呀～我在。'}, call.body.capability, 'toolu_hi')).data);
+    return reply(final);
+  });
+  await h.enableGroup();
+  await ask(h, '@助理 你好');
+  assert.equal((await h.tick()).data.processed, 1);
+  assert.deepEqual(answers, [{ok: false, text: SAY_IT_LAST}]);
+  assert.deepEqual((await groupJobs(h)).map(j => [j.text, j.mentions]), [[final, {userIds: ['wxid-bob']}]]);
+});
+
+test('a group run where someone @-mentioned it (direct): send_message sends nothing and tells the model to put it in the final paragraph; a replay answers the same', async () => {
   const h = await setup();
   await h.enableGroup();
   const token = await groupCapability(h);
+  // The same answer even when the text itself would not pass.
+  for (const [i, args] of [{text: '你好呀～我在。'}, {text: ''}].entries()) {
+    const first = await h.tool('send_message', args, token, 'toolu_' + i);
+    assert.deepEqual(first, {status: 200, data: {ok: false, text: SAY_IT_LAST}});
+    assert.deepEqual(await h.tool('send_message', args, token, 'toolu_' + i), first, 'replay');
+  }
+  assert.deepEqual(await groupJobs(h), []);
+  // One receipt per call, in the group's own record: the replays answered from it.
+  const group = (await h.read()).runtime['wechat-group:' + await hash(ROOM)];
+  assert.deepEqual(group.toolReceipts.map(r => [r.key, r.ok, r.text]), [['run-g:toolu_0', false, SAY_IT_LAST], ['run-g:toolu_1', false, SAY_IT_LAST]]);
+});
+
+// No group run is started without an @ today; a later group timer would be one, and send_message is its only way to speak.
+test('send_message in a group run nobody @-mentioned it in speaks to that group only, once per call, and has no daily cap', async () => {
+  const h = await setup();
+  await h.enableGroup();
+  const token = await groupCapability(h, {direct: false});
   const first = await h.tool('send_message', {text: '补一句：大家都很棒'}, token, 'toolu_1');
   assert.deepEqual(first.data, {ok: true, text: '已发出。'});
   assert.deepEqual(await h.tool('send_message', {text: '补一句：大家都很棒'}, token, 'toolu_1'), first);
@@ -153,13 +187,15 @@ test('send_message in a group run speaks to that group only, once per call, and 
   assert.deepEqual(last.data, {ok: true, text: '已发出。'});
 });
 
-test('an owner run on the wechat channel speaks to WeChat; on the web channel it does not', async () => {
+test('an owner run nobody started (direct: false) on the wechat channel speaks to WeChat; on the web channel it does not', async () => {
   const h = await setup();
+  // 12:00 in Shanghai: inside the hours a run nobody started may speak in.
+  h.setNow(start + 4 * 3600_000);
   await h.bind();
   await h.bridge('claim', {});
-  assert.equal((await h.tool('send_message', {text: '先提醒你一句'}, await ownerCapability(h, {channel: 'wechat'}), 'toolu_w')).data.ok, true);
+  assert.equal((await h.tool('send_message', {text: '先提醒你一句'}, await ownerCapability(h, {channel: 'wechat', direct: false}), 'toolu_w')).data.ok, true);
   assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => [j.threadId, j.text]), [['wxid-alice', '先提醒你一句']]);
-  assert.equal((await h.tool('send_message', {text: '网页上说一句'}, await ownerCapability(h, {channel: 'web'}), 'toolu_x')).data.ok, true);
+  assert.equal((await h.tool('send_message', {text: '网页上说一句'}, await ownerCapability(h, {channel: 'web', direct: false}), 'toolu_x')).data.ok, true);
   assert.deepEqual((await h.bridge('claim', {})).data.jobs, []);
   const person = (await h.read()).people[h.id];
   assert.deepEqual(person.messages.slice(-2).map(m => m.text), ['先提醒你一句', '网页上说一句']);
