@@ -12,6 +12,8 @@ import {join} from 'node:path';
 
 const KINDS = ['owner', 'group'];
 const MEMORY_LIMIT = 20000;
+// HANDOFF.md：换日收尾时 Agent 写的交接（还要接着的事），只管最近几天，应该很短。草稿数字。
+const HANDOFF_LIMIT = 8000;
 
 export function scopeDirs(dataDir, kind, id) {
   if (!KINDS.includes(kind)) throw Error(`不支持的范围：${kind}`);
@@ -26,21 +28,24 @@ export async function prepare(dirs) {
 }
 
 // 只读普通文件：Agent 能把 MEMORY.md 换成指向别处的链接（比如 /proc/self/environ），那样会把服务进程里的东西读进提示词。
-export async function readMemory(dirs) {
-  const path = join(dirs.workspace, 'MEMORY.md');
+async function readWorkspaceFile(dirs, name, limit) {
+  const path = join(dirs.workspace, name);
   let handle;
   try {
     // O_NOFOLLOW：是链接就直接打不开，检查和读取之间没有空隙。
     // O_NONBLOCK：Agent 能把它换成命名管道（FIFO），阻塞的 open 会一直等写入方、占住线程池；普通文件不受影响。
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (!(await handle.stat()).isFile()) return '';
-    return (await handle.readFile('utf8')).slice(0, MEMORY_LIMIT);
+    return (await handle.readFile('utf8')).slice(0, limit);
   } catch {
     return '';
   } finally {
     await handle?.close();
   }
 }
+export const readMemory = dirs => readWorkspaceFile(dirs, 'MEMORY.md', MEMORY_LIMIT);
+// 换日收尾写的交接（hosted/lib/weave/day-close.mjs），第二天放进本人那一轮的系统提示（prompts.mjs）。
+export const readHandoff = dirs => readWorkspaceFile(dirs, 'HANDOFF.md', HANDOFF_LIMIT);
 
 const sessionsFile = dirs => join(dirs.root, 'sessions.json');
 

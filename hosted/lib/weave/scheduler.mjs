@@ -1,7 +1,8 @@
 import {Store,withWorld} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
 import {processInbound,processInboundSdk,wechatConfig} from './wechat.mjs';
-import {agentServiceConfig} from './dispatcher.mjs';
+import {agentServiceConfig,START_BY_MS,TICK_BUDGET_MS} from './dispatcher.mjs';
+import {runDayClose} from './day-close.mjs';
 import {chatFor,groupChatFor} from './api.mjs';
 import {modelBudgetConfig} from './budget.mjs';
 import {notionOAuthConfig} from './notion.mjs';
@@ -11,19 +12,21 @@ import {jevConfig} from './jev.mjs';
 
 // Reminders that came due go to WeChat too: the one-off ones once (wechatQueued), each occurrence of a repeating one
 // once (unsent, set by proactive.deliverRoutines).
+// dueAt：这一次本该提醒的时间（一次性的是 dueAt，重复的是 deliverRoutines 记下的 unsentDueAt），不是排进队列的时间。
+// 比它晚太久还没领走就不发了（wechat.mjs 的 LATE_MS）。旧数据没有 unsentDueAt 时按排队的时间算。
 function queueReminderMessages(world,now,enabled){
   if(!enabled)return 0;
   world.wechat??={};let queued=0;
-  const queue=(person,text)=>{const id='out:'+crypto.randomUUID();world.wechat[id]={id,direction:'outbound',ownerId:person.id,text:`提醒你：${text}`,status:'queued',createdAt:new Date(now).toISOString(),source:'reminder'};queued++;};
+  const queue=(person,text,dueAt)=>{const id='out:'+crypto.randomUUID(),createdAt=new Date(now).toISOString();world.wechat[id]={id,direction:'outbound',ownerId:person.id,text:`提醒你：${text}`,status:'queued',createdAt,dueAt:dueAt||createdAt,source:'reminder'};queued++;};
   for(const person of Object.values(world.people||{})){
     if(!person.settings?.wechatWxidHash)continue;
     for(const reminder of person.reminders||[]){
       if(reminder.status!=='delivered'||reminder.wechatQueued||!reminder.deliveredAt)continue;
-      reminder.wechatQueued=true;queue(person,reminder.text);
+      reminder.wechatQueued=true;queue(person,reminder.text,reminder.dueAt);
     }
     for(const routine of person.schedules||[]){
       if(routine.kind!=='reminder'||!routine.unsent)continue;
-      routine.unsent=false;queue(person,routine.text);
+      routine.unsent=false;queue(person,routine.text,routine.unsentDueAt);delete routine.unsentDueAt;
     }
   }
   return queued;
@@ -49,8 +52,12 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
     if(service)processed=await processInboundSdk({db,secret,service,fetcher,now});
     else console.error('WEAVE_AGENT_RUNTIME=sdk，但 Agent 服务没有配置好，微信消息先留在队列里。');
   }
-  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now,jev}):0;
-  return {delivered,routines,queued,processed,proactive:{started}};
+  // 后台叫醒（到点的跟进、定期看看）有时效，先跑；换日收尾（day-close.mjs）不急，用这一拍剩下的时间，
+  // 过了 60 秒就留到下一拍。两者共用同一个预算，整拍不超过 TICK_BUDGET_MS。
+  const began=Date.now(),budget={startBy:began+START_BY_MS,deadline:began+TICK_BUDGET_MS};
+  const started=proactive&&service?await runProactive({db,secret,service,fetcher,now,jev,...budget}):0;
+  const closed=proactive&&service?await runDayClose({db,secret,service,fetcher,now,...budget}):0;
+  return {delivered,routines,queued,processed,proactive:{started,closed}};
 }
 
 export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true,jev=jevConfig(env)}){
