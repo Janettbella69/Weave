@@ -4,7 +4,7 @@ import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import {Store,withWorld} from './store.mjs';
 import {fail} from './domain.mjs';
 import {SAFETY_RULES} from './model.mjs';
-import {REPLIES,TICK_BUDGET_MS,START_BY_MS,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
+import {REPLIES,TICK_BUDGET_MS,START_BY_MS,DIRECT_SEND_TEXT,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
 import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
 import {localClock,GROUP_TIMEZONE} from './proactivity.mjs';
 
@@ -241,6 +241,8 @@ export function queueOwnerText(world,person,text,now){
 // Tools in a group run (only send_message for now). The recipient is the group named by the capability, the
 // owner's personal record is never touched, and the results are remembered in the group's own record so a
 // replayed call (same run and toolUseId) answers the same without sending twice.
+// In a run where someone @-mentioned it (direct), the final paragraph is the reply and already goes to the group with
+// an @ to the asker, so send_message sends nothing and tells the model to put it there (DIRECT_SEND_TEXT).
 export function groupTool(name,world,claims,args,toolUseId,now){
   const key=groupKey(claims.group),group=world.runtime?.[key],receiptKey=`${claims.runId}:${toolUseId}`;
   const done=group?.toolReceipts?.find(receipt=>receipt.key===receiptKey);
@@ -248,6 +250,7 @@ export function groupTool(name,world,claims,args,toolUseId,now){
   let ok=true,text;
   try{
     if(name!=='send_message')fail('这一轮不能用这个工具',403);
+    if(claims.direct)fail(DIRECT_SEND_TEXT);
     const sent=typeof args.text==='string'?args.text.trim():'';
     if(!sent||sent.length>700)fail('消息要 1–700 字。');
     if(!group||group.ownerId!==claims.owner)fail('这个群没有开启打卡助理，没有发出。');

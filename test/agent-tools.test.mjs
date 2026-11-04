@@ -8,6 +8,10 @@ import {issueCapability} from '../hosted/lib/weave/capability.mjs';
 const secret = 'ab'.repeat(32);
 // 15:00Z is 23:00 in Shanghai: outside the default 09:00–21:00 window for proactive messages.
 const NOW = Date.parse('2026-11-02T15:00:00Z');
+// The next day at 12:00 in Shanghai: inside that window, so a run nobody started (direct: false) may speak.
+const NOON = Date.parse('2026-11-03T04:00:00Z');
+// What send_message answers in a run where someone talked to it (direct: true): the final paragraph is the reply.
+const SAY_IT_LAST = '把话写在最后一段就行。';
 
 async function setup() {
   const db = new D1();
@@ -236,9 +240,9 @@ test('a group capability cannot call save_goal or set_reminder (403), and nothin
   assert.equal(person.reminders.length, 0);
 });
 
-test('send_message 只发给通行证上的本人：进本人的 messages 和通知，另一个账号看不到', async () => {
+test('send_message（没人直接找它的那一轮）只发给通行证上的本人：进本人的 messages 和通知，另一个账号看不到', async () => {
   const s = await setup();
-  const r = await s.tool('send_message', {text: '今天也走一走吧'}, {token: await s.cap(s.alice)});
+  const r = await s.tool('send_message', {text: '今天也走一走吧'}, {token: await s.cap(s.alice, {direct: false}, NOON), now: NOON});
   assert.deepEqual(r.data, {ok: true, text: '已发出。'});
   const w = await s.world(), alice = w.people[s.alice], bob = w.people[s.bob];
   const sent = alice.messages.at(-1);
@@ -250,26 +254,53 @@ test('send_message 只发给通行证上的本人：进本人的 messages 和通
   assert.ok(!JSON.stringify(bob).includes('今天也走一走吧'));
 });
 
-test('send_message：不是直接找它的那一轮在安静时段不发；有人直接找时照发', async () => {
+test('send_message：没人直接找它的那一轮，在安静时段不发，在允许的时段照发', async () => {
   const s = await setup();
-  const quiet = await s.tool('send_message', {text: '晚安前提醒一下'}, {token: await s.cap(s.alice, {direct: false})});
+  const quiet = await s.tool('send_message', {text: '提醒一下：今天走一走'}, {token: await s.cap(s.alice, {direct: false})});
   assert.equal(quiet.data.ok, false);
   assert.match(quiet.data.text, /安静时段/);
-  const direct = await s.tool('send_message', {text: '晚安前提醒一下'}, {token: await s.cap(s.alice, {direct: true}), toolUseId: 'toolu_2'});
-  assert.equal(direct.data.ok, true);
+  const noon = await s.tool('send_message', {text: '提醒一下：今天走一走'}, {token: await s.cap(s.alice, {direct: false}, NOON), toolUseId: 'toolu_2', now: NOON});
+  assert.equal(noon.data.ok, true);
 });
 
-test('send_message：同一句 24 小时内不重复；每天最多 20 条', async () => {
-  const s = await setup(), token = await s.cap(s.bob);
-  assert.equal((await s.tool('send_message', {text: '早'}, {token, toolUseId: 'toolu_0'})).data.ok, true);
-  const again = await s.tool('send_message', {text: '早'}, {token, toolUseId: 'toolu_dup'});
+test('send_message：有人直接找它的那一轮（网页、微信私聊）什么都不发，回模型「把话写在最后一段就行。」；同一次调用重放答一样的', async () => {
+  const s = await setup();
+  // Bound to WeChat, so a message that did go out on the wechat channel would sit in the WeChat send queue.
+  const store = new Store(s.db), seeded = await store.load();
+  seeded.people[s.alice].settings.wechatWxidHash = 'wxid-hash';
+  await store.save(seeded);
+  const before = (await s.world()).people[s.alice];
+  let n = 0;
+  // Inside and outside the quiet hours alike, and the same answer even when the text itself would not pass.
+  for (const now of [NOW, NOON]) for (const channel of ['web', 'wechat']) for (const args of [{text: '你好呀～我在。'}, {text: ''}]) {
+    const token = await s.cap(s.alice, {channel, direct: true}, now), toolUseId = 'toolu_' + n++;
+    const first = await s.tool('send_message', args, {token, toolUseId, now});
+    assert.deepEqual(first, {status: 200, data: {ok: false, text: SAY_IT_LAST}}, `${channel} ${toolUseId}`);
+    assert.deepEqual(await s.tool('send_message', args, {token, toolUseId, now}), first, 'replay');
+  }
+  const w = await s.world(), alice = w.people[s.alice];
+  assert.deepEqual(alice.messages, before.messages, 'nothing in the chat');
+  assert.deepEqual(alice.notifications, before.notifications, 'no notification');
+  assert.deepEqual(Object.values(w.wechat).filter(x => x.direction === 'outbound'), [], 'nothing queued for WeChat');
+  assert.equal(alice.agentOutbox, undefined, 'not counted against the daily cap');
+  // One receipt per call: the replays answered from it.
+  assert.deepEqual(alice.toolReceipts.map(r => [r.key, r.ok, r.text]), Array.from({length: n}, (_, i) => ['run-1:toolu_' + i, false, SAY_IT_LAST]));
+});
+
+test('send_message：没人直接找它的那一轮，同一句 24 小时内不重复；每天最多 20 条', async () => {
+  const s = await setup(), token = await s.cap(s.bob, {direct: false}, NOON), at = {token, now: NOON};
+  assert.equal((await s.tool('send_message', {text: '早'}, {...at, toolUseId: 'toolu_0'})).data.ok, true);
+  const again = await s.tool('send_message', {text: '早'}, {...at, toolUseId: 'toolu_dup'});
   assert.equal(again.data.ok, false);
   assert.match(again.data.text, /24 小时内已经发过/);
-  for (let i = 1; i < 20; i++) assert.equal((await s.tool('send_message', {text: '第' + i + '条'}, {token, toolUseId: 'toolu_' + i})).data.ok, true, String(i));
-  const over = await s.tool('send_message', {text: '第二十一条'}, {token, toolUseId: 'toolu_21'});
+  // Proactive messages stop at the level's cap (at most 4 a day) long before 20, so 20 is only a backstop: set today's count to it.
+  const store = new Store(s.db), w = await store.load();
+  w.people[s.bob].agentOutbox.count = 20;
+  await store.save(w);
+  const over = await s.tool('send_message', {text: '第二十一条'}, {...at, toolUseId: 'toolu_21'});
   assert.equal(over.data.ok, false);
-  assert.match(over.data.text, /上限/);
-  assert.equal((await s.world()).people[s.bob].messages.filter(m => m.source === 'agent').length, 20);
+  assert.match(over.data.text, /今天发的消息已经到上限/);
+  assert.equal((await s.world()).people[s.bob].messages.filter(m => m.source === 'agent').length, 1);
 });
 
 test('同一个人两个工具调用同时到，两条都记上', async () => {

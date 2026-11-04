@@ -108,6 +108,26 @@ test('WeChat group end to end: group scope sees only the group, personal tools d
   } finally { await h.close(); }
 });
 
+// The double reply seen in a group on 2026-11-04: the model said hello through send_message and again in its final paragraph.
+test('WeChat group end to end: when someone @-mentions it and the model also calls send_message, the model reads an error result telling it to use the final paragraph, and the group gets one message, with the @', async () => {
+  const h = await start();
+  try {
+    const final = '你好呀～我在。今天吃了什么、动了多少，随时报给我记着。';
+    h.fake.script(steps([{tool: 'mcp__weave__send_message', input: {text: '你好呀～我在。'}}, {text: final}]));
+    await h.bind();
+    await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
+    await h.bridge('claim', {});
+    assert.equal((await h.bridge('events', h.group('wxid-bob', '@助理 你好', true))).queued, true);
+    assert.equal((await h.tick()).processed, 1);
+    const history = h.mainRequests().at(-1).body.messages;
+    const results = history.filter(m => m.role === 'user' && Array.isArray(m.content)).flatMap(m => m.content).filter(b => b.type === 'tool_result');
+    const text = b => typeof b.content === 'string' ? b.content : (b.content || []).map(c => c.text || '').join('');
+    assert.deepEqual(results.map(b => [b.is_error === true, text(b)]), [[true, '把话写在最后一段就行。']], JSON.stringify(results));
+    const jobs = (await h.bridge('claim', {})).jobs.filter(j => j.threadId === ROOM);
+    assert.deepEqual(jobs.map(j => [j.text, j.mentions]), [[final, {userIds: ['wxid-bob']}]]);
+  } finally { await h.close(); }
+});
+
 test('closing a group deletes its workspace in the Agent service on the next tick', async () => {
   const h = await start();
   try {

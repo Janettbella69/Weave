@@ -46,6 +46,22 @@ test('a bound person\'s WeChat message wakes the Agent in owner scope on the wec
   assert.deepEqual(jobs.map(j => [j.threadId, j.text]), [['wxid-alice', '你好呀']]);
 });
 
+test('a WeChat message where the Agent also calls send_message: that call sends nothing, and WeChat gets only the final paragraph, once', async () => {
+  const final = '你好呀～我在。今天吃了什么、动了多少，随时报给我记着。', answers = [];
+  const h = await setup();
+  h.agent(async call => {
+    answers.push((await h.tool('send_message', {text: '你好呀～我在。'}, call.body.capability, 'toolu_hi')).data);
+    return reply(final);
+  });
+  await h.bind();
+  await h.bridge('claim', {});
+  await h.bridge('events', h.message('你好'));
+  assert.equal((await h.tick()).data.processed, 1);
+  assert.deepEqual(answers, [{ok: false, text: '把话写在最后一段就行。'}]);
+  assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => [j.threadId, j.text]), [['wxid-alice', final]]);
+  assert.deepEqual((await h.read()).people[h.id].messages.slice(-2).map(m => [m.role, m.text]), [['user', '你好'], ['assistant', final]]);
+});
+
 test('with the switch off, WeChat keeps the old path: the legacy /query, never a /wake', async () => {
   // null, not undefined: setup() would fill in the default 'sdk' for undefined.
   const h = await setup({runtime: null, agent: async () => ok({output: '旧路的回复'})});
