@@ -13,10 +13,13 @@ export const memorySection = text => '\n\n<memory file="MEMORY.md">\n' + text + 
 // 草稿文案，待确认。换日收尾时写的交接（HANDOFF.md，hosted/lib/weave/day-close.mjs），只给本人那一轮，有内容才加。
 // 教材 p.47「Handoff ≠ 记忆」：交接是「下一次 session 参考的」，「很容易过时」，所以说清楚以记录为准。
 const HANDOFF_INTRO = '前一天收尾时写的交接在下面：说好要做的事、你答应对方的事、没聊完的话。它可能已经过时，和 weave/weave.db 里的记录对不上时以记录为准。';
-export const handoffSection = text => '\n\n' + HANDOFF_INTRO + '\n<handoff file="HANDOFF.md">\n' + text + '\n</handoff>';
+// written：这份交接是哪一天收尾时写的（Agent 服务记的，workspace.mjs 的 handoffWritten）；格式不对就不写这个属性。
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+export const handoffSection = (text, written = null) => '\n\n' + HANDOFF_INTRO + '\n<handoff file="HANDOFF.md"'
+  + (typeof written === 'string' && DAY.test(written) ? ` written="${written}"` : '') + '>\n' + text + '\n</handoff>';
 
-export function systemPromptFor(scope, memory, handoff = '') {
-  const withHandoff = scope.kind === 'owner' && typeof handoff === 'string' && handoff.trim() ? handoffSection(handoff) : '';
+export function systemPromptFor(scope, memory, handoff = '', written = null) {
+  const withHandoff = scope.kind === 'owner' && typeof handoff === 'string' && handoff.trim() ? handoffSection(handoff, written) : '';
   return SYSTEM + (scope.kind === 'group' ? '\n\n' + GROUP_RULES : '') + withHandoff + memorySection(memory);
 }
 

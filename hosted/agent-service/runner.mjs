@@ -14,14 +14,15 @@ const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 // image：可选，{mediaType, data}（base64），这一轮带的那张照片（微信看图，docs/superpowers/specs/2026-11-03-wechat-images-design.md）。
 // handoff：HANDOFF.md 的内容（换日收尾写的交接），只有本人范围会放进系统提示（prompts.mjs）。
 // timeoutMs：这一轮最多跑多久，默认 10 分钟；换日收尾那一轮短一些（server.mjs 的 closeTimeoutMs）。
-export async function wake({scope, trigger, memory = '', handoff = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery, timeoutMs = RUN_TIMEOUT_MS}) {
+// handoffWritten：这份交接是哪一天收尾时写的（workspace.mjs），系统提示里写成 written。
+export async function wake({scope, trigger, memory = '', handoff = '', handoffWritten = null, provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery, timeoutMs = RUN_TIMEOUT_MS}) {
   const tools = [];
   const audit = async input => { if (input?.tool_name) tools.push(input.tool_name); return {}; };
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), timeoutMs);
   const options = {
     // 不用预设：预设会告诉模型「你是 Claude Code」（实测）。
-    systemPrompt: systemPromptFor(scope, memory, handoff),
+    systemPrompt: systemPromptFor(scope, memory, handoff, handoffWritten),
     // 没人在场：不在清单上的直接拒绝，不弹确认。
     tools: [...scope.builtins],
     allowedTools: [...isolation.allowedTools],

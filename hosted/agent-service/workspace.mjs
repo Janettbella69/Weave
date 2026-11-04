@@ -47,6 +47,24 @@ export const readMemory = dirs => readWorkspaceFile(dirs, 'MEMORY.md', MEMORY_LI
 // 换日收尾写的交接（hosted/lib/weave/day-close.mjs），第二天放进本人那一轮的系统提示（prompts.mjs）。
 export const readHandoff = dirs => readWorkspaceFile(dirs, 'HANDOFF.md', HANDOFF_LIMIT);
 
+// 交接是哪一天收尾时写的：收尾成功后由 Agent 服务记下，放在工作目录外（Agent 改不到），系统提示里写成 written（prompts.mjs）。
+// 她没说话的日子不收尾，HANDOFF.md 会留好几天，不写日期就分不清「明天」是哪天（#42 审查）。
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const handoffFile = dirs => join(dirs.root, 'handoff.json');
+export async function handoffWritten(dirs) {
+  try {
+    const saved = JSON.parse(await readFile(handoffFile(dirs), 'utf8'));
+    return typeof saved?.written === 'string' && DAY.test(saved.written) ? saved.written : null;
+  } catch {
+    return null;
+  }
+}
+export async function saveHandoffWritten(dirs, day) {
+  const temporary = join(dirs.root, `handoff.${process.pid}.tmp`);
+  await writeFile(temporary, JSON.stringify({written: day}));
+  await rename(temporary, handoffFile(dirs));
+}
+
 const sessionsFile = dirs => join(dirs.root, 'sessions.json');
 
 // 同一个当地日期接着用同一段会话，第二天开新的，靠 MEMORY.md 和 HANDOFF.md 带过去。

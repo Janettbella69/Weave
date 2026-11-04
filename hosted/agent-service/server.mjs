@@ -192,11 +192,12 @@ export async function createAgentService({
       const memory = await workspace.readMemory(dirs);
       // 前一天收尾写的交接：只给本人那一轮（群里没有收尾）。
       const handoff = scope.kind === 'owner' ? await workspace.readHandoff(dirs) : '';
+      const handoffWritten = scope.kind === 'owner' ? await workspace.handoffWritten(dirs) : null;
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
       const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, handoff, provider, model, runToken: run.token, sessionId, queryFn,
+          scope, trigger: input.trigger, memory, handoff, handoffWritten, provider, model, runToken: run.token, sessionId, queryFn,
           // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
           forkSession: background,
           ...(close ? {timeoutMs: closeTimeoutMs} : {}),
@@ -209,6 +210,8 @@ export async function createAgentService({
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
         // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
+        // 收尾成功：记下这份交接是哪一天写的（出错不改，宁可显示旧日期）。
+        if (close && result.outcome === 'success') await workspace.saveHandoffWritten(dirs, input.localDate);
         // 收尾那一轮也不动：那一天已经结束，下一轮是新的一天，开新的一段。
         if (photo || close) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);

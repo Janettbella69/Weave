@@ -375,7 +375,8 @@ export async function claimOutbound(world,{secret,now=Date.now(),limit=CLAIM_LIM
   const due=Object.values(world.wechat).filter(x=>x.direction==='outbound'&&(x.status==='queued'||(x.status==='sending'&&x.leaseUntil<now))).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
   for(const entry of due){
     if(jobs.length>=limit)break;
-    if(entry.dueAt&&now-Date.parse(entry.dueAt)>LATE_MS){entry.status='expired';delete entry.text;delete entry.leaseUntil;markDelivery(world,entry,'expired');continue;}
+    // 晚了就不发。领走过、租约到期还没回执的（领完 Mac 就睡了）可能已经送到，聊天里记成 uncertain，不记 expired。
+    if(entry.dueAt&&now-Date.parse(entry.dueAt)>LATE_MS){const claimed=entry.status==='sending';entry.status='expired';delete entry.text;delete entry.leaseUntil;markDelivery(world,entry,claimed?'uncertain':'expired');continue;}
     let threadId='',mentions;
     if(entry.groupAad){
       threadId=await unseal(entry.target,secret,entry.groupAad);
@@ -384,7 +385,8 @@ export async function claimOutbound(world,{secret,now=Date.now(),limit=CLAIM_LIM
       const person=world.people[entry.ownerId];
       threadId=person?await wxidFor(person,entry.ownerId,secret):'';
     }
-    if(!threadId){entry.status='ignored';delete entry.text;continue;}
+    // 找不到收件人（她解绑了微信）：不发；主动消息在聊天里记成 failed，不会一直停在 queued。
+    if(!threadId){entry.status='ignored';delete entry.text;markDelivery(world,entry,'failed');continue;}
     entry.status='sending';entry.leaseUntil=now+LEASE_MS;
     jobs.push({id:entry.id,threadId,text:entry.text,...(mentions?{mentions}:{})});
   }

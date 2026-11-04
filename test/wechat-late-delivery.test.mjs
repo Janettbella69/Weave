@@ -52,8 +52,60 @@ test('主动消息说出口 2 小时后才被桥接领到（Mac 睡着），就�
   const entry = Object.values(world.wechat).find(x => x.direction === 'outbound' && x.source === 'agent');
   assert.equal(entry.status, 'expired');
   assert.equal(entry.text, undefined, '过期的不留正文，聊天记录里有一份就够了');
-  assert.ok(world.people[s.id].messages.some(m => m.proactive === true && m.text === '今天走了吗？'));
+  const said = world.people[s.id].messages.find(m => m.proactive === true && m.text === '今天走了吗？');
+  assert.equal(said.wechat, 'expired', '聊天里那一条记着没送到微信');
   assert.deepEqual(await s.claimTexts(), [], '过期的以后也不再领');
+});
+
+test('她解绑了微信，排着的主动消息发不出去：聊天里那一条记成 failed，不会一直停在 queued', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00')); await s.active(); await s.bindAndDrain();
+  s.setNow(at(1, '10:00')); await s.proactiveSay('今天走了吗？', 't1');
+  assert.equal((await s.call('alice', 'wechat/unbind', {})).status, 200);
+  assert.deepEqual(await s.claimTexts(), []);
+  assert.equal((await s.person()).messages.find(m => m.proactive === true).wechat, 'failed');
+});
+
+test('桥接领走了却没回执（比如领完 Mac 就睡了），过了 2 小时：不再发，记成 uncertain（可能已经送到了），不是 expired', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00')); await s.active(); await s.bindAndDrain();
+  s.setNow(at(1, '10:00')); await s.proactiveSay('今天走了吗？', 't1');
+  assert.deepEqual(await s.claimTexts(), ['今天走了吗？']);
+  s.setNow(at(1, '12:30'));
+  assert.deepEqual(await s.claimTexts(), []);
+  assert.equal((await s.person()).messages.find(m => m.proactive === true).wechat, 'uncertain');
+});
+
+test('回执晚到：过了 2 小时才收到「已送到」，照样记成 sent，算进「没回」', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00')); await s.active(); await s.bindAndDrain();
+  s.setNow(at(1, '10:00'));
+  await s.proactiveSay('今天走了吗？', 't1');
+  await s.proactiveSay('晚饭后走一圈？', 't2');
+  const jobs = (await s.bridge('claim', {})).data.jobs;
+  s.setNow(at(1, '12:30'));
+  for (const job of jobs) await s.bridge('receipt', {id: job.id, state: 'accepted'});
+  assert.deepEqual((await s.person()).messages.filter(m => m.proactive).map(m => m.wechat), ['sent', 'sent']);
+  assert.equal(quietReason(await s.person(), at(1, '12:31')), 'ignored');
+});
+
+test('绑定确认不过期：3 小时后才被领到也照发', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00')); await s.bind();
+  s.setNow(at(1, '12:00'));
+  assert.deepEqual(await s.claimTexts(), ['微信已连接到你的 Weave 空间。之后可以直接在这里记录反馈、询问个人 Agent。']);
+});
+
+test('群里的回复不过期：3 小时后才被领到也照发', async () => {
+  const s = await harness();
+  s.setNow(at(1, '09:00')); await s.enableGroup();
+  // 开启群时领走的两条（绑定确认、开启说明）租约过了，一起报成已发送。
+  s.setNow(at(1, '09:06')); await s.deliverAll();
+  s.agent(async () => ok({outcome: 'success', reply: '我看到成员1 走了', sessionId: 's-g', tools: []}));
+  await s.bridge('events', s.group('wxid-alice', '@助理 今天谁走了', true));
+  await s.tick();
+  s.setNow(at(1, '12:30'));
+  assert.deepEqual(await s.claimTexts(), ['我看到成员1 走了']);
 });
 
 test('主动消息 2 小时以内被领到，照常发', async () => {

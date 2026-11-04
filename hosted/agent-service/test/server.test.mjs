@@ -271,6 +271,32 @@ test('收尾那一轮（kind close）：那一天没有会话就不跑模型、�
   assert.equal(seen.length, 1);
 });
 
+test('收尾成功后记下交接是哪一天写的；下一轮本人对话的系统提示里交接带 written；收尾出错不改日期', async t => {
+  const seen = [], results = [];
+  const queryFn = async function* ({options}) { seen.push(options); yield results.shift(); };
+  const result = (subtype, id) => ({type: 'result', subtype, is_error: subtype !== 'success', result: '', session_id: id, total_cost_usd: 0});
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-close-written-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn});
+  t.after(() => svc.close());
+  const dirs = scopeDirs(dir, 'owner', 'u:pia');
+  await prepare(dirs);
+  writeFileSync(join(dirs.workspace, 'HANDOFF.md'), '11 月 3 日早上 7 点去走路');
+  const post2 = body => fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:pia', ...body}))});
+  const close = day => ({localDate: day, background: true, trigger: {kind: 'close', channel: 'system', direct: false, at: day + 'T23:59:00+08:00', text: '这一天结束了'}});
+  await saveSession(dirs, '2026-11-02', 'day-1');
+  results.push(result('success', 'fork-1'));
+  await post2(close('2026-11-02'));
+  results.push(result('success', 's-3'));
+  await post2({localDate: '2026-11-03'});
+  assert.ok(seen.at(-1).systemPrompt.includes('<handoff file="HANDOFF.md" written="2026-11-02">'), seen.at(-1).systemPrompt.slice(-200));
+  // 第二天的收尾出错了：日期不改，还是 11-02。
+  results.push(result('error_during_execution', 'fork-2'));
+  await post2(close('2026-11-03'));
+  results.push(result('success', 's-4'));
+  await post2({localDate: '2026-11-04'});
+  assert.ok(seen.at(-1).systemPrompt.includes('written="2026-11-02"'));
+});
+
 test('她过零点先说了话、开了新的一段：前一天的收尾接的仍是前一天那段，新的一段不动', async t => {
   const seen = [];
   const queryFn = async function* ({options}) { seen.push(options); yield {type: 'result', subtype: 'success', is_error: false, result: '', session_id: 'fork-close', total_cost_usd: 0}; };

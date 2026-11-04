@@ -2,11 +2,13 @@
 // 她晚上说的「明天早上 7 点去走路」第二天就没了（MEMORY.md 只写长期的事）。
 // 教材 p.47「Handoff ≠ 记忆」，对话结尾要「写一个 handoff 文档方便新开的对话接着做任务，同时把…值得写到记忆的东西写到记忆里」；
 // p.53「如果让 AI 自己去调用…他有可能忘记调用……做成 Hook，他就是百分之百」——所以什么时候收尾由代码定，写什么由 Agent 定。
-// 这里测网站这边：服务器闹钟在换日后叫醒一轮收尾、只收一次、收尾那一轮能做什么。Agent 服务那边在 hosted/agent-service/test/day-close.test.mjs。
+// 这里测网站这边：服务器闹钟在换日后叫醒一轮收尾、只收一次、收尾那一轮能做什么。Agent 服务那边（接哪一段会话、前一天的会话多留一段、
+// 交接带日期、收尾时限）在 hosted/agent-service/test/server.test.mjs 和 workspace.test.mjs。
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {setup, ok, reply, SERVICE, SERVICE_TOKEN, secret as SECRET} from './helpers/wechat-sdk.mjs';
+import {setup, ok, reply, until, SERVICE, SERVICE_TOKEN, secret as SECRET} from './helpers/wechat-sdk.mjs';
 import {runDayClose} from '../hosted/lib/weave/day-close.mjs';
+import {Store} from '../hosted/lib/weave/store.mjs';
 
 // 2030-01-01 是星期二；测试账号在上海（UTC+8）。
 const at = (day, hhmm) => Date.parse(`2030-01-${String(day).padStart(2, '0')}T${hhmm}:00+08:00`);
@@ -19,7 +21,8 @@ async function harness(onClose = async () => quiet()) {
   const chat = text => s.call('alice', 'chat', {text});
   const closes = () => s.calls.filter(isClose);
   const person = async () => (await s.read()).people[s.id];
-  return Object.setPrototypeOf({serverTick, chat, closes, person}, s);
+  const edit = async fn => { const store = new Store(s.db), world = await store.load(); await fn(world.people[s.id], world); await store.save(world); };
+  return Object.setPrototypeOf({serverTick, chat, closes, person, edit}, s);
 }
 
 test('换日后服务器闹钟的第一拍叫醒一轮收尾：后台、kind close、不是直接找它、接前一天的会话；凌晨的安静时段照样跑', async () => {
@@ -123,6 +126,51 @@ test('她还在聊就不收尾：最后一句话以后安静满 30 分钟才开�
   assert.equal(s.closes().length, 0);
   s.setNow(at(2, '00:20')); await s.serverTick();
   assert.equal(s.closes().length, 1);
+});
+
+test('两个闹钟同时跑：同一个人只收一次；一轮收尾 15 分钟还没回来就放掉、记成 uncertain，不重跑', async () => {
+  let release;
+  const s = await harness(async () => { await new Promise(resolve => { release = resolve; }); return quiet(); });
+  s.setNow(at(1, '20:00')); await s.chat('明天见');
+  s.setNow(at(2, '00:31'));
+  const first = s.serverTick();
+  await until(() => s.closes().length === 1, 'first close');
+  await s.serverTick();
+  assert.equal(s.closes().length, 1, '第二个闹钟看到正在收，不再叫醒');
+  release();
+  await first;
+  assert.equal((await s.person()).closedDay, '2030-01-01');
+  // 一轮没回来（比如进程半路死了）：租约 15 分钟后放掉，记成 uncertain，那一天不重跑。
+  await s.edit(p => { p.agentDay = '2030-01-02'; p.closing = {day: '2030-01-02', since: at(3, '00:31')}; });
+  s.setNow(at(3, '00:40')); await s.serverTick();
+  assert.ok((await s.person()).closing, '15 分钟内还占着');
+  s.setNow(at(3, '00:47')); await s.serverTick();
+  const p = await s.person();
+  assert.deepEqual([p.closing, p.closedDay, p.lastClose.outcome], [null, '2030-01-02', 'uncertain']);
+  assert.equal(s.closes().length, 1, '那一天没有再叫醒一次');
+});
+
+test('一拍最多收 2 个人，第 3 个下一拍收', async () => {
+  const s = await harness();
+  s.setNow(at(1, '20:00'));
+  await s.chat('明天见');
+  for (const who of ['bob', 'carol']) assert.equal((await s.call(who, 'chat', {text: '明天见'})).status, 200);
+  s.setNow(at(2, '00:31')); await s.serverTick();
+  assert.equal(s.closes().length, 2);
+  s.setNow(at(2, '00:32')); await s.serverTick();
+  assert.equal(new Set(s.closes().map(c => c.body.id)).size, 3);
+});
+
+test('用户不在北京时区（以 America/Los_Angeles 为例）：按用户自己的零点换日；夏令时结束那一晚也只收一次、收对那一天', async () => {
+  const s = await harness();
+  await s.edit(p => { p.profile.timezone = 'America/Los_Angeles'; });
+  // 2030-11-03 凌晨 2 点这个时区的夏令时结束（-07:00 → -08:00）。
+  s.setNow(Date.parse('2030-11-02T21:00:00-07:00')); await s.chat('明天早上去走路');
+  s.setNow(Date.parse('2030-11-02T23:59:00-07:00')); await s.serverTick();
+  assert.equal(s.closes().length, 0, '用户的时区还没过零点（北京早就过了）');
+  s.setNow(Date.parse('2030-11-03T00:31:00-07:00')); await s.serverTick();
+  s.setNow(Date.parse('2030-11-03T01:30:00-08:00')); await s.serverTick();
+  assert.deepEqual(s.closes().map(c => [c.body.localDate, c.body.trigger.at]), [['2030-11-02', '2030-11-03T00:31:00-07:00']]);
 });
 
 test('收尾不急：这一拍已经过了 60 秒（前面的后台叫醒占掉了时间），就一轮也不开始，留到下一拍', async () => {
