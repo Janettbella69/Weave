@@ -135,7 +135,10 @@ export async function createAgentService({
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
   fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g', tickEveryMs = 0,
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
+  // 换日收尾那一轮最多跑多久（草稿数字）：她这时发来的消息要排在它后面，微信那边最多等 150 秒（#42 审查）。
+  closeTimeoutMs = 3 * 60 * 1000,
 }) {
+  if (!Number.isInteger(closeTimeoutMs) || closeTimeoutMs <= 0) throw Error('closeTimeoutMs 要是正整数（毫秒）');
   if (typeof token !== 'string' || token.length < 32) throw Error('请配置至少32字符的 AGENT_SERVICE_TOKEN');
   if (!['docker', 'local'].includes(isolation)) throw Error(`不支持的隔离方式：${isolation}`);
   if (!/^\d+[kmg]$/i.test(containerMemory)) throw Error(`AGENT_CONTAINER_MEMORY 写成 768m、1g 这样：${containerMemory}`);
@@ -196,6 +199,7 @@ export async function createAgentService({
           scope, trigger: input.trigger, memory, handoff, provider, model, runToken: run.token, sessionId, queryFn,
           // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
           forkSession: background,
+          ...(close ? {timeoutMs: closeTimeoutMs} : {}),
           // 微信看图：这一轮带的那张照片（没有就是 undefined）。
           image: photo,
           isolation: runIsolation,

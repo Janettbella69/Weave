@@ -13,11 +13,12 @@ const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 // 要和 resume 一起用（sdk.d.ts：「Use with `resume`」），所以没有 sessionId 时不设；返回的 sessionId 是分叉出来的那段。
 // image：可选，{mediaType, data}（base64），这一轮带的那张照片（微信看图，docs/superpowers/specs/2026-11-03-wechat-images-design.md）。
 // handoff：HANDOFF.md 的内容（换日收尾写的交接），只有本人范围会放进系统提示（prompts.mjs）。
-export async function wake({scope, trigger, memory = '', handoff = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery}) {
+// timeoutMs：这一轮最多跑多久，默认 10 分钟；换日收尾那一轮短一些（server.mjs 的 closeTimeoutMs）。
+export async function wake({scope, trigger, memory = '', handoff = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery, timeoutMs = RUN_TIMEOUT_MS}) {
   const tools = [];
   const audit = async input => { if (input?.tool_name) tools.push(input.tool_name); return {}; };
   const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), RUN_TIMEOUT_MS);
+  const timer = setTimeout(() => abortController.abort(), timeoutMs);
   const options = {
     // 不用预设：预设会告诉模型「你是 Claude Code」（实测）。
     systemPrompt: systemPromptFor(scope, memory, handoff),

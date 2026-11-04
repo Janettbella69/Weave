@@ -79,7 +79,12 @@ export async function wake({db, secret, service, fetcher = fetch, now = Date.now
     await beforeWake?.(world, person);
     // 群里的日期和时间按北京时间，不用开启者的时区（GROUP_TIMEZONE）。
     const localDate = localClock(scope === 'group' ? {profile: {timezone: GROUP_TIMEZONE}} : person, now).day;
-    if (scope === 'owner' && direct) person.agentDay = localDate;
+    if (scope === 'owner' && direct) {
+      // 前一天还没收尾就到了新的一天（她过零点先说了话，闹钟还没来得及收）：把那一天记成待收（day-close.mjs），
+      // 免得被新的一天盖掉、永远不收（#42 审查）。只记最早的一天。
+      if (typeof person.agentDay === 'string' && person.agentDay < localDate && person.closedDay !== person.agentDay && !person.closePending) person.closePending = person.agentDay;
+      person.agentDay = localDate;
+    }
     return {
       model: person.settings?.model || DEFAULT_MODEL,
       // 用自己 Key 的人自己付费，模型代理不计他的额度（沿用 budget.mjs 的口径）。

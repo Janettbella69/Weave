@@ -106,6 +106,25 @@ test('一个人的收尾一直被拒（Agent 服务说没开始跑），别人�
   assert.equal(errors.mock.calls.filter(c => String(c.arguments[0]).includes('收尾')).length, 1);
 });
 
+test('她过了零点先说话（闹钟还没来得及收）：前一天照样收尾，不会被新的一天盖掉；第二天的照样收', async () => {
+  const s = await harness();
+  s.setNow(at(1, '22:00')); await s.chat('明天早上 7 点去走路');
+  s.setNow(at(2, '00:00')); await s.chat('还没睡');
+  for (const hhmm of ['00:01', '00:31', '00:32']) { s.setNow(at(2, hhmm)); await s.serverTick(); }
+  assert.deepEqual(s.closes().map(c => c.body.localDate), ['2030-01-01']);
+  s.setNow(at(3, '00:31')); await s.serverTick();
+  assert.deepEqual(s.closes().map(c => c.body.localDate), ['2030-01-01', '2030-01-02']);
+});
+
+test('她还在聊就不收尾：最后一句话以后安静满 30 分钟才开始，免得她半夜的消息排在收尾后面等', async () => {
+  const s = await harness();
+  s.setNow(at(1, '23:50')); await s.chat('今天好累');
+  for (const hhmm of ['00:01', '00:10', '00:19']) { s.setNow(at(2, hhmm)); await s.serverTick(); }
+  assert.equal(s.closes().length, 0);
+  s.setNow(at(2, '00:20')); await s.serverTick();
+  assert.equal(s.closes().length, 1);
+});
+
 test('收尾不急：这一拍已经过了 60 秒（前面的后台叫醒占掉了时间），就一轮也不开始，留到下一拍', async () => {
   const s = await harness();
   s.setNow(at(1, '20:00')); await s.chat('明天见');

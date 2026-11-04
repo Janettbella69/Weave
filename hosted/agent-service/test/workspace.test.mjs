@@ -72,6 +72,22 @@ test('同一个当地日期拿到同一段会话，换一天、清掉之后都�
   assert.equal(await sessionFor(dirs, '2026-11-02'), null);
 });
 
+test('换了一天，前一天的会话多留一段（给换日收尾接）：当天的照旧；再换一天只留最近的前一天；清掉当天的不影响前一天', async () => {
+  const dirs = scopeDirs(dataDir(), 'owner', 'u:alice');
+  await prepare(dirs);
+  await saveSession(dirs, '2026-11-02', 'day-1');
+  await saveSession(dirs, '2026-11-02', 'day-1-fork');
+  await saveSession(dirs, '2026-11-03', 'today-1');
+  assert.equal(await sessionFor(dirs, '2026-11-03'), 'today-1');
+  assert.equal(await sessionFor(dirs, '2026-11-02'), 'day-1-fork', '前一天的是那天最后存的那段');
+  await clearSession(dirs);
+  assert.equal(await sessionFor(dirs, '2026-11-03'), null, '当天出错照旧清掉');
+  assert.equal(await sessionFor(dirs, '2026-11-02'), 'day-1-fork', '前一天的还在');
+  await saveSession(dirs, '2026-11-03', 'today-2');
+  await saveSession(dirs, '2026-11-04', 'next-1');
+  assert.deepEqual([await sessionFor(dirs, '2026-11-02'), await sessionFor(dirs, '2026-11-03'), await sessionFor(dirs, '2026-11-04')], [null, 'today-2', 'next-1']);
+});
+
 test('会话记录放在工作目录外面，Agent 改不到', async () => {
   const dirs = scopeDirs(dataDir(), 'owner', 'u:alice');
   await prepare(dirs);

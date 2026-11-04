@@ -18,6 +18,27 @@ export const MAX_CLOSES_PER_TICK = 2;
 // 第 3 次还不行就记成 unavailable，这一天不收了（审查发现：以前每分钟重试，一直卡住排在后面的人，也没有日志）。
 const RETRY_GAPS_MS = [10 * 60_000, 20 * 60_000];
 const MAX_ATTEMPTS = RETRY_GAPS_MS.length + 1;
+// 草稿数字：她最后一句话以后安静这么久才开始收尾。她半夜还在聊时，收尾和她的消息会在 Agent 服务里排队（同一个人一次一轮），
+// 她的消息就得等收尾跑完；微信那边最多等 150 秒（#42 审查）。前一天的会话 Agent 服务会多留一段，晚一点收也接得上。
+const QUIET_MS = 30 * 60_000;
+
+// 她最后一次在聊天里说话（网页或微信私聊）的时间。
+function lastSpoke(person) {
+  const messages = person.messages || [];
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return Date.parse(messages[i].createdAt) || 0;
+  return 0;
+}
+// 要收哪一天：先收待收的（她过零点先说了话，dispatcher.mjs 记下的），再收说过话、已经过完的那一天。
+function dueDay(person, today) {
+  if (typeof person.closePending === 'string' && person.closePending !== person.closedDay) return person.closePending;
+  const day = person.agentDay;
+  return typeof day === 'string' && day < today && day !== person.closedDay ? day : null;
+}
+function markClosed(person, day, outcome, now) {
+  person.closedDay = day;
+  if (person.closePending === day) person.closePending = null;
+  person.lastClose = {day, outcome, at: new Date(now).toISOString()};
+}
 
 // 草稿文案，待确认：收尾那一轮写进 <trigger> 的话。照教材 p.47 对话结尾那句黄金 prompt 的意思写。
 export const CLOSE_TEXT = day => `${day} 这一天结束了，这是当天的收尾。没有人在等你回复，这一轮也发不了消息。
@@ -28,20 +49,18 @@ export const CLOSE_TEXT = day => `${day} 这一天结束了，这是当天的收
 // 现在该不该给这个人收尾，该的话占住（租约）并返回要收的是哪一天。在 withWorld 里调用：两个 tick 同时跑时，
 // 只有先提交的那个占得到，后一个重读后看到 closing 就跳过。
 function claimClose(person, now) {
-  const day = person.agentDay;
-  if (typeof day !== 'string' || person.closedDay === day) return null;
-  // 那一天还没过完（按本人现在的时区）。
-  if (day >= localClock(person, now).day) return null;
+  // 那一天要已经过完（按本人现在的时区）；她最后一句话以后要安静满 QUIET_MS。
+  const day = dueDay(person, localClock(person, now).day);
+  if (!day || now - lastSpoke(person) < QUIET_MS) return null;
   // 上次没开始跑，还没到再试的时间。
   if (person.closeRetry?.day === day && now < person.closeRetry.at) return null;
   const running = person.closing;
   if (running && now - running.since <= LEASE_MS) return null;
   if (running) {
     // 上一轮没回来：可能已经写过文件、排过跟进，不重跑，记成结果不确定。
-    person.closedDay = running.day;
     person.closing = null;
-    person.lastClose = {day: running.day, outcome: 'uncertain', at: new Date(now).toISOString()};
-    if (person.closedDay === day) return null;
+    markClosed(person, running.day, 'uncertain', now);
+    if (running.day === day) return null;
   }
   person.closing = {day, since: now};
   return {ownerId: person.id, day, since: now};
@@ -64,8 +83,7 @@ function finishClose(world, claim, result, now) {
     outcome = 'unavailable';
   }
   person.closeRetry = null;
-  person.closedDay = claim.day;
-  person.lastClose = {day: claim.day, outcome, at: new Date(now).toISOString()};
+  markClosed(person, claim.day, outcome, now);
   return outcome === 'unavailable' ? 'gave-up' : null;
 }
 
