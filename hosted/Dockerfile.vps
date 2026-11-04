@@ -23,6 +23,9 @@ RUN chmod +x ./scripts/start-vps.sh ./scripts/web-watchdog.sh && mkdir -p /app/.
 USER node
 # X_LOCAL_EXPLORER=false：关掉 wrangler 自带的本机数据浏览器（/cdn-cgi/explorer）。它在 Worker 之前处理请求、
 # 不经过访问密码，同一台机器上的其他容器带上 Host: localhost 就能读写整个数据库。
-ENV NODE_ENV=production PORT=4317 HOST=0.0.0.0 X_LOCAL_EXPLORER=false
+# WRANGLER_WRITE_LOGS=false：wrangler 默认把每一条调试消息另外写进 ~/.config/.wrangler/logs 的文件里（没打调试代理的补丁时，
+# 里面有每一次 D1 查询的回答，也就是用户数据），没人读，只会越积越多，docker restart 也不清。4.92.0 只认 false 或 0；
+# 只关文件，`docker logs` 里看到的输出照旧（控制台打印哪些由日志级别 WRANGLER_LOG 决定，和这个开关无关）。
+ENV NODE_ENV=production PORT=4317 HOST=0.0.0.0 X_LOCAL_EXPLORER=false WRANGLER_WRITE_LOGS=false
 EXPOSE 4317
 CMD ["./scripts/start-vps.sh"]

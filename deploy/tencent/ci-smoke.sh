@@ -82,6 +82,12 @@ node ../../hosted/scripts/check-status-stall.mjs --url "$url" --auth weave:ci-pa
 docker compose exec -T web node scripts/patch-wrangler-proxy.mjs --check || { echo "FAIL 镜像里的 wrangler 有文件没打补丁"; exit 1; }
 echo "PASS 镜像里的 wrangler 两个补丁都打上了"
 
+# wrangler 默认把每条调试消息另外写进 ~/.config/.wrangler/logs（以前里面有 D1 的回答，也就是用户数据）；镜像里用
+# WRANGLER_WRITE_LOGS=false 关掉了。上面已经发过几十个请求，启动时也跑过 d1 execute；这里只数文件个数，不读内容。
+logs=$(docker compose exec -T web sh -c 'find "$HOME/.config/.wrangler/logs" "$HOME/.wrangler/logs" -type f 2>/dev/null | wc -l' | tr -d ' \r')
+[ "$logs" = 0 ] || { echo "FAIL 网站容器里 wrangler 还在写调试日志文件（$logs 个）"; exit 1; }
+echo "PASS 网站容器里 wrangler 不写调试日志文件"
+
 # 关掉后这个地址交给网站本身（没带密码就是 401）。只要不返回 200（不吐数据）就算关着；短超时是为了出问题时不卡住 CI。
 explorer=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' -H 'Host: localhost' "$url/cdn-cgi/explorer/api/d1/database" || true)
 [ "$explorer" != 200 ] || { echo "FAIL wrangler 的本机数据浏览器还开着"; exit 1; }
