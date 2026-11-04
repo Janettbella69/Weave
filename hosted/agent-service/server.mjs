@@ -116,8 +116,10 @@ export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now})
         failed(`HTTP ${response.status}`);
         return;
       }
-      const started = (await response.json())?.proactive?.started;
+      const {started, closed} = (await response.json())?.proactive ?? {};
       if (typeof started === 'number' && started > 0) console.log(`Agent service: tick started ${started} background wake(s)`);
+      // 换日收尾（hosted/lib/weave/day-close.mjs）：只记数字。
+      if (typeof closed === 'number' && closed > 0) console.log(`Agent service: tick started ${closed} day close(s)`);
     } catch (error) {
       failed(error?.name || 'Error');
     } finally {
@@ -133,7 +135,10 @@ export async function createAgentService({
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
   fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g', tickEveryMs = 0,
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
+  // 换日收尾那一轮最多跑多久（草稿数字）：她这时发来的消息要排在它后面，微信那边最多等 150 秒（#42 审查）。
+  closeTimeoutMs = 3 * 60 * 1000,
 }) {
+  if (!Number.isInteger(closeTimeoutMs) || closeTimeoutMs <= 0) throw Error('closeTimeoutMs 要是正整数（毫秒）');
   if (typeof token !== 'string' || token.length < 32) throw Error('请配置至少32字符的 AGENT_SERVICE_TOKEN');
   if (!['docker', 'local'].includes(isolation)) throw Error(`不支持的隔离方式：${isolation}`);
   if (!/^\d+[kmg]$/i.test(containerMemory)) throw Error(`AGENT_CONTAINER_MEMORY 写成 768m、1g 这样：${containerMemory}`);
@@ -187,13 +192,15 @@ export async function createAgentService({
       const memory = await workspace.readMemory(dirs);
       // 前一天收尾写的交接：只给本人那一轮（群里没有收尾）。
       const handoff = scope.kind === 'owner' ? await workspace.readHandoff(dirs) : '';
+      const handoffWritten = scope.kind === 'owner' ? await workspace.handoffWritten(dirs) : null;
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
       const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
       try {
         const result = await wake({
-          scope, trigger: input.trigger, memory, handoff, provider, model, runToken: run.token, sessionId, queryFn,
+          scope, trigger: input.trigger, memory, handoff, handoffWritten, provider, model, runToken: run.token, sessionId, queryFn,
           // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
           forkSession: background,
+          ...(close ? {timeoutMs: closeTimeoutMs} : {}),
           // 微信看图：这一轮带的那张照片（没有就是 undefined）。
           image: photo,
           isolation: runIsolation,
@@ -203,6 +210,8 @@ export async function createAgentService({
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
         // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
         // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
+        // 收尾成功：记下这份交接是哪一天写的（出错不改，宁可显示旧日期）。
+        if (close && result.outcome === 'success') await workspace.saveHandoffWritten(dirs, input.localDate);
         // 收尾那一轮也不动：那一天已经结束，下一轮是新的一天，开新的一段。
         if (photo || close) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);

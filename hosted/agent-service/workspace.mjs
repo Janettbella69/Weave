@@ -47,26 +47,63 @@ export const readMemory = dirs => readWorkspaceFile(dirs, 'MEMORY.md', MEMORY_LI
 // 换日收尾写的交接（hosted/lib/weave/day-close.mjs），第二天放进本人那一轮的系统提示（prompts.mjs）。
 export const readHandoff = dirs => readWorkspaceFile(dirs, 'HANDOFF.md', HANDOFF_LIMIT);
 
-const sessionsFile = dirs => join(dirs.root, 'sessions.json');
-
-// 同一个当地日期接着用同一段会话，第二天开新的，靠 MEMORY.md 带过去。
-export async function sessionFor(dirs, localDate) {
+// 交接是哪一天收尾时写的：收尾成功后由 Agent 服务记下，放在工作目录外（Agent 改不到），系统提示里写成 written（prompts.mjs）。
+// 她没说话的日子不收尾，HANDOFF.md 会留好几天，不写日期就分不清「明天」是哪天（#42 审查）。
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const handoffFile = dirs => join(dirs.root, 'handoff.json');
+export async function handoffWritten(dirs) {
   try {
-    const saved = JSON.parse(await readFile(sessionsFile(dirs), 'utf8'));
-    return saved?.localDate === localDate && typeof saved.sessionId === 'string' ? saved.sessionId : null;
+    const saved = JSON.parse(await readFile(handoffFile(dirs), 'utf8'));
+    return typeof saved?.written === 'string' && DAY.test(saved.written) ? saved.written : null;
   } catch {
     return null;
   }
 }
+export async function saveHandoffWritten(dirs, day) {
+  const temporary = join(dirs.root, `handoff.${process.pid}.tmp`);
+  await writeFile(temporary, JSON.stringify({written: day}));
+  await rename(temporary, handoffFile(dirs));
+}
 
-export async function saveSession(dirs, localDate, sessionId) {
+const sessionsFile = dirs => join(dirs.root, 'sessions.json');
+
+// 同一个当地日期接着用同一段会话，第二天开新的，靠 MEMORY.md 和 HANDOFF.md 带过去。
+// 换了一天时，前一天最后那段多留着（previous），给换日收尾接（hosted/lib/weave/day-close.mjs）：她过了零点先说话、
+// 或者后台那一轮先开了新的一段，前一天的收尾照样接得上（#42 审查）。只留最近的前一天。
+const validSession = entry => !!entry && typeof entry.localDate === 'string' && typeof entry.sessionId === 'string';
+async function readSessions(dirs) {
+  try {
+    const saved = JSON.parse(await readFile(sessionsFile(dirs), 'utf8'));
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+async function writeSessions(dirs, value) {
   const temporary = join(dirs.root, `sessions.${process.pid}.tmp`);
-  await writeFile(temporary, JSON.stringify({localDate, sessionId}));
+  await writeFile(temporary, JSON.stringify(value));
   await rename(temporary, sessionsFile(dirs));
 }
 
+export async function sessionFor(dirs, localDate) {
+  const saved = await readSessions(dirs);
+  for (const entry of [saved, saved.previous]) if (validSession(entry) && entry.localDate === localDate) return entry.sessionId;
+  return null;
+}
+
+export async function saveSession(dirs, localDate, sessionId) {
+  const saved = await readSessions(dirs);
+  // 换了一天：当天的那段变成前一天的；同一天里再存：前一天的照旧留着。
+  const kept = validSession(saved) && saved.localDate !== localDate ? {localDate: saved.localDate, sessionId: saved.sessionId} : saved.previous;
+  const previous = validSession(kept) && kept.localDate !== localDate ? kept : null;
+  await writeSessions(dirs, {localDate, sessionId, ...(previous ? {previous} : {})});
+}
+
+// 当天那一轮出错：当天的那段清掉（下一轮重新开），前一天的照旧留给收尾。
 export async function clearSession(dirs) {
-  await rm(sessionsFile(dirs), {force: true});
+  const saved = await readSessions(dirs);
+  if (validSession(saved.previous)) await writeSessions(dirs, {previous: saved.previous});
+  else await rm(sessionsFile(dirs), {force: true});
 }
 
 // Agent 能用 Bash 把子目录改成 000，rm 就会因 EACCES 失败，注销也就删不掉。所以先把目录权限改回来。

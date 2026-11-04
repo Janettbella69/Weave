@@ -5,7 +5,7 @@ import {existsSync, mkdtempSync, mkdirSync, writeFileSync, realpathSync} from 'n
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
-import {scopeDirs, sessionFor, saveSession} from '../workspace.mjs';
+import {scopeDirs, prepare, sessionFor, saveSession} from '../workspace.mjs';
 import {isMain, lastToolResults, steps} from './helpers/fake-model.mjs';
 import {startFakeModel} from './helpers/fake-model.mjs';
 
@@ -269,6 +269,66 @@ test('收尾那一轮（kind close）：那一天没有会话就不跑模型、�
   assert.equal((await send({scope: 'group', id: 'g:lily'})).status, 400);
   assert.equal((await send({background: false})).status, 400);
   assert.equal(seen.length, 1);
+});
+
+test('收尾成功后记下交接是哪一天写的；下一轮本人对话的系统提示里交接带 written；收尾出错不改日期', async t => {
+  const seen = [], results = [];
+  const queryFn = async function* ({options}) { seen.push(options); yield results.shift(); };
+  const result = (subtype, id) => ({type: 'result', subtype, is_error: subtype !== 'success', result: '', session_id: id, total_cost_usd: 0});
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-close-written-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn});
+  t.after(() => svc.close());
+  const dirs = scopeDirs(dir, 'owner', 'u:pia');
+  await prepare(dirs);
+  writeFileSync(join(dirs.workspace, 'HANDOFF.md'), '11 月 3 日早上 7 点去走路');
+  const post2 = body => fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:pia', ...body}))});
+  const close = day => ({localDate: day, background: true, trigger: {kind: 'close', channel: 'system', direct: false, at: day + 'T23:59:00+08:00', text: '这一天结束了'}});
+  await saveSession(dirs, '2026-11-02', 'day-1');
+  results.push(result('success', 'fork-1'));
+  await post2(close('2026-11-02'));
+  results.push(result('success', 's-3'));
+  await post2({localDate: '2026-11-03'});
+  assert.ok(seen.at(-1).systemPrompt.includes('<handoff file="HANDOFF.md" written="2026-11-02">'), seen.at(-1).systemPrompt.slice(-200));
+  // 第二天的收尾出错了：日期不改，还是 11-02。
+  results.push(result('error_during_execution', 'fork-2'));
+  await post2(close('2026-11-03'));
+  results.push(result('success', 's-4'));
+  await post2({localDate: '2026-11-04'});
+  assert.ok(seen.at(-1).systemPrompt.includes('written="2026-11-02"'));
+});
+
+test('她过零点先说了话、开了新的一段：前一天的收尾接的仍是前一天那段，新的一段不动', async t => {
+  const seen = [];
+  const queryFn = async function* ({options}) { seen.push(options); yield {type: 'result', subtype: 'success', is_error: false, result: '', session_id: 'fork-close', total_cost_usd: 0}; };
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-close-next-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn});
+  t.after(() => svc.close());
+  const dirs = scopeDirs(dir, 'owner', 'u:nina');
+  await prepare(dirs);
+  await saveSession(dirs, '2026-11-02', 'day-1');
+  await saveSession(dirs, '2026-11-03', 'today-1');
+  const close = {kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:40:00+08:00', text: '这一天结束了'};
+  const r = await fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:nina', localDate: '2026-11-02', background: true, trigger: close}))});
+  assert.deepEqual([(await r.json()).outcome, seen.at(-1)?.resume, seen.at(-1)?.forkSession], ['success', 'day-1', true]);
+  assert.equal(await sessionFor(dirs, '2026-11-03'), 'today-1');
+});
+
+test('收尾一轮有自己的时限（默认 3 分钟，比平常的 10 分钟短）：到点就停，回 error；平常那一轮不受影响', async t => {
+  const queryFn = async function* ({options}) {
+    await new Promise(resolve => options.abortController.signal.addEventListener('abort', resolve, {once: true}));
+    throw Error('aborted');
+  };
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'weave-close-timeout-')));
+  const svc = await createAgentService({token: TOKEN, dataDir: dir, isolation: 'local', sandbox: false, weaveUrl: weave.url, keys: {deepseek: 'real-key'}, queryFn, closeTimeoutMs: 50});
+  t.after(() => svc.close());
+  const olive = scopeDirs(dir, 'owner', 'u:olive');
+  await prepare(olive);
+  await saveSession(olive, '2026-11-02', 'day-1');
+  const close = {kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:40:00+08:00', text: '这一天结束了'};
+  const began = Date.now();
+  const r = await fetch(svc.url + '/wake', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: JSON.stringify(wakeBody({id: 'u:olive', localDate: '2026-11-02', background: true, trigger: close}))});
+  assert.equal((await r.json()).outcome, 'error');
+  assert.ok(Date.now() - began < 5000, '收尾到点就停');
 });
 
 test('后台那一轮（实测）：成功了，下一轮接上分叉出来的会话，两轮都看得到', async () => {

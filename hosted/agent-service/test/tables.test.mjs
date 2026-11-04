@@ -127,6 +127,12 @@ test('HANDOFF.md 有内容时，本人范围多一段前一天的交接，放在
   assert.ok(!systemPromptFor(scopeFor('group'), '', '明早 7 点去走路').includes('<handoff'));
 });
 
+test('交接带上是哪一天收尾时写的（written，代码记的，不靠 Agent 自己写）；日期格式不对就不写这个属性', () => {
+  assert.ok(systemPromptFor(scopeFor('owner'), '', '明早走路', '2026-11-02').includes('<handoff file="HANDOFF.md" written="2026-11-02">\n明早走路\n</handoff>'));
+  assert.ok(systemPromptFor(scopeFor('owner'), '', '明早走路').includes('<handoff file="HANDOFF.md">\n明早走路\n</handoff>'));
+  assert.ok(systemPromptFor(scopeFor('owner'), '', '明早走路', '2026-11-02" x="y').includes('<handoff file="HANDOFF.md">\n'));
+});
+
 test('renderTrigger 认 kind="close"（换日收尾那一轮）', () => {
   assert.match(renderTrigger({kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:01:00+08:00', text: 'x'}), /^<trigger kind="close" channel="system" direct="false"/);
 });
