@@ -1,0 +1,93 @@
+# 微信客户端（agent-wechat 的 wx 守护进程）和 Weave 的微信桥接，跑在 43.162.107.53 上。试点用，随时可以退回 Mac。
+# 项目名固定为 wechat：同目录的脚本都带 -p wechat，只会碰到 wechat-wx-1、wechat-bridge-1、网络 wechat_default
+# 和 wechat_ 开头的三个卷，不碰 weave（网站和 Agent 服务）和 Azora。平时不用直接跑 docker compose，用同目录的脚本。
+#
+# 网络（原因见 README.md 第 8 节）：wx 在自己的网络 wechat_default 里，只能往外连，外面连不进来。服务器上只绑在
+# 127.0.0.1 的服务它碰不到；绑在 0.0.0.0 或 docker0 / 网关地址上的（Azora 对外的端口、Weave 网站的 4317）照样能经宿主连到。
+# 桥接加入 wx 的网络（network_mode: service:wx），在那里的 127.0.0.1:6179 找到 wx。两个服务都没有对外的端口。
+name: wechat
+
+services:
+  wx:
+    # agent-wechat 1.3.3 的官方镜像。前面的 tag 给人看，Docker 认后面的 digest：2026-11-03 从 ghcr.io 查到，
+    # 镜像里写的版本是 1.3.3、源码提交 7d4da1cb（就是上游 v1.3.3 这个 tag）。
+    # 升级时这里的 tag 和 digest、同目录 lib.sh 的 WX_VERSION 和 WX_IMAGE_DIGEST、deploy/wechat-mac/lib.sh 的 WX_VERSION 一起改，测试会核对。
+    image: ghcr.io/thisnick/agent-wechat-native:v1.3.3@sha256:c08d38c949129e81408666c4f6d6ce7e6ae2fbaa61121a1a3c5a3d09c5650419
+    # 名字写死：脚本和 README 里的 docker exec、docker logs、docker stop 都用这个名字，compose 配置坏了也停得掉。
+    container_name: wechat-wx-1
+    # 只听它自己网络里的 127.0.0.1:6179（和 Mac 那套用同一个端口）。服务器上别的程序、外网都连不到；桥接和它共用网络。
+    # 没有指定令牌文件，所以守护进程第一次启动时自己生成主令牌 /var/lib/agent-wechat/api-token（权限 600），
+    # 它和小号的数据一起留在 wx-data 卷里；脚本用 docker exec 在容器里调 wx，令牌不离开容器。
+    command: ["serve", "--data-dir", "/var/lib/agent-wechat", "--listen", "127.0.0.1:6179"]
+    # 下面几行照上游的 deploy/native/compose.yaml：镜像自带的用户 10001、根目录只读、不给任何特权。
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # 只放进程的小临时文件（上游的值）。tmpfs 占的是内存，用了多少就算进下面的内存上限。
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    volumes:
+      # 小号的登录、聊天记录、联系人、收到的图片和文件、wx 的事件记录、主令牌。镜像里这个目录属于 10001、权限 700，新卷照搬。
+      - wx-data:/var/lib/agent-wechat
+      # 守护进程的临时快照（TMPDIR），不是数据本身。
+      - wx-scratch:/var/cache/agent-wechat
+    # 登录以后占多少内存没人量过，先给 256 MB。要加就跑 up.sh --wx-mem 384m（写进同目录的 .env，小号不用重新登录）。
+    # swap 也限住；oom_score_adj 500：整台机器内存不够时内核先杀它，不杀同机的 Azora。和 weave 的容器各算各的上限。
+    mem_limit: ${WEAVE_WECHAT_WX_MEM:-256m}
+    memswap_limit: ${WEAVE_WECHAT_WX_MEM:-256m}
+    oom_score_adj: 500
+    stop_grace_period: 30s
+    restart: unless-stopped
+    # 日志最多留 3 个 10 MB 的文件，不会把磁盘写满。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bridge:
+    # Node 22（2026-11-03 查到的 node:22-alpine，Node 22.23.4）。tag 给人看，Docker 认 digest；改它要连 lib.sh 的 BRIDGE_IMAGE 一起改。
+    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    container_name: wechat-bridge-1
+    # 用 wx 的网络：在 127.0.0.1:6179 找到 wx，往外连 Weave 也走 wx 的网络。
+    # wx 一重启就换了新网络，桥接留在旧的里面：bridge-guard.mjs 发现 wx 30 秒没回应就退出，Docker 再把桥接拉起来，
+    # 拉起来的容器会加入 wx 现在的网络（README 第 8 节）。
+    network_mode: service:wx
+    # 让容器里的进程能正常收到停止信号。
+    init: true
+    user: node
+    working_dir: /app
+    # 桥接只用 Node 自带的东西，没有依赖。代码直接用这份仓库里的（只读挂进去），git pull 以后要重启桥接才会用上新代码。
+    # 外面包一层 bridge-guard.mjs：桥接本身一行不改，见上面和 bridge-guard.mjs 开头的说明。
+    command: ["node", "/guard/bridge-guard.mjs"]
+    # 令牌和账号（权限 600，不进 git）：up.sh 建，login.sh 写。
+    env_file: bridge.env
+    environment:
+      # 读到哪儿了（位置标记）记在 bridge-state 卷里。
+      WECHAT_BRIDGE_STATE: /home/node/cursor.json
+    volumes:
+      - ../../../hosted/wechat-bridge:/app:ro
+      - ./bridge-guard.mjs:/guard/bridge-guard.mjs:ro
+      # 镜像里 /home/node 属于 node 用户，新卷照搬，所以桥接能写。
+      - bridge-state:/home/node
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    mem_limit: 128m
+    memswap_limit: 128m
+    oom_score_adj: 500
+    stop_grace_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  wx-data:
+  wx-scratch:
+  bridge-state:

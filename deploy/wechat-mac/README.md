@@ -6,6 +6,8 @@
 微信 ⇄ wx 守护进程（agent-wechat，只听 127.0.0.1:6179）⇄ 微信桥接（hosted/wechat-bridge）⇄ https://weave.azorashopping.site（Agent 服务在服务器上）
 ```
 
+**想把这两个程序搬到服务器上、不再占用这台 Mac：** 见 [`deploy/tencent/wechat/README.md`](../tencent/wechat/README.md)（试点；不行就照那份 README 第 2 节退回这里）。搬过去以后，除了退回的时候，别再在这台 Mac 上跑 `install.sh` 和 `set-token.sh`。
+
 ## 0. 先看这几条
 
 **风险。** [agent-wechat](https://github.com/thisnick/agent-wechat) 是第三方开源软件，不是腾讯官方接口。它用一个真实的微信号登录，可能违反微信的使用规则，账号可能被限制甚至封掉，而且没有可靠的封号数据（作者只在一个测试号上验证过，也没有发送限速）。**只用新的小号，不用主号，小号里不放重要的东西。**
