@@ -116,8 +116,10 @@ export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now})
         failed(`HTTP ${response.status}`);
         return;
       }
-      const started = (await response.json())?.proactive?.started;
+      const {started, closed} = (await response.json())?.proactive ?? {};
       if (typeof started === 'number' && started > 0) console.log(`Agent service: tick started ${started} background wake(s)`);
+      // 换日收尾（hosted/lib/weave/day-close.mjs）：只记数字。
+      if (typeof closed === 'number' && closed > 0) console.log(`Agent service: tick started ${closed} day close(s)`);
     } catch (error) {
       failed(error?.name || 'Error');
     } finally {

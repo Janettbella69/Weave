@@ -117,6 +117,24 @@ test('createTicker：失败只记第一次，之后 10 分钟最多一行，只�
   assert.deepEqual(logs.mock.calls.map(call => call.arguments.join(' ')), ['Agent service: tick started 2 background wake(s)']);
 });
 
+test('createTicker：这一拍开始了几轮换日收尾也记一行（只有数字）；两样都是 0 不记', async t => {
+  const logs = t.mock.method(console, 'log', () => {});
+  let reply;
+  const ticker = createTicker({weaveUrl: 'http://weave.test', token: TOKEN, fetcher: async () => reply()});
+  reply = () => tickAnswer({started: 0, closed: 0});
+  await ticker.beat();
+  assert.equal(logs.mock.callCount(), 0);
+  reply = () => tickAnswer({started: 0, closed: 1});
+  await ticker.beat();
+  reply = () => tickAnswer({started: 1, closed: 2});
+  await ticker.beat();
+  assert.deepEqual(logs.mock.calls.map(call => call.arguments.join(' ')), [
+    'Agent service: tick started 1 day close(s)',
+    'Agent service: tick started 1 background wake(s)',
+    'Agent service: tick started 2 day close(s)',
+  ]);
+});
+
 test('close() 之后进程自己退出：还在等的那一次（真的 fetch）被断掉，闹钟也不拖住进程', async t => {
   const seen = [];
   const hang = http.createServer(req => { seen.push([req.method, req.url]); });

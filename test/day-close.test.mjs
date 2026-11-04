@@ -65,22 +65,46 @@ test('每天只收一次尾；只收她直接说过话的那天：后台看看�
   assert.equal(s.closes().length, 1);
 });
 
-// Agent 服务明确说没开始跑的（503、429）可以下一拍再试；其余结果都可能跑到一半，沿用「出错不自动重试」。
-for (const [label, answer, tries] of [
-  ['Agent 服务说没开始跑（503）', () => new Response('{}', {status: 503}), 2],
-  ['排队的人太多（429）', () => new Response('{}', {status: 429}), 2],
-  ['这一轮出错', () => ok({outcome: 'error', reply: '', sessionId: null, tools: []}), 1],
-  ['那天没有会话可收（skipped）', () => ok({outcome: 'skipped', reply: '', sessionId: null, tools: []}), 1],
-  ['收好了', () => quiet(), 1],
+// Agent 服务明确说没开始跑的（4xx 拒收、503、429）隔 10 分钟再试，不是下一拍；其余结果都可能跑到一半，沿用「出错不自动重试」。
+for (const [label, answer, retried] of [
+  ['Agent 服务说没开始跑（503）', () => new Response('{}', {status: 503}), true],
+  ['排队的人太多（429）', () => new Response('{}', {status: 429}), true],
+  ['Agent 服务拒收（400，比如它还不认识收尾）', () => new Response('{}', {status: 400}), true],
+  ['这一轮出错', () => ok({outcome: 'error', reply: '', sessionId: null, tools: []}), false],
+  ['那天没有会话可收（skipped）', () => ok({outcome: 'skipped', reply: '', sessionId: null, tools: []}), false],
+  ['收好了', () => quiet(), false],
 ]) {
-  test(`收尾的结果是「${label}」：下一拍${tries === 2 ? '再试一次' : '不再试'}`, async () => {
+  test(`收尾的结果是「${label}」：${retried ? '下一拍不试，10 分钟后再试一次' : '不再试'}`, async () => {
     const s = await harness(async () => answer());
     s.setNow(at(1, '20:00')); await s.chat('明天见');
     s.setNow(at(2, '00:01')); await s.serverTick();
     s.setNow(at(2, '00:02')); await s.serverTick();
-    assert.equal(s.closes().length, tries);
+    assert.equal(s.closes().length, 1);
+    s.setNow(at(2, '00:11')); await s.serverTick();
+    assert.equal(s.closes().length, retried ? 2 : 1);
   });
 }
+
+test('一个人的收尾一直被拒（Agent 服务说没开始跑），别人照样收；被拒的隔 10、20 分钟各再试一次，第 3 次还不行就记成 unavailable、不再试，日志留一行', async t => {
+  let blocked = null;
+  const s = await harness(async call => call.body.id === blocked ? new Response('{}', {status: 503}) : quiet());
+  s.setNow(at(1, '20:00'));
+  await s.chat('明天见');
+  assert.equal((await s.call('bob', 'chat', {text: '明天见'})).status, 200);
+  const ids = Object.keys((await s.read()).people).sort();
+  blocked = ids[0];
+  const errors = t.mock.method(console, 'error', () => {});
+  for (let minute = 1; minute <= 59; minute++) {
+    s.setNow(at(2, `00:${String(minute).padStart(2, '0')}`));
+    await s.serverTick();
+  }
+  const tries = id => s.closes().filter(c => c.body.id === id).map(c => c.body.trigger.at.slice(11, 16));
+  assert.deepEqual(tries(ids[1]), ['00:01'], '没被挡住的人第一拍就收了');
+  assert.deepEqual(tries(ids[0]), ['00:01', '00:11', '00:31']);
+  const world = await s.read();
+  assert.deepEqual([world.people[ids[0]].closedDay, world.people[ids[0]].lastClose.outcome], ['2030-01-01', 'unavailable']);
+  assert.equal(errors.mock.calls.filter(c => String(c.arguments[0]).includes('收尾')).length, 1);
+});
 
 test('收尾不急：这一拍已经过了 60 秒（前面的后台叫醒占掉了时间），就一轮也不开始，留到下一拍', async () => {
   const s = await harness();

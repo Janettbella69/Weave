@@ -14,6 +14,10 @@ import {wake, START_BY_MS, TICK_BUDGET_MS} from './dispatcher.mjs';
 
 const LEASE_MS = 15 * 60_000;        // 一轮收尾最多占这么久，过了还没回来就当收过了（结果不确定，不重跑）
 export const MAX_CLOSES_PER_TICK = 2;
+// 草稿数字：Agent 服务说没开始跑（4xx 拒收、503、429，dispatcher.mjs 的 retryable）的，隔 10 分钟、20 分钟各再试一次；
+// 第 3 次还不行就记成 unavailable，这一天不收了（审查发现：以前每分钟重试，一直卡住排在后面的人，也没有日志）。
+const RETRY_GAPS_MS = [10 * 60_000, 20 * 60_000];
+const MAX_ATTEMPTS = RETRY_GAPS_MS.length + 1;
 
 // 草稿文案，待确认：收尾那一轮写进 <trigger> 的话。照教材 p.47 对话结尾那句黄金 prompt 的意思写。
 export const CLOSE_TEXT = day => `${day} 这一天结束了，这是当天的收尾。没有人在等你回复，这一轮也发不了消息。
@@ -28,6 +32,8 @@ function claimClose(person, now) {
   if (typeof day !== 'string' || person.closedDay === day) return null;
   // 那一天还没过完（按本人现在的时区）。
   if (day >= localClock(person, now).day) return null;
+  // 上次没开始跑，还没到再试的时间。
+  if (person.closeRetry?.day === day && now < person.closeRetry.at) return null;
   const running = person.closing;
   if (running && now - running.since <= LEASE_MS) return null;
   if (running) {
@@ -41,15 +47,26 @@ function claimClose(person, now) {
   return {ownerId: person.id, day, since: now};
 }
 
-// 一轮收尾回来以后：放掉租约，记下收过了。Agent 服务明确说没开始跑（retryable）的，下一拍再试；
+// 一轮收尾回来以后：放掉租约，记下收过了。Agent 服务明确说没开始跑（retryable）的，隔一段时间再试，最多 MAX_ATTEMPTS 次；
 // 其余（成功、出错、超时、那一天没有会话可收）都只试一次，沿用「出错不自动重试」（docs/ARCHITECTURE.md 第 2 节）。
+// 返回 'gave-up' 表示这一天试满了次数、不收了。
 function finishClose(world, claim, result, now) {
   const person = world.people?.[claim.ownerId];
-  if (!person || person.closing?.since !== claim.since || person.closing?.day !== claim.day) return;
+  if (!person || person.closing?.since !== claim.since || person.closing?.day !== claim.day) return null;
   person.closing = null;
-  if (result.retryable) return;
+  let outcome = result.outcome;
+  if (result.retryable) {
+    const attempts = (person.closeRetry?.day === claim.day ? person.closeRetry.attempts : 0) + 1;
+    if (attempts < MAX_ATTEMPTS) {
+      person.closeRetry = {day: claim.day, attempts, at: now + RETRY_GAPS_MS[attempts - 1]};
+      return null;
+    }
+    outcome = 'unavailable';
+  }
+  person.closeRetry = null;
   person.closedDay = claim.day;
-  person.lastClose = {day: claim.day, outcome: result.outcome, at: new Date(now).toISOString()};
+  person.lastClose = {day: claim.day, outcome, at: new Date(now).toISOString()};
+  return outcome === 'unavailable' ? 'gave-up' : null;
 }
 
 // 一次 tick 里的收尾（服务器自己的闹钟和 Cloudflare Cron 调，scheduler.mjs，排在后台叫醒后面）。返回开始了几轮。
@@ -59,16 +76,20 @@ export async function runDayClose({db, secret, service, fetcher = fetch, now = D
   const began = clock();
   startBy ??= began + START_BY_MS;
   deadline ??= began + TICK_BUDGET_MS;
+  // tried：这一拍已经试过的人不再占，轮到下一个人（审查发现：以前一个人一直被拒，排在后面的人永远轮不到）。
   let started = 0;
+  const tried = new Set();
   while (started < maxCloses && clock() < startBy) {
     const claim = await withWorld(db, world => {
       for (const id of Object.keys(world.people || {}).sort()) {
+        if (tried.has(id)) continue;
         const found = claimClose(world.people[id], now);
         if (found) return found;
       }
       return null;
     });
     if (!claim) break;
+    tried.add(claim.ownerId);
     started++;
     let result;
     try {
@@ -82,9 +103,9 @@ export async function runDayClose({db, secret, service, fetcher = fetch, now = D
       console.error('收尾失败，记为结果不确定：' + (error instanceof Error ? error.message : 'unknown'));
       result = {outcome: 'error', uncertain: true};
     }
-    await withWorld(db, world => finishClose(world, claim, result, now));
-    // Agent 服务说没开始跑（不可用、排队太多）：这一拍不再打它，下一拍再试。
-    if (result.retryable) break;
+    const ended = await withWorld(db, world => finishClose(world, claim, result, now));
+    // 日志只写日期和次数，不写是谁、不写内容。
+    if (ended === 'gave-up') console.error(`收尾放弃：${claim.day} 这一天的收尾，Agent 服务连续 ${MAX_ATTEMPTS} 次说没开始跑（最后一次是 ${result.outcome}），记成 unavailable。`);
   }
   return started;
 }
