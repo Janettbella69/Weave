@@ -52,6 +52,24 @@ test('private messages bind once, then queue for the bound person and are never 
   assert.equal(Object.values(world.wechat).filter(x=>x.direction==='inbound'&&x.status==='queued').length,1);
   assert.equal((await h.call('alice','wechat/unbind',{})).status,200);
 });
+test('a binding message binds with spacing, a colon or capitals; other text around the code does not bind, and no reply is queued',async()=>{
+  // [label, the message made from the code, whether it binds]. Hand-typed, a colon or capitals are likely; a sentence around the code is not.
+  const cases=[
+    ['the page text',c=>`绑定 ${c}`,true],['no space',c=>`绑定${c}`,true],['two spaces',c=>`绑定  ${c}`,true],['full-width space',c=>`绑定\u3000${c}`,true],
+    ['spaces and a newline around it',c=>`  绑定 ${c}\n`,true],['with the product name',c=>`绑定 weave ${c}`,true],
+    ['half-width colon',c=>`绑定:${c}`,true],['full-width colon',c=>`绑定：${c}`,true],['colon and a space',c=>`绑定： ${c}`,true],['capitals',c=>`绑定 ${c.toUpperCase()}`,true],
+    ['words after the code',c=>`绑定 ${c} 谢谢`,false],['a full stop after the code',c=>`绑定 ${c}。`,false],['quotes around the code',c=>`绑定 「${c}」`,false],
+    ['the code alone',c=>c,false],['words before the word',c=>`请绑定 ${c}`,false],['the whole sentence from the page',c=>`在微信中发送：绑定 ${c}`,false],['one character short',c=>`绑定 ${c.slice(0,-1)}`,false],
+  ];
+  for(const [label,make,binds] of cases){
+    const h=await setup(),code=(await h.call('alice','wechat/bind',{})).data.code;
+    const result=await h.bridge('events',h.message(make(code)));
+    assert.equal(result.data.bound===true,binds,label);
+    assert.equal(Object.values((await h.read()).wechat).filter(x=>x.direction==='outbound').length,binds?1:0,label+': the reply to the person');
+    // A message that did not bind leaves the code usable, so the person can send it again.
+    if(!binds)assert.equal((await h.bridge('events',h.message('绑定 '+code))).data.bound,true,label+': the code is still good');
+  }
+});
 test('a stranger private message is dropped without keeping its text',async()=>{
   const h=await setup();
   assert.equal((await h.bridge('events',h.message('我的秘密',{threadId:'wxid-stranger',senderId:'wxid-stranger'}))).data.ignored,true);

@@ -9,7 +9,9 @@ import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} f
 import {localClock,GROUP_TIMEZONE} from './proactivity.mjs';
 
 const stamp=now=>new Date(now).toISOString();
-const bindPattern=/^绑定\s*(?:weave\s*)?([a-f0-9]{48})$/i;
+// The page tells the person to send 「绑定 <code>」. Typed by hand it often gets a colon (half or full width) or capitals,
+// so those still bind. Anything else around the code (a sentence, quotes, a full stop) is not a binding and gets no reply.
+const bindPattern=/^绑定\s*[:：]?\s*(?:weave\s*)?([a-f0-9]{48})$/i;
 const GROUP_SUFFIX='@chatroom',CONTEXT_LIMIT=50,CONTEXT_MS=14*86400000,SEEN_LIMIT=200,TEXT_LIMIT=500;
 const STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
 // 草稿数字，待她定：主动消息和提醒（带 dueAt 的发送任务）比本该送到的时间晚了这么久还没领走（Mac 睡着、桥接断了），就不发了。
@@ -124,12 +126,13 @@ async function ingestPrivate(world,message,{secret,now}){
   const mark=status=>{world.wechat[id]={id,direction:'inbound',status,createdAt:stamp(now)};};
   let ownerId=mapping?.ownerId;
   if(!ownerId){
-    const match=message.text.match(bindPattern),pending=match&&world.runtime[bindKey(await hash(match[1]))],person=pending&&pending.expiresAt>now&&world.people[pending.ownerId];
+    // The code is stored by the hash of its lowercase form; the pattern is case-insensitive, so look it up the same way.
+    const match=message.text.match(bindPattern),codeHash=match&&await hash(match[1].toLowerCase()),pending=match&&world.runtime[bindKey(codeHash)],person=pending&&pending.expiresAt>now&&world.people[pending.ownerId];
     if(person){
       ownerId=pending.ownerId;
       if(person.settings.wechatWxidHash)delete world.runtime[mappingKey(person.settings.wechatWxidHash)];
       person.settings.wechatWxidHash=senderHash;person.settings.wechatWxid=await seal(message.sender,secret,ownerId);person.settings.wechatBoundAt=now;
-      world.runtime[mappingKey(senderHash)]={ownerId,updatedAt:now};delete world.runtime[bindKey(await hash(match[1]))];
+      world.runtime[mappingKey(senderHash)]={ownerId,updatedAt:now};delete world.runtime[bindKey(codeHash)];
       queueOut(world,{ownerId,text:'微信已连接到你的 Weave 空间。之后可以直接在这里记录反馈、询问个人 Agent。',source:'binding'},now);
       mark('ignored');return {accepted:true,bound:true};
     }
