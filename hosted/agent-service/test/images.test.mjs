@@ -37,15 +37,19 @@ function assertNoPhotoOnDisk(dirs) {
   }
 }
 
-test('a photo turn: the model gets one user message, the trigger and the note first, then the photo exactly as sent', async () => {
+// A trigger from a check-in group. Group photos are other people's: they are seen once and never kept (unlike the owner's own).
+const groupMessage = text => ({...message(text), channel: 'group'});
+const GROUP = scopeFor('group');
+
+test('a group photo turn: the model gets one user message, the trigger and the note first, then the photo exactly as sent; nothing of it is left on disk', async () => {
   fresh(steps([{text: '这顿大约 600 千卡'}]));
-  const r = await h.wakeOnce({trigger: message('这顿多少卡'), image: IMAGE});
+  const r = await h.wakeOnce({scope: GROUP, trigger: groupMessage('成员2：这顿多少卡'), image: IMAGE});
   assert.equal(r.outcome, 'success');
   assert.equal(r.reply, '这顿大约 600 千卡');
   const body = mainCalls()[0].body, last = userMessages(body).at(-1);
   assert.ok(Array.isArray(last.content), JSON.stringify(last).slice(0, 300));
   const text = last.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  assert.ok(text.includes(renderTrigger(message('这顿多少卡'))), text);
+  assert.ok(text.includes(renderTrigger(groupMessage('成员2：这顿多少卡'))), text);
   assert.ok(text.includes(IMAGE_NOTE), text);
   assert.deepEqual(photosIn(body), [{type: 'image', source: {type: 'base64', media_type: 'image/png', data: IMAGE.data}}]);
   const kinds = last.content.map(b => b.type).filter(t => t === 'text' || t === 'image');
