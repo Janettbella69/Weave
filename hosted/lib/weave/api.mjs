@@ -93,7 +93,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     // background wakes; queued WeChat messages stay with the Mac bridge's tick below.
     if(requestPath==='/api/internal/tick')return internalTick(request,{tick,agentRuntime,agentServiceUrl,agentServiceToken});
     // 看图只在 Agent SDK 路线上有（照片要经 Agent 服务交给模型）。
-    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now,images:wechat?.images===true&&agentRuntime==='sdk'});
+    // 私聊照片（iLink 那一路，一张照片就是一条消息）也只在这条路线上有。
+    if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now,images:wechat?.images===true&&agentRuntime==='sdk',agentPhotos:agentRuntime==='sdk'});
     // Any other internal path is not a route: answer before reading identity or touching the world.
     if(requestPath.startsWith('/api/internal/'))return json({error:'接口不存在'},404);
     // The browser comes back from Notion here (no login; the one-time state binds it to the account that clicked connect).

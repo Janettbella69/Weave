@@ -35,6 +35,17 @@ export const GROUP_SYSTEM=`你是住在微信打卡群里的 Weave 助理。用�
 
 // images：看图开关（服务器的 WEAVE_WECHAT_IMAGES=1）。还要 Agent SDK 路线和桥接那边的开关都打开才会用到。
 export function wechatConfig(env){return {token:env?.token??env?.WECHAT_BRIDGE_TOKEN??'',images:env?.images===true||env?.WEAVE_WECHAT_IMAGES==='1'};}
+
+// 两个通道：wx 是小号那一路（hosted/wechat-bridge，群和以前的私聊），ilink 是微信官方给 Agent 的私聊通道（hosted/ilink-bridge）。
+// 两个桥接用同一套接口，iLink 桥接每个请求都带 X-Weave-Channel: ilink。一个人的私聊在他绑定的那个通道上，
+// 发给他的话只交给那个通道的桥接；群一直在小号那一路。不带这个头的请求（小号桥接）算 wx，和以前一模一样。
+const channelOf=request=>request.headers.get('x-weave-channel')==='ilink'?'ilink':'wx';
+const personChannel=person=>person?.settings?.wechatChannel==='ilink'?'ilink':'wx';
+const heartbeatKey=channel=>channel==='ilink'?'runtime:ilink-bridge':'runtime:wechat-bridge';
+// 草稿文案，待她确认。私聊里收到一张照片时，她的聊天记录里那一条写成这样，这也是交给 Agent 的那一轮的文字（照片另外附上）。
+export const PHOTO_MESSAGE_TEXT='[照片]';
+// 草稿文案，待她确认。私聊照片太大（超过 2 MB）或者打不开时，回她的一句。
+export const PHOTO_UNREADABLE_TEXT='这张照片我没能打开（太大或者格式不支持）。可以换一张再发。';
 const groupKey=hashed=>`wechat-group:${hashed}`;
 // Written when a group is closed: its Agent workspace is deleted on the next tick, and retried until the service confirms.
 const forgetKey=hashed=>`wechat-forget:${hashed}`;
@@ -106,17 +117,18 @@ export async function startBinding(world,ownerId,now=Date.now()){
 export async function unbind(world,person,ownerId){
   const key=person.settings.wechatWxidHash?mappingKey(person.settings.wechatWxidHash):'';
   if(key)delete world.runtime[key];
-  delete person.settings.wechatWxidHash;delete person.settings.wechatWxid;
+  delete person.settings.wechatWxidHash;delete person.settings.wechatWxid;delete person.settings.wechatChannel;
   for(const [id,value] of Object.entries(world.runtime||{}))if(id.startsWith('wechat-bind:')&&value.ownerId===ownerId)delete world.runtime[id];
   return {ok:true};
 }
 export async function wxidFor(person,ownerId,secret){return person.settings.wechatWxid?unseal(person.settings.wechatWxid,secret,ownerId):'';}
+// online：这个人私聊所在那个通道的桥接最近 2 分钟来过。
 export function publicBinding(person,config,world,now=Date.now()){
-  const seen=world?.runtime?.['runtime:wechat-bridge']?.lastSeenAt;
-  return {configured:!!config?.token,online:typeof seen==='number'&&now-seen<120000,bound:!!person.settings.wechatWxidHash};
+  const channel=personChannel(person),seen=world?.runtime?.[heartbeatKey(channel)]?.lastSeenAt;
+  return {configured:!!config?.token,online:typeof seen==='number'&&now-seen<120000,bound:!!person.settings.wechatWxidHash,channel};
 }
 
-async function ingestPrivate(world,message,{secret,now}){
+async function ingestPrivate(world,message,{secret,now,channel='wx'}){
   const id='in:'+await hash(message.id);
   if(world.wechat[id])return {accepted:true,duplicate:true};
   const senderHash=await hash(message.sender),mapping=world.runtime[mappingKey(senderHash)];
@@ -129,6 +141,8 @@ async function ingestPrivate(world,message,{secret,now}){
       ownerId=pending.ownerId;
       if(person.settings.wechatWxidHash)delete world.runtime[mappingKey(person.settings.wechatWxidHash)];
       person.settings.wechatWxidHash=senderHash;person.settings.wechatWxid=await seal(message.sender,secret,ownerId);person.settings.wechatBoundAt=now;
+      // 在哪个通道绑定，私聊就在哪个通道。在 iLink 上绑定以后，小号那边的旧绑定（上面删掉的那条）就不再收她的私聊。
+      if(channel==='ilink')person.settings.wechatChannel='ilink';else delete person.settings.wechatChannel;
       world.runtime[mappingKey(senderHash)]={ownerId,updatedAt:now};delete world.runtime[bindKey(await hash(match[1]))];
       queueOut(world,{ownerId,text:'微信已连接到你的 Weave 空间。之后可以直接在这里记录反馈、询问个人 Agent。',source:'binding'},now);
       mark('ignored');return {accepted:true,bound:true};
@@ -181,11 +195,12 @@ async function ingestGroup(world,message,{secret,now,images=false,dropped}){
   return {accepted:true,queued:true,...await holdGroupForPhoto(world,group,world.wechat[entryId],message,{secret,now,aad})};
 }
 // images：看图打开（服务器开关 + Agent SDK 路线 + 桥接说它也开着）。dropped：关群时删掉的消息带着的照片 id，存完 world 再删照片。
-export async function ingest(world,input,{secret,now=Date.now(),images=false,dropped}){
-  const message=normalize(input,images);
-  if(!message)return {accepted:true,ignored:true};
+// channel：哪个桥接送来的。iLink 只有私聊，它送来的群消息一律不理（群在小号那一路）；旧的看图配对只在小号那一路。
+export async function ingest(world,input,{secret,now=Date.now(),images=false,dropped,channel='wx'}){
+  const message=normalize(input,images&&channel==='wx');
+  if(!message||(channel==='ilink'&&message.group))return {accepted:true,ignored:true};
   world.runtime??={};world.wechat??={};
-  return message.group?ingestGroup(world,message,{secret,now,images,dropped}):ingestPrivate(world,message,{secret,now});
+  return message.group?ingestGroup(world,message,{secret,now,images,dropped}):ingestPrivate(world,message,{secret,now,channel});
 }
 
 export async function processInbound(world,{secret,now=Date.now(),handleMessage,handleGroup}){
@@ -370,9 +385,11 @@ export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Dat
 
 // The idempotency key the bridge sends is the entry id, so re-claiming after a lost
 // receipt returns the original send instead of messaging anyone twice.
-export async function claimOutbound(world,{secret,now=Date.now(),limit=CLAIM_LIMIT}){
+// channel：只交出这个通道要发的。群消息在小号那一路（wx）；发给某个人的，在他私聊所在的通道。别的通道的不碰（不过期、不占租约）。
+const outboundChannel=(world,entry)=>entry.groupAad?'wx':personChannel(world.people?.[entry.ownerId]);
+export async function claimOutbound(world,{secret,now=Date.now(),limit=CLAIM_LIMIT,channel='wx'}){
   const jobs=[];world.wechat??={};
-  const due=Object.values(world.wechat).filter(x=>x.direction==='outbound'&&(x.status==='queued'||(x.status==='sending'&&x.leaseUntil<now))).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
+  const due=Object.values(world.wechat).filter(x=>x.direction==='outbound'&&(x.status==='queued'||(x.status==='sending'&&x.leaseUntil<now))&&outboundChannel(world,x)===channel).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)));
   for(const entry of due){
     if(jobs.length>=limit)break;
     if(entry.dueAt&&now-Date.parse(entry.dueAt)>LATE_MS){entry.status='expired';delete entry.text;delete entry.leaseUntil;markDelivery(world,entry,'expired');continue;}
@@ -476,7 +493,57 @@ async function receivePhoto(request,{db,secret,readBody,now}){
   return {accepted:true,attached,wake:true};
 }
 
-export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Date.now(),images=false}){
+// ── 私聊照片：一张照片就是一条消息（iLink 桥接，POST /api/internal/wechat/image）──────────────────────────────
+// 请求体是照片的字节（桥接已经从微信的 CDN 下载、解密好），Content-Type 是 image/jpeg、png、gif 或 webp；
+// X-Weave-Message 是这条消息的 id（去重用），X-Weave-Sender 是发照片的人，X-Weave-Created-At 是发出的时间。
+// 只收已经绑定、私聊就在这个通道上的人发来的；别人的照片什么都不存。照片加密暂存在 D1（wechat-photos.mjs，最多 10 分钟），
+// 排进队的那一条文字是 PHOTO_MESSAGE_TEXT；那一轮开始时照片交给 Agent（只用能看图的模型）并从这里删掉。
+// 太大或者打不开：不存，回她一句 PHOTO_UNREADABLE_TEXT。和文字一样，超过 6 小时才到的不回。
+async function receiveImage(request,{db,secret,now,channel}){
+  const messageId=request.headers.get('x-weave-message'),sender=request.headers.get('x-weave-sender');
+  if(!messageId||messageId.length>8192||!sender||sender.length>8192)fail('缺少消息 id 或发送人');
+  const type=(request.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
+  const sentAt=Date.parse(request.headers.get('x-weave-created-at')||'');
+  const raw=await readPhotoBody(request),problem=raw?photoProblem(raw,type):'too_large';
+  const entryId='in:'+await hash(messageId),senderHash=await hash(sender);
+  const ownerOf=world=>{const ownerId=world.runtime?.[mappingKey(senderHash)]?.ownerId,person=ownerId&&world.people?.[ownerId];return person&&personChannel(person)===channel&&!sender.endsWith(GROUP_SUFFIX)?ownerId:null;};
+  const before=await new Store(db,{strict:true}).load(),ownerId=ownerOf(before);
+  if(!ownerId)return {accepted:true,ignored:true};
+  if(before.wechat?.[entryId])return {accepted:true,duplicate:true};
+  if(Number.isFinite(sentAt)&&now-sentAt>STALE_MS)return {accepted:true,stale:true};
+  if(problem){
+    await withWorld(db,world=>{
+      world.wechat??={};
+      if(world.wechat[entryId]||ownerOf(world)!==ownerId)return;
+      world.wechat[entryId]={id:entryId,direction:'inbound',status:'ignored',createdAt:stamp(now)};
+      queueOut(world,{ownerId,text:PHOTO_UNREADABLE_TEXT,source:'reply'},now);
+    });
+    console.log(`私聊照片没有收（${problem}）：${entryId}`);
+    return {accepted:true,rejected:problem};
+  }
+  const photo=await putPhoto(db,{bytes:raw,mediaType:type,owner:ownerId},{secret,now});
+  let queued=false,duplicate=false,committed=false;
+  try{
+    await withWorld(db,world=>{
+      queued=false;duplicate=false;world.wechat??={};
+      if(world.wechat[entryId]){duplicate=true;return;}
+      if(ownerOf(world)!==ownerId)return;
+      world.wechat[entryId]={id:entryId,direction:'inbound',ownerId,text:PHOTO_MESSAGE_TEXT,photo,status:'queued',createdAt:stamp(now)};
+      queued=true;
+    });
+    committed=true;
+  }finally{
+    // 只有 world 真的写进去、照片 id 挂在那一条上，照片才留着；别的情况都马上删掉。
+    if(!(committed&&queued))await dropPhoto(db,photo);
+  }
+  if(duplicate)return {accepted:true,duplicate:true};
+  if(!queued)return {accepted:true,ignored:true};
+  console.log(`私聊照片已收下（${type}，${raw.length} 字节），这一轮开始时用：${entryId}`);
+  return {accepted:true,queued:true,wake:true};
+}
+
+// agentPhotos：Agent SDK 路线（照片要经 Agent 服务交给模型），私聊照片的接口只在这时候有。
+export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Date.now(),images=false,agentPhotos=false}){
   const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
   try{
     if(typeof token!=='string'||token.length<32||await hash(request.headers.get('authorization')||'')!==await hash('Bearer '+token))return json({error:'未授权'},401);
@@ -484,16 +551,19 @@ export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Dat
     const path=new URL(request.url).pathname;
     // Scheduled work loads and saves on its own and may call the model, so it holds no state here.
     if(path==='/api/internal/wechat/tick')return json(await tick());
+    const channel=channelOf(request);
     // 看图打开时才有这个接口；关着时它和别的不认识的路径一样。
     if(path==='/api/internal/wechat/photo'&&images)return json(await receivePhoto(request,{db,secret,readBody,now}));
+    // 私聊照片（一张照片就是一条消息）。不在 Agent SDK 路线上就没有这个接口。
+    if(path==='/api/internal/wechat/image')return agentPhotos?json(await receiveImage(request,{db,secret,now,channel})):json({error:'接口不存在'},404);
     const input=await readBody(request),store=new Store(db,{strict:true}),world=await store.load(),dropped=[];
     world.runtime??={};
-    // A heartbeat at most once a minute: the bridge polls often and D1 writes are not free.
-    const seen=world.runtime['runtime:wechat-bridge']?.lastSeenAt;
-    if(typeof seen!=='number'||now-seen>60000)world.runtime['runtime:wechat-bridge']={id:'runtime:wechat-bridge',lastSeenAt:now};
-    // 看图：服务器开着，还要桥接说它也开着（X-Weave-Photos: on）才算数。服务器开关关着时这里什么都不做。
+    // A heartbeat at most once a minute: the bridge polls often and D1 writes are not free. Each channel has its own.
+    const beat=heartbeatKey(channel),seen=world.runtime[beat]?.lastSeenAt;
+    if(typeof seen!=='number'||now-seen>60000)world.runtime[beat]={id:beat,lastSeenAt:now};
+    // 看图：服务器开着，还要桥接说它也开着（X-Weave-Photos: on）才算数。服务器开关关着时这里什么都不做。只有小号那一路有这套。
     let photos=false;
-    if(images){
+    if(images&&channel==='wx'){
       const says=request.headers.get('x-weave-photos')==='on',mark=world.runtime[BRIDGE_PHOTOS];
       if(says&&!(typeof mark?.seenAt==='number'&&now-mark.seenAt<=60000))world.runtime[BRIDGE_PHOTOS]={id:BRIDGE_PHOTOS,seenAt:now};
       else if(!says&&mark)delete world.runtime[BRIDGE_PHOTOS];
@@ -504,10 +574,10 @@ export async function wechatQueue(request,{db,secret,token,readBody,tick,now=Dat
       const known=new Set(Object.keys(world.wechat??{}));
       // 看图开着时，每个事件顺便清一遍过期的照片（定时任务和存照片时也清）。
       if(images)await sweepPhotos(db,now);
-      result=await ingest(world,input,{secret,now,images:photos,dropped});
+      result=await ingest(world,input,{secret,now,images:photos,dropped,channel});
       Object.assign(result,fastReplyHints(world,known));
     }
-    else if(path==='/api/internal/wechat/claim')result={jobs:await claimOutbound(world,{secret,now})};
+    else if(path==='/api/internal/wechat/claim')result={jobs:await claimOutbound(world,{secret,now,channel})};
     else if(path==='/api/internal/wechat/receipt')result=receiveReceipt(world,input,now);
     else return json({error:'接口不存在'},404);
     await store.save(world);
