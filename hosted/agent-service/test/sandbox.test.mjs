@@ -7,7 +7,7 @@ const dirs = {root: '/srv/weave/owner/ab12', workspace: '/srv/weave/owner/ab12/w
 
 test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内存不够先杀它）；代理 socket 目录只读挂载', () => {
   const args = dockerArgs({
-    scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', socketDir: '/srv/weave/run', image: 'weave-agent:0.3.316',
+    scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', socketDir: '/srv/weave/run', image: 'weave-agent:0.3.325',
     name: 'weave-run-abc', uid: 1001, gid: 1001,
     env: {ANTHROPIC_AUTH_TOKEN: 'run-token', HOME: '/home/agent', SKIPPED: undefined},
     cliArgs: ['--output-format', 'stream-json'],
@@ -20,12 +20,12 @@ test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内�
     '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
     '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave:ro',
     '-e', 'ANTHROPIC_AUTH_TOKEN=run-token', '-e', 'HOME=/home/agent',
-    'weave-agent:0.3.316', 'claude', '--output-format', 'stream-json',
+    'weave-agent:0.3.325', 'claude', '--output-format', 'stream-json',
   ]);
 });
 
 test('docker 模式：CLI 看到的是容器里的路径，模型地址是容器内 socat 转出来的端口', () => {
-  const iso = isolationFor({mode: 'docker', scope: scopeFor('group'), dirs, pluginDir: '/opt/app/plugin', proxy: {socketDir: '/srv/weave/run'}, image: 'weave-agent:0.3.316', name: 'weave-run-x', uid: 1001, gid: 1001});
+  const iso = isolationFor({mode: 'docker', scope: scopeFor('group'), dirs, pluginDir: '/opt/app/plugin', proxy: {socketDir: '/srv/weave/run'}, image: 'weave-agent:0.3.325', name: 'weave-run-x', uid: 1001, gid: 1001});
   assert.equal(iso.cwd, '/workspace');
   assert.equal(iso.pluginPath, '/opt/weave/plugin');
   assert.equal(iso.baseUrl, 'http://127.0.0.1:4321');
@@ -49,7 +49,7 @@ test('local 模式：文件工具只许碰工作目录；sandbox 打开时没有
 });
 
 test('快照目录：docker 写在工作目录外、只读挂进容器；local（本机开发）写在工作目录里的 weave/', () => {
-  const common = {scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', image: 'weave-agent:0.3.316', name: 'weave-run-x', uid: 1001, gid: 1001};
+  const common = {scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', image: 'weave-agent:0.3.325', name: 'weave-run-x', uid: 1001, gid: 1001};
   assert.equal(isolationFor({...common, mode: 'docker', proxy: {socketDir: '/srv/weave/run'}}).snapshotDir, '/srv/weave/owner/ab12/snapshot');
   assert.equal(isolationFor({...common, mode: 'local', proxy: {url: 'http://127.0.0.1:1'}}).snapshotDir, '/srv/weave/owner/ab12/workspace/weave');
 });

@@ -127,7 +127,7 @@ export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now})
 }
 
 export async function createAgentService({
-  token, dataDir, isolation = 'docker', image = 'weave-agent:0.3.316', weaveUrl, keys = {}, upstreams,
+  token, dataDir, isolation = 'docker', image = 'weave-agent:0.3.325', weaveUrl, keys = {}, upstreams,
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
   fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g', tickEveryMs = 0,
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
@@ -274,7 +274,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     token: env.AGENT_SERVICE_TOKEN,
     dataDir: resolve(env.AGENT_DATA_DIR || './data'),
     isolation,
-    image: env.AGENT_IMAGE || 'weave-agent:0.3.316',
+    image: env.AGENT_IMAGE || 'weave-agent:0.3.325',
     weaveUrl: env.WEAVE_API_URL,
     keys: {deepseek: env.DEEPSEEK_API_KEY || env.AGENT_PROVIDER_API_KEY || '', kimi: env.KIMI_API_KEY || '', glm: env.GLM_API_KEY || '', qwen: env.QWEN_API_KEY || ''},
     limits: {perAccount: count(env.AGENT_DAILY_TOKENS_PER_ACCOUNT, 400000), total: count(env.AGENT_DAILY_TOKENS_TOTAL, 6000000)},

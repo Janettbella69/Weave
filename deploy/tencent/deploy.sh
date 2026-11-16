@@ -8,7 +8,7 @@ done
 set -a; . ./.env; set +a
 
 echo "== 1/4 一次性容器的镜像（第一次要下载约 300 MB 的 CLI）"
-docker build -q -f ../../hosted/agent-service/Dockerfile.agent -t weave-agent:0.3.316 ../../hosted/agent-service
+docker build -q -f ../../hosted/agent-service/Dockerfile.agent -t weave-agent:0.3.325 ../../hosted/agent-service
 echo "== 2/4 网站和 Agent 服务的镜像（第一次要几分钟）"
 docker compose build
 echo "== 3/4 启动"

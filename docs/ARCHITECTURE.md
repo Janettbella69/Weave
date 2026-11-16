@@ -1,6 +1,6 @@
 # Weave 架构：以 Claude Agent SDK 为核心
 
-状态：已确认（2026-11-02）。第 0、1 步的实施计划见 [`docs/superpowers/plans/2026-11-02-agent-sdk-step0-1.md`](superpowers/plans/2026-11-02-agent-sdk-step0-1.md)，代码在 `hosted/agent-service/` 和 `hosted/lib/weave/`。基于 `@anthropic-ai/claude-agent-sdk` 0.3.316（[官方文档](https://code.claude.com/docs/en/agent-sdk/overview)）。
+状态：已确认（2026-11-02）。第 0、1 步的实施计划见 [`docs/superpowers/plans/2026-11-02-agent-sdk-step0-1.md`](superpowers/plans/2026-11-02-agent-sdk-step0-1.md)，代码在 `hosted/agent-service/` 和 `hosted/lib/weave/`。基于 `@anthropic-ai/claude-agent-sdk` 0.3.325（[官方文档](https://code.claude.com/docs/en/agent-sdk/overview)）。
 
 标了「实测」的结论，都能用 [`scripts/agent-sdk-probe`](../scripts/agent-sdk-probe/README.md) 重跑：43 项，本地假模型，不花钱。
 

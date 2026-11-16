@@ -1,4 +1,4 @@
-// WeChat photos in a wake (docs/superpowers/specs/2026-11-03-wechat-images-design.md): the real CLI of SDK 0.3.316 against
+// WeChat photos in a wake (docs/superpowers/specs/2026-11-03-wechat-images-design.md): the real CLI of SDK 0.3.325 against
 // the fake model, through the real model proxy. No key, no cost. What is checked here is what the SDK docs do not say:
 // resume together with a streaming (generator) prompt, and that a photo turn leaves nothing on disk.
 import {test, before, after} from 'node:test';
@@ -53,7 +53,7 @@ test('a photo turn: the model gets one user message, the trigger and the note fi
   assertNoPhotoOnDisk(r.dirs);
 });
 
-test('resume with a generator prompt works in SDK 0.3.316; the photo turn writes no session, and the next text turn resumes the session from before it', async () => {
+test('resume with a generator prompt works in SDK 0.3.325; the photo turn writes no session, and the next text turn resumes the session from before it', async () => {
   const dirs = h.tenant();
   const assistants = body => (body.messages || []).filter(m => m.role === 'assistant').map(m => JSON.stringify(m.content));
   fresh(body => !isMain(body) ? {text: 't'} : imageBlocks(body).length ? {text: '这顿大约 600 千卡'} : assistants(body).length ? {text: '你午饭吃了沙拉'} : {text: '记住了'});

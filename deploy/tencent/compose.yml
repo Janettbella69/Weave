@@ -40,7 +40,7 @@ services:
     environment:
       WEAVE_API_URL: http://web:4317
       AGENT_ISOLATION: docker
-      AGENT_IMAGE: weave-agent:0.3.316
+      AGENT_IMAGE: weave-agent:0.3.325
       AGENT_DATA_DIR: ${WEAVE_AGENT_DATA:?先跑 setup-env.sh}
       # 这台机器内存紧：同时只跑 1 轮，每轮容器最多 768 MB。
       AGENT_MAX_CONCURRENCY: "1"

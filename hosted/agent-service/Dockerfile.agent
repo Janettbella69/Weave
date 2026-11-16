@@ -2,7 +2,7 @@
 # --network none, --read-only, --cap-drop ALL and the host user's uid; see sandbox.mjs.
 # The CLI must be the same version the SDK expects, so it comes from the same npm package.
 FROM node:24-bookworm-slim
-ARG SDK_VERSION=0.3.316
+ARG SDK_VERSION=0.3.325
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 sqlite3 jq socat ripgrep ca-certificates \
  && rm -rf /var/lib/apt/lists/*
