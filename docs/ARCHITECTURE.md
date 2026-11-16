@@ -396,7 +396,7 @@ Weave 服务只负责判断**该不该花这次钱叫醒它**（教材 p.20「Ag
 
 - 位置是教材 p.20 的「Agent 启动之前 预处理」，不审 Agent 写出来的话，所以不是 p.26 的 auditor 反模式。
 - **它是全仓库唯一不走 SDK 的模型调用。** Jev 不是 Anthropic 格式，也不是 Agent，只决定要不要花这次钱叫醒，不决定醒了做什么。
-- 只在服务器配了 `TYPESAFE_API_KEY` 时启用。Key 可以是 TypeSafe 自己的，也可以是 OpenRouter 的：再配 `TYPESAFE_BASE_URL=https://openrouter.ai/api`，模型名带 `typesafe/` 前缀（默认 `typesafe/jev-1.14`）；OpenRouter 另外返回这一次的花费 `usage.cost`，记进 `proactive.log`。地址只认这两个，配成别的就不启用。它是第三方服务，配 Key 之前隐私说明要加一句（草稿在设计稿第 7 节，待确认；经 OpenRouter 时还要写上 OpenRouter）。
+- 只在服务器配了 `TYPESAFE_API_KEY` 时启用。Key 可以是 TypeSafe 自己的，也可以是 OpenRouter 的：再配 `TYPESAFE_BASE_URL=https://openrouter.ai/api`，模型名带 `typesafe/` 前缀（默认 `typesafe/jev-1.14`）；OpenRouter 另外返回这一次的花费 `usage.cost`，记进 `proactive.log`。地址只认这两个，配成别的就不启用。它是第三方服务，隐私页「发给谁」里有一句说明（2026-11-16 确认的原句，配了 Key 才显示；直连 TypeSafe 时去掉「经 OpenRouter 」），`test/jev-privacy.test.mjs` 守着原句不被改字。
 
 ## 8. 多 Agent 的唯一例外：Deep Research
 
