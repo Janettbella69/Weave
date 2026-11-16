@@ -45,13 +45,17 @@ async function start() {
   // The bridge with its own switch on says so on every request (X-Weave-Photos: on).
   const bridge = async (path, data) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Photos': 'on'}, body: JSON.stringify(data)}), options())).json();
   const photo = async (forId, thread, sender) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': 'image/png', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Photos': 'on', 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: PHOTO}), options())).json();
+  // The iLink bridge: private chat only, a photo is a message of its own (POST /image with the decrypted bytes).
+  const ilink = async (path, data) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Channel': 'ilink'}, body: JSON.stringify(data)}), options())).json();
+  const image = async (messageId, sender) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/image', {method: 'POST', headers: {'Content-Type': 'image/png', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Channel': 'ilink', 'X-Weave-Message': messageId, 'X-Weave-Sender': sender, 'X-Weave-Created-At': new Date().toISOString()}, body: PHOTO}), options())).json();
   let seq = 0;
   const message = (body, over = {}) => ({id: 'msg_' + (++seq), threadId: 'wxid-alice', senderId: 'wxid-alice', type: 1, direction: 'incoming', body, createdAt: new Date().toISOString(), mentions: {self: false}, ...over});
   const group = (sender, body, mentioned = false, over = {}) => message(body, {threadId: ROOM, senderId: sender, mentions: {self: mentioned}, ...over});
   return {
-    fake, db, alice, dataDir, agent, bridge, photo, message, group, web,
+    fake, db, alice, dataDir, agent, bridge, photo, message, group, web, ilink, image,
     tick: () => bridge('tick', {}),
     bind: async () => bridge('events', message((await web('wechat/bind', {})).instruction)),
+    bindIlink: async () => ilink('events', message((await web('wechat/bind', {})).instruction, {threadId: 'o9alice@im.wechat', senderId: 'o9alice@im.wechat', mentions: undefined})),
     mainRequests: () => fake.captured.filter(c => isMain(c.body)),
     async close() { await agent.close(); server.closeAllConnections(); await new Promise(r => server.close(r)); await fake.close(); },
   };
@@ -95,23 +99,34 @@ test('a check-in group photo end to end: photo first, then the same person\'s @;
   } finally { await h.close(); }
 });
 
-test('a private chat photo end to end: the owner\'s photo goes to an owner-scope wake once, and the next message the same day sees no photo', async () => {
+test('a private chat photo over iLink end to end: the photo goes to an owner-scope wake, is kept in her workspace, and the next message the same day still has it in its history', async () => {
   const h = await start();
   try {
+    const IL = 'o9alice@im.wechat';
     h.fake.script(body => !isMain(body) ? {text: 't'} : imagesIn(body).length ? {text: '这是一份沙拉，大约 350 千卡。'} : {text: '记得，是沙拉。'});
-    await h.bind();
-    await h.bridge('claim', {});
-    const text = h.message('这顿多少卡', {photo: 'ready'});
-    assert.equal((await h.bridge('events', text)).photo, 'upload');
-    assert.equal((await h.photo(text.id, 'wxid-alice', 'wxid-alice')).attached, true);
-    assert.equal((await h.tick()).processed, 1);
-    assert.equal(imagesIn(h.mainRequests()[0].body).length, 1);
-    await h.bridge('events', h.message('我刚才吃的是什么'));
-    assert.equal((await h.tick()).processed, 1);
-    const last = h.mainRequests().at(-1).body;
-    assert.equal(imagesIn(last).length, 0, 'the photo must not come back in a later turn');
-    const replies = (await h.bridge('claim', {})).jobs.map(j => j.text);
-    assert.deepEqual(replies, ['这是一份沙拉，大约 350 千卡。', '记得，是沙拉。']);
-    assertGone(h);
+    await h.bindIlink();
+    await h.ilink('claim', {});
+    assert.equal((await h.image('img_1', IL)).queued, true);
+    assert.equal((await h.ilink('tick', {})).processed, 1);
+    const [first] = h.mainRequests();
+    assert.equal(first.body.model, 'deepseek-flash');
+    assert.equal(imagesIn(first.body).length, 1);
+    // The file is in her workspace and the turn was told where.
+    const ownerDir = join(h.dataDir, 'owner'), photos = files(ownerDir).filter(f => f.includes('/workspace/photos/'));
+    assert.equal(photos.length, 1);
+    assert.deepEqual(readFileSync(photos[0]), PHOTO);
+    assert.ok(JSON.stringify(first.body.messages).includes('photos/'), 'the note names the file');
+    // The next message resumes the same session, which still has the photo.
+    await h.ilink('events', h.message('我刚才吃的是什么', {threadId: IL, senderId: IL, mentions: undefined}));
+    assert.equal((await h.ilink('tick', {})).processed, 1);
+    assert.equal(imagesIn(h.mainRequests().at(-1).body).length, 1, 'the photo is in the history of the next turn');
+    const replies = (await h.ilink('claim', {})).jobs.map(j => j.text);
+    // The fake model answers the same way whenever a photo is in front of it: both answers say salad.
+    assert.deepEqual(replies, ['这是一份沙拉，大约 350 千卡。', '这是一份沙拉，大约 350 千卡。']);
+    // D1 and the world never keep the photo: it lives only in her workspace (and her session there).
+    let rows = 0;
+    try { rows = h.db.sql.prepare('SELECT COUNT(*) AS n FROM weave_wechat_photos').get().n; } catch { /* no table */ }
+    assert.equal(rows, 0);
+    assert.ok(!JSON.stringify(h.db.sql.prepare('SELECT document FROM weave_documents').all()).includes(PHOTO64.slice(0, 80)));
   } finally { await h.close(); }
 });

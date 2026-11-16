@@ -3,11 +3,12 @@
 import {test, before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync} from 'node:fs';
+import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createAgentService} from '../server.mjs';
 import {scopeDirs} from '../workspace.mjs';
+import {imageNote} from '../prompts.mjs';
 import {isMain, startFakeModel} from './helpers/fake-model.mjs';
 import {png} from './helpers/png.mjs';
 import {IMAGE_MAX_BASE64} from '../images.mjs';
@@ -98,6 +99,39 @@ test('a photo turn leaves sessions.json alone: the next text turn the same day r
   const three = await (await post('/wake', wakeBody({id, trigger: {...wakeBody().trigger, text: '成员2：我刚才说了什么'}}))).json();
   assert.equal(three.sessionId, one.sessionId);
   assert.equal(images(modelCalls().at(-1).body).length, 0);
+});
+
+test('the owner\'s own photo is saved in the workspace (photos/<local date time>-<6 hex>.<ext>, mode 0600), the note names it, and sessions.json moves on', async () => {
+  const id = 'u:' + 'e'.repeat(20), dirs = scopeDirs(dataDir, 'owner', id), sessions = join(dirs.root, 'sessions.json');
+  fresh('收到');
+  const body = wakeBody({scope: 'owner', id, trigger: {kind: 'message', channel: 'wechat', direct: true, at: '2026-11-03T21:30:05-08:00', text: '[照片]'}, image: IMAGE});
+  const out = await (await post('/wake', body)).json();
+  assert.equal(out.outcome, 'success');
+  const saved = readdirSync(join(dirs.workspace, 'photos'));
+  assert.equal(saved.length, 1);
+  assert.match(saved[0], /^2026-11-03-2130-[0-9a-f]{6}\.png$/);
+  const path = join(dirs.workspace, 'photos', saved[0]);
+  assert.deepEqual(readFileSync(path), PHOTO);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  const last = modelCalls()[0].body.messages.filter(m => m.role === 'user').at(-1);
+  assert.ok(last.content.some(b => b.type === 'text' && b.text.includes(imageNote('photos/' + saved[0]))));
+  assert.equal(JSON.parse(readFileSync(sessions, 'utf8')).sessionId, out.sessionId, 'an owner photo turn saves its session');
+});
+
+test('a group photo is never saved to disk, and a photos/ that is a link to somewhere else is not written through', async () => {
+  const gid = 'g:' + 'f'.repeat(20), gdirs = scopeDirs(dataDir, 'group', gid);
+  fresh('好');
+  assert.equal((await post('/wake', wakeBody({id: gid, image: IMAGE}))).status, 200);
+  assert.ok(!existsSync(join(gdirs.workspace, 'photos')));
+
+  const id = 'u:' + 'h'.repeat(20), dirs = scopeDirs(dataDir, 'owner', id), outside = realpathSync(mkdtempSync(join(tmpdir(), 'weave-outside-')));
+  mkdirSync(dirs.workspace, {recursive: true});
+  symlinkSync(outside, join(dirs.workspace, 'photos'));
+  fresh('好');
+  const body = wakeBody({scope: 'owner', id, trigger: {kind: 'message', channel: 'wechat', direct: true, at: '2026-11-03T12:00:00+08:00', text: '[照片]'}, image: IMAGE});
+  assert.equal((await post('/wake', body)).status, 200);
+  assert.deepEqual(readdirSync(outside), [], 'nothing is written outside the workspace');
+  assert.equal(readdirSync(join(dirs.workspace, 'photos')).length, 1);
 });
 
 // Regression: the photo in a wake was once called `image` inside handleWake, which hid the container image's name, so every
