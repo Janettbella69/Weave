@@ -16,7 +16,7 @@
 
 ## 谁来回答
 
-微信消息由 Agent 回答，走和网页聊天同一条 Agent SDK 的路，开关是网站的 `WEAVE_AGENT_RUNTIME=sdk`（`deploy/tencent/setup-env.sh` 已经写进 `web.env`）。不开这个开关，微信消息还是走旧的直连模型的路。
+微信消息由 Agent 回答，走和网页聊天同一条 Agent SDK 的路。网站没有配置 Agent 服务（`AGENT_SERVICE_URL`、`AGENT_SERVICE_TOKEN`）时，消息留在队列里，不会有别的路来回答。早先的 `WEAVE_AGENT_RUNTIME` 开关和直连模型的旧路已经删除。
 
 | 谁发的 | 叫醒哪个范围 | 它能看到什么 |
 | --- | --- | --- |

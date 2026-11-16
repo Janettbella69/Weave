@@ -193,9 +193,6 @@ export function weaveServer(scope, capability) {
 | `schedule_wake` | 到点在后台叫醒自己（跟进），`repeat`：`none` / `daily` / `weekly` | 在将来、30 天以内、落在允许时段里；最多 10 条有效的跟进；后台那一轮只能排一次性的；每天后台醒几次按档位 | ✓ | | |
 | `cancel_schedule` | 取消一条跟进或提醒（只响一次的和重复的都行） | 只能取消自己的、还没结束的；排期本身在快照的 `schedules`、`reminders` 表里查，不做 `list_schedule`（p.16） | ✓ | | |
 | `set_proactivity` | 改主动找人的档位（`off` / `low` / `normal` / `high`） | 只在有人直接找它的那一轮能用 | ✓ | | |
-| `list_friends` | 读朋友 | 只有名字和编号 | ✓ | | |
-| `propose_activity` | 建议约活动 | 活动只能选固定几种，**没有自由文本**；本人在网页确认后才真正发给对方 | ✓ | | |
-| `list_activities` | 看约活动进度 | 只看自己参与的 | ✓ | | |
 | Notion（一个 MCP，三个动作：搜索、读、追加；具体名字待定） | 搜用户授权给 Weave 的页面；把一个页面读成 markdown；在页面末尾追加文字 | 见下面「Notion」一段 | ✓ | | |
 | `propose_plan` | 存一份计划 | 本人确认后才同步 Notion | ✓ | | |
 | `request_deep_research` | 排一次研究（第 8 节） | 每日上限 | ✓ | | |
@@ -230,7 +227,6 @@ hosted/agent-service/plugin/
       SKILL.md
       scripts/stats.py          # 参考代码
     checkin-group-host/SKILL.md
-    friend-activity/SKILL.md
     deep-research/SKILL.md
 ```
 
@@ -266,7 +262,6 @@ description: 复盘一周的习惯完成情况时使用。
 | `proactive-judgment` | 被定时或事件叫醒，要决定现在值不值得开口时使用。 | 第二块新写（`plugin/skills/proactive-judgment/SKILL.md`，草稿待确认），参考 `ASSESSMENT_SYSTEM` 和 Muse / OpenClaw 的开口规则 |
 | `weekly-review` | 复盘一周的习惯完成情况时使用。 | 新写，带统计脚本 |
 | `checkin-group-host` | 在打卡群里回复或做群总结时使用。 | 现有 `GROUP_SYSTEM` 的规则 |
-| `friend-activity` | 想和朋友约活动时使用。 | 现有协商和授权的说明 |
 | `deep-research` | 需要查多个来源、写带出处的报告时使用。 | 只在研究范围可见 |
 
 **系统提示（待确认的文案）：**
@@ -341,7 +336,7 @@ weave/ 是这次醒来时从 Weave 取的数据快照，每次醒来都会重建
 
 依据是这一条：**私人资料、不可信内容、对外通道，这三样不同时出现在一轮里。**
 
-- **本人：** 有私人资料。对外通道只有发给本人自己，所以 `send_message` 不让模型选收件人，`propose_activity` 没有自由文本。Bash 没有网络，带不出去。
+- **本人：** 有私人资料。对外通道只有发给本人自己，所以 `send_message` 不让模型选收件人。Bash 没有网络，带不出去。
 - **打卡群：** 群消息谁都能写，是不可信内容。这一轮看不到任何人的私人资料，工具也没有（实测调不了），最坏情况是把群里本来就有的东西说回群里。Bash 和 Write 照样留着。
 - **研究：** 要读公网网页，是不可信内容，也能联网。所以没有私人资料。用户发来一个链接，Agent 也走这条路去读。
 
@@ -391,7 +386,7 @@ Weave 服务只负责判断**该不该花这次钱叫醒它**（教材 p.20「Ag
 | 到点（跟进） | Agent 自己用 `schedule_wake` 排的 | 第二块 |
 | 定期看看 | 档位决定：`low` 每天 1 次、`normal`（默认）2 次、`high` 4 次，时间跟着允许时段走 | 第二块 |
 | 换日收尾 | 她直接跟 Weave 说过话的那一天过完以后，服务器闹钟的下一拍（`hosted/lib/weave/day-close.mjs`） | 2026-11-04 加 |
-| 事件 | 朋友确认了活动等 | 没做 |
+| 事件 | 还没有事件型的叫醒（朋友协商已删除） | 没做 |
 
 **谁来敲钟：** Agent 服务每分钟调一次 `POST /api/internal/tick`（`AGENT_TICK_SECONDS`，令牌就是 `AGENT_SERVICE_TOKEN`），它做到点的提醒和后台叫醒，不处理微信收到的消息；微信桥接的 `/api/internal/wechat/tick` 照旧只做提醒和微信消息；Cloudflare Cron 都做。两个 tick 同时跑时靠 `person.proactive.running` 租约（15 分钟）保证同一件事只醒一次，漏了 2 小时以上的不补，积压只补最近的一次。
 
@@ -467,7 +462,7 @@ env: {
 
 | 放哪 | 放什么 | 谁能改 |
 | --- | --- | --- |
-| D1 | 目标、习惯、完成记录、提醒、朋友、授权、日程 | 写：只经 MCP 工具，规则在工具后端。读：叫醒前导出成快照。这些要准确，要在网页上显示 |
+| D1 | 目标、习惯、完成记录、提醒、日程排期 | 写：只经 MCP 工具，规则在工具后端。读：叫醒前导出成快照。这些要准确，要在网页上显示 |
 | 快照目录（容器里是 `weave/`） | 叫醒前的数据快照：`weave.db`（SQLite），以后可能有别的文件 | 只有 Agent 服务写：每次叫醒前整个换掉，写工具成功后同步。docker 下放在工作目录外、只读挂进容器，Agent 改不了 |
 | 工作目录 `MEMORY.md` | 这个人的目标、什么有效、什么没用 | Agent 用 Edit 改；本人可看（`GET /api/agent-memory`），可改、可删还没做 |
 | 工作目录 `HANDOFF.md` | 换日收尾时写的交接：说好要做的事、答应的事、没聊完的话（第 7 节） | Agent 在收尾那一轮重写；第二天放进本人那一轮的系统提示（最多 8000 字）；网页上还看不到 |
@@ -489,16 +484,19 @@ env: {
 
 ## 11. 现有代码怎么变
 
-**删除：**
+**已删除**（分支 `chore/delete-legacy-paths`；原因：教材 p.20 说代码合法的位置只有四个，「如果是在中间写死就非常不好了」）：
 
-- `hosted/lib/weave/model.mjs` 的 `completion`、`modelClient`、`habitCouncil`
-- `hosted/lib/weave/api.mjs` 的 `chatFor` 正则路由和 `agentCall`
-- `hosted/lib/weave/domain.mjs` 里 `authorize` 的模型协商循环，改成服务端求时间交集，双方确认不变
-- `hosted/lib/weave/hermes-queue.mjs`、`hosted/hermes-runner/`、`proactivity.mjs` 里 Hermes 相关部分
-- `hosted/agent-service/runtime.mjs`
-- 根目录的早期演示（`server.mjs`、`weave-chat.mjs` 等）
+- `hosted/lib/weave/model.mjs` 的 `completion`、`modelClient`、`habitCouncil`。文件里只留 `DEFAULT_MODEL`、`IMAGE_MODEL` 和 `SAFETY_RULES`（`agent-service/prompts.mjs` 里有一份副本，`test/agent-prompts-sync.test.mjs` 保证一致）
+- `hosted/lib/weave/api.mjs` 的 `chatFor` 正则路由、`agentCall`、`groupChatFor`，以及只服务它们的接口（`connections/agent/start`、`settings/test`）
+- 朋友协商（2026-11-15 决定删除）：`domain.mjs` 里的邀请、协商、`authorize` 模型协商循环、日历和 `.ics`，以及它们的接口（`friends/*`、`negotiations/*`、`calendar.ics`）。旧数据里的协商、邀请、朋友关系行照常读取、不使用，注销账号时一并删除
+- Hermes：`hosted/lib/weave/hermes-queue.mjs`、`hosted/hermes-runner/`、`proactivity.mjs` 里的判断、建议和配置（`/api/internal/hermes/*`、`proactivity/*`、`HERMES_RUNNER_TOKEN`）
+- `hosted/agent-service/runtime.mjs`（旧的 `/query`）
+- `wechat.mjs` 的 `processInbound` 和 `GROUP_SYSTEM`，`scheduler.mjs` 里不走 Agent 服务的那条分支
+- `hosted/lib/weave/budget.mjs`（按调用次数记额度，被 `ledger.mjs` 按 token 记账取代；`AGENT_DAILY_CALLS_*` 不再读）
+- 环境变量 `WEAVE_AGENT_RUNTIME` 不再读：网页聊天和微信只走 Agent 服务，没配置时聊天回 503、微信消息留在队列里
+- 根目录的早期演示（`server.mjs`、`weave-chat.mjs`、`public/` 等）和 `npm run demo`、`npm run test:e2e`
 
-**保留，变成工具后端：** `store.mjs`、`crypto.mjs`、`notion.mjs`、`domain.mjs` 的授权确认和日程、`proactivity.mjs` 的时段和额度、`wechat.mjs` 的收发队列、`hosted/wechat-bridge`、网页界面。
+**保留，变成工具后端：** `store.mjs`、`crypto.mjs`、`notion.mjs`、`domain.mjs` 的提醒和账号注销、`proactivity.mjs` 的时段和当地时间、`wechat.mjs` 的收发队列、`hosted/wechat-bridge`、网页界面。
 
 **新增：**
 
@@ -574,7 +572,7 @@ hosted/lib/weave/
 
 每一步一个 PR。先合 #10 和 #11。
 
-**进度（2026-11-02）：** 第 0 步在 DeepSeek 上跑通了，四项全过（见第 13 节）。第 1 步的代码在草稿 PR #13，网页聊天在 `WEAVE_AGENT_RUNTIME=sdk` 后面，不设就走旧路。
+**进度（2026-11-02）：** 第 0 步在 DeepSeek 上跑通了，四项全过（见第 13 节）。第 1 步的代码在草稿 PR #13，网页聊天当时在 `WEAVE_AGENT_RUNTIME=sdk` 后面，不设就走旧路；这条旧路后来删了，见第 11 节。
 
 | 步骤 | 做什么 | 怎样算完成 |
 | --- | --- | --- |
