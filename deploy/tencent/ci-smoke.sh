@@ -30,7 +30,7 @@ printf 'AGENT_SERVICE_TOKEN=%s\nDEEPSEEK_API_KEY=sk-ci-not-a-real-key\n' "$token
 trap 'docker compose logs --tail 60 || true; docker compose down -v || true; rm -f .env web.env agent.env' EXIT
 set -a; . ./.env; set +a
 
-docker build -q -f ../../hosted/agent-service/Dockerfile.agent -t weave-agent:0.3.316 ../../hosted/agent-service
+docker build -q -f ../../hosted/agent-service/Dockerfile.agent -t weave-agent:0.3.325 ../../hosted/agent-service
 docker compose up -d --build
 url="http://$WEAVE_BIND_IP:4317"
 code=000

@@ -30,8 +30,8 @@ npm test
 
 Agent 服务要自己启动容器，所以它跑在宿主机上，不放进容器。用一个非 root、在 docker 组里的用户。
 
-1. 建镜像：`docker build -f Dockerfile.agent -t weave-agent:0.3.316 .`
-2. 先在这台服务器上验一次容器：`WEAVE_TEST_DOCKER_IMAGE=weave-agent:0.3.316 node --test test/container.test.mjs`，6 项都要通过。
+1. 建镜像：`docker build -f Dockerfile.agent -t weave-agent:0.3.325 .`
+2. 先在这台服务器上验一次容器：`WEAVE_TEST_DOCKER_IMAGE=weave-agent:0.3.325 node --test test/container.test.mjs`，6 项都要通过。
 3. 照 `.env.example` 写 `.env`，然后 `npm ci --omit=dev && npm start`。至少要设：
    - `AGENT_SERVICE_TOKEN`：至少 32 位，和 Weave 服务那边一致
    - `WEAVE_API_URL`：Weave 服务在本机的地址，MCP 工具回调用
