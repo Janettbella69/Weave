@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { wechatPhotosShown } from "../../lib/weave/wechat.mjs";
+import { jevConfig, OPENROUTER_JEV_URL } from "../../lib/weave/jev.mjs";
 
 export const metadata: Metadata = {
   title: "隐私说明 · Weave",
@@ -21,8 +22,25 @@ async function photosOn(): Promise<boolean> {
   }
 }
 
+// Jev 真的配上了（服务器有 TYPESAFE_API_KEY，jev.mjs 的 jevConfig 认）才多一条说明；没配，这一页一字不变。
+// 句子是 2026-11-16 确认过的原句，不要改字。直连 TypeSafe（没走 OpenRouter）时只去掉「经 OpenRouter 」。
+const JEV_PRIVACY =
+  "Weave 主动找你之前，会把一份整理过的情况经 OpenRouter 发给 TypeSafe 的判断模型 Jev：你在追踪的目标名，每个习惯的名字、触发时机、最小一步、今天做没做、最近 7 天做了几天，它给自己写的跟进备忘，还有今天主动说了几句、你多久没说话。只用来判断现在该不该打扰你，不发聊天内容。";
+
+async function jevText(): Promise<string | null> {
+  try {
+    const { env } = await import("cloudflare:workers");
+    const config = jevConfig(env as unknown as Record<string, unknown>);
+    if (!config) return null;
+    return config.url === OPENROUTER_JEV_URL ? JEV_PRIVACY : JEV_PRIVACY.replace("经 OpenRouter ", "");
+  } catch {
+    return null;
+  }
+}
+
 export default async function PrivacyPage() {
   const photos = await photosOn();
+  const jev = await jevText();
   return (
     <main className="landing-page">
       <div className="landing-container landing-top-row">
@@ -57,6 +75,12 @@ export default async function PrivacyPage() {
             <li>
               <strong>DeepSeek：</strong>你的消息和相关资料（目标、偏好、最近的聊天和反馈）会发给它来生成回复。开启后台主动判断后，这些资料也会定期发送。
             </li>
+            {jev ? (
+              <li>
+                <strong>Jev：</strong>
+                {jev}
+              </li>
+            ) : null}
             <li>
               <strong>Notion：</strong>只有你连接后才会读取你选择的页面，页面文字会一起发给 DeepSeek。只有你确认过的计划才会写回去。
             </li>
