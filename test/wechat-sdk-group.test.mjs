@@ -191,7 +191,7 @@ test('an owner run nobody started (direct: false) on the wechat channel speaks t
   const h = await setup();
   // 12:00 in Shanghai: inside the hours a run nobody started may speak in.
   h.setNow(start + 4 * 3600_000);
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   assert.equal((await h.tool('send_message', {text: '先提醒你一句'}, await ownerCapability(h, {channel: 'wechat', direct: false}), 'toolu_w')).data.ok, true);
   assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => [j.threadId, j.text]), [['wxid-alice', '先提醒你一句']]);

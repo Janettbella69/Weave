@@ -30,7 +30,7 @@ async function harness() {
     assert.equal(r.data.ok, true, JSON.stringify(r.data));
   };
   // 绑好微信，并让桥接把绑定确认领走、报成已发送，免得混进后面的断言。
-  const bindAndDrain = async () => { await s.bind(); await s.deliverAll(); };
+  const bindAndDrain = async () => { await s.bindQuiet(); };
   return Object.setPrototypeOf({serverTick, edit, active, person, claimTexts, proactiveSay, bindAndDrain}, s);
 }
 

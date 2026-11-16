@@ -22,7 +22,7 @@ const keysOf = data => Object.keys(data).sort();
 const entryOf = async (h, messageId) => (await h.read()).wechat['in:' + await hash(messageId)];
 // Opens a check-in group while photos are on and delivers the opening text (it carries the photo notice), so photos may be used there.
 async function openToldGroup(h) {
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
   await h.deliverAll();
 }
@@ -30,7 +30,7 @@ async function openToldGroup(h) {
 test('flag off: photo:\'ready\' and \'watch\' on /events change nothing; the answer, the queue and the wake body are exactly as for plain text', async () => {
   for (const photo of ['ready', 'watch']) {
     const h = await setup();
-    await h.bind();
+    await h.bindQuiet();
     const plain = await h.bridge('events', h.message('你好'));
     const marked = await h.bridge('events', h.message('这顿多少卡', {photo}));
     assert.deepEqual(keysOf(marked.data), ['accepted', 'queued', 'wake']);
@@ -61,7 +61,7 @@ test('flag off: /photo is not a route, it answers like any unknown path; and a g
 
 test('flag on but the old (non-SDK) runtime: no photo hints, plain text behaviour', async () => {
   const h = await setup({runtime: '', images: true});
-  await h.bind();
+  await h.bindQuiet();
   const answer = await h.bridge('events', h.message('这顿多少卡', {photo: 'ready'}));
   assert.equal(answer.data.queued, true);
   assert.ok(!('photo' in answer.data));
@@ -71,7 +71,7 @@ test('flag on but the old (non-SDK) runtime: no photo hints, plain text behaviou
 test('private chat, photo first: the owner\'s text is held, the answer asks for the photo, the wake carries it on deepseek-flash, and it is deleted when the turn starts', async () => {
   const h = await setup({images: true, agent: async () => reply('大约 600 千卡')});
   assert.equal((await h.call('alice', 'settings', {model: 'deepseek-v4-pro'})).status, 200);
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   const text = h.message('这顿多少卡', {photo: 'ready'});
   const answer = await h.bridge('events', text);
@@ -97,7 +97,7 @@ test('private chat, photo first: the owner\'s text is held, the answer asks for 
 
 test('private chat, text first: \'watch\' holds the turn; the bridge says there is no photo and it starts at once without one', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('帮我看看这个', {photo: 'watch'});
   assert.deepEqual((await h.bridge('events', text)).data, {accepted: true, queued: true, photo: 'watch'});
   assert.equal((await h.tick()).data.processed, 0);
@@ -109,7 +109,7 @@ test('private chat, text first: \'watch\' holds the turn; the bridge says there 
 
 test('private chat, text first: the photo comes within the wait and is attached', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('帮我看看这个', {photo: 'watch'});
   await h.bridge('events', text);
   assert.equal((await h.photo(text.id, PNG, {type: 'image/png'})).data.attached, true);
@@ -119,7 +119,7 @@ test('private chat, text first: the photo comes within the wait and is attached'
 
 test('if the bridge never answers, the held turn starts by itself after 30 s, without a photo', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.message('这顿多少卡', {photo: 'ready'}));
   h.setNow(h.now + 29_000);
   assert.equal((await h.tick()).data.processed, 0);
@@ -142,7 +142,7 @@ test('a stranger in private chat: no photo hint, and a photo sent for that messa
 test('a photo from someone else, or from another chat, is not stored; that turn goes on without a photo', async () => {
   for (const wrong of [{thread: 'wxid-bob', sender: 'wxid-bob'}, {thread: 'wxid-alice', sender: 'wxid-bob'}, {thread: ROOM, sender: 'wxid-alice'}]) {
     const h = await setup({images: true});
-    await h.bind();
+    await h.bindQuiet();
     const text = h.message('这顿多少卡', {photo: 'ready'});
     await h.bridge('events', text);
     assert.deepEqual((await h.photo(text.id, PHOTO, wrong)).data, {accepted: true, attached: false, wake: true}, JSON.stringify(wrong));
@@ -173,7 +173,7 @@ test('group, photo first: an @ in an enabled group with photo:\'ready\' gets its
 test('group: the opening text gets the photo sentence only when the switch is on', async () => {
   for (const images of [false, true]) {
     const h = await setup({images});
-    await h.bind();
+    await h.bindQuiet();
     await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
     const jobs = (await h.bridge('claim', {})).data.jobs.filter(j => j.threadId === ROOM);
     assert.deepEqual(jobs.map(j => j.text), [images ? GROUP_ENABLED_TEXT + GROUP_PHOTO_TEXT : GROUP_ENABLED_TEXT]);
@@ -182,7 +182,7 @@ test('group: the opening text gets the photo sentence only when the switch is on
 
 test('a group that is not enabled: an @ with a photo is dropped, nothing is stored, and a photo sent anyway is refused', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const ask = h.group('wxid-bob', '@助理 这顿多少卡', true, {photo: 'ready'});
   const answer = await h.bridge('events', ask);
   assert.equal(answer.data.ignored, true);
@@ -224,7 +224,7 @@ test('size and format: too big, not an image, or not what it says it is: not sto
   const cases = [[big, 'image/jpeg'], [new TextEncoder().encode('<svg/>'), 'image/svg+xml'], [PNG, 'image/jpeg'], [new Uint8Array([1, 2, 3, 4]), 'image/png'], [new Uint8Array(0), 'image/jpeg']];
   for (const [bytes, type] of cases) {
     const h = await setup({images: true});
-    await h.bind();
+    await h.bindQuiet();
     const text = h.message('这顿多少卡', {photo: 'ready'});
     await h.bridge('events', text);
     assert.deepEqual((await h.photo(text.id, bytes, {type})).data, {accepted: true, attached: false, wake: true}, type + ' ' + bytes.length);
@@ -233,7 +233,7 @@ test('size and format: too big, not an image, or not what it says it is: not sto
     assert.ok(!('image' in h.wakes()[0].body));
   }
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   assert.equal((await h.photo(text.id, exact)).data.attached, true, 'exactly 2 MiB is still taken');
@@ -246,7 +246,7 @@ test('the photo is deleted whatever the turn does: success, an Agent service err
   const outcomes = [async () => reply('好'), async () => new Response('{}', {status: 500}), async () => new Response('{}', {status: 429}), async () => { throw Error('connection reset'); }];
   for (const agent of outcomes) {
     const h = await setup({images: true, agent});
-    await h.bind();
+    await h.bindQuiet();
     const text = h.message('这顿多少卡', {photo: 'ready'});
     await h.bridge('events', text);
     await h.photo(text.id, PHOTO);
@@ -261,7 +261,7 @@ test('the photo is deleted whatever the turn does: success, an Agent service err
 
 test('one photo per turn: a second photo for the same message is not taken, and the message is answered once', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   assert.equal((await h.photo(text.id, PHOTO)).data.attached, true);
@@ -299,7 +299,7 @@ test('a big photo is split over several rows and comes back whole', async () => 
 
 test('the photo goes to the Agent service only inside /wake, with the service token; nothing else is called', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   await h.photo(text.id, PHOTO);

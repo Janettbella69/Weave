@@ -20,7 +20,7 @@ const outbound = world => Object.values(world.wechat).filter(x => x.direction ==
 test('a bound person\'s WeChat message wakes the Agent in owner scope on the wechat channel, and the reply goes back to WeChat', async () => {
   const h = await setup({agent: async () => reply('你好呀')});
   await inLosAngeles(h);
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   assert.equal((await h.bridge('events', h.message('你好'))).data.queued, true);
   const ticked = await h.tick();
@@ -53,7 +53,7 @@ test('a WeChat message where the Agent also calls send_message: that call sends 
     answers.push((await h.tool('send_message', {text: '你好呀～我在。'}, call.body.capability, 'toolu_hi')).data);
     return reply(final);
   });
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('你好'));
   assert.equal((await h.tick()).data.processed, 1);
@@ -65,7 +65,7 @@ test('a WeChat message where the Agent also calls send_message: that call sends 
 test('with the switch off, WeChat keeps the old path: the legacy /query, never a /wake', async () => {
   // null, not undefined: setup() would fill in the default 'sdk' for undefined.
   const h = await setup({runtime: null, agent: async () => ok({output: '旧路的回复'})});
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('你好'));
   await h.tick();
@@ -84,7 +84,7 @@ test('busy, unavailable and uncertain answers reach WeChat with the same words a
   ];
   for (const [label, agent, text, status] of cases) {
     const h = await setup({agent});
-    await h.bind();
+    await h.bindQuiet();
     await h.bridge('claim', {});
     await h.bridge('events', h.message('在吗'));
     await h.tick();
@@ -100,7 +100,7 @@ test('busy, unavailable and uncertain answers reach WeChat with the same words a
 test('the person\'s own model key and model choice travel with the wake', async () => {
   const h = await setup();
   assert.equal((await h.call('alice', 'settings', {apiKey: 'sk-own-key-123456', model: 'deepseek-v4-pro'})).status, 200);
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.message('你好'));
   await h.tick();
   const {capability, ...body} = h.wakes()[0].body;
@@ -110,7 +110,7 @@ test('the person\'s own model key and model choice travel with the wake', async 
 
 test('strangers, stale messages and group chatter wake nothing', async () => {
   const h = await setup();
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('我是陌生人', {threadId: 'wxid-stranger', senderId: 'wxid-stranger'}));
   await h.bridge('events', h.message('昨晚的消息', {createdAt: new Date(h.now - 7 * 3600_000).toISOString()}));
@@ -123,7 +123,7 @@ test('a message is claimed before the wake, so a second tick while it runs does 
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const h = await setup({agent: async () => { await gate; return reply('好'); }});
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('你好'));
   const first = h.tick();
@@ -139,7 +139,7 @@ test('a message is claimed before the wake, so a second tick while it runs does 
 
 test('a message stuck in processing for over ten minutes becomes uncertain and the person is told; it is not retried', async () => {
   const h = await setup();
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('卡住了'));
   const store = new Store(h.db), world = await store.load(), entry = inbound(world).find(x => x.text === '卡住了');
@@ -155,7 +155,7 @@ test('a message stuck in processing for over ten minutes becomes uncertain and t
 
 test('a message still within its ten minutes is left alone', async () => {
   const h = await setup();
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.message('还在跑'));
   const store = new Store(h.db), world = await store.load(), entry = inbound(world).find(x => x.text === '还在跑');
   entry.status = 'processing';
@@ -168,7 +168,7 @@ test('a message still within its ten minutes is left alone', async () => {
 
 test('no new wake starts after the start-by time; the rest stay queued for the next tick', async () => {
   const h = await setup();
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('claim', {});
   await h.bridge('events', h.message('第一条'));
   await h.bridge('events', h.message('第二条'));
@@ -241,4 +241,44 @@ test('forgetAgentWorkspace works for the group scope too and fails loudly when t
   assert.deepEqual(forgets.map(f => f.scope), ['group', 'owner', 'group']);
   assert.equal(forgets[0].id, 'g'.repeat(64));
   assert.equal(forgets[1].id, h.id);
+});
+
+const BIND_EVENT_TEXT = '对方刚把微信连上了。打个招呼，告诉对方以后在这里找你就行。';
+
+test('binding: the code sends nothing itself; it queues an event, and the Weave Agent is woken with it and its final paragraph is the greeting', async () => {
+  const h = await setup({agent: async () => reply('嗨，我是 Weave')});
+  const bound = await h.bind();
+  assert.equal(bound.data.bound, true);
+  // Nothing is sent by code at bind time, and the event waits as an inbound entry that says it is an event, with no user text.
+  let world = await h.read();
+  assert.equal(outbound(world).length, 0);
+  assert.deepEqual((await h.bridge('claim', {})).data.jobs, []);
+  const events = inbound(world).filter(x => x.status === 'queued');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'event');
+  assert.equal('text' in events[0], false);
+  const ticked = await h.tick();
+  assert.equal(ticked.data.processed, 1);
+  const [call] = h.wakes();
+  assert.deepEqual(call.body.trigger, {kind: 'event', channel: 'wechat', direct: true, at: call.body.trigger.at, text: BIND_EVENT_TEXT});
+  const claims = await verifyCapability(secret, call.body.capability, h.now);
+  assert.equal(claims.direct, true);
+  assert.equal(claims.channel, 'wechat');
+  world = await h.read();
+  // No fake user message: only the Agent's reply is recorded.
+  assert.deepEqual(world.people[h.id].messages.map(m => [m.role, m.text]), [['assistant', '嗨，我是 Weave']]);
+  assert.equal(world.people[h.id].messages.at(-1).source, 'agent');
+  assert.equal(inbound(world).filter(x => x.status === 'replied').length, 1);
+  assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => [j.threadId, j.text]), [['wxid-alice', '嗨，我是 Weave']]);
+});
+
+test('binding while the Agent service is busy or unavailable: the existing infrastructure replies are used, nothing else is made up', async () => {
+  for (const [status, text] of [[429, REPLIES.busy], [503, REPLIES.unavailable]]) {
+    const h = await setup({agent: async () => new Response('{}', {status})});
+    await h.bind();
+    assert.equal((await h.tick()).data.processed, 1);
+    const world = await h.read();
+    assert.deepEqual(world.people[h.id].messages.map(m => m.text), [text]);
+    assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => j.text), [text]);
+  }
 });

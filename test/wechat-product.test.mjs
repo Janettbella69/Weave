@@ -49,7 +49,8 @@ test('private messages bind once, then queue for the bound person and are never 
   assert.equal((await h.bridge('events',hello)).data.queued,true);
   assert.equal((await h.bridge('events',hello)).data.duplicate,true);
   const world=await h.read();
-  assert.equal(Object.values(world.wechat).filter(x=>x.direction==='inbound'&&x.status==='queued').length,1);
+  const queued=Object.values(world.wechat).filter(x=>x.direction==='inbound'&&x.status==='queued');
+  assert.deepEqual(queued.map(x=>x.kind==='event'?'event':'message').sort(),['event','message']);
   assert.equal((await h.call('alice','wechat/unbind',{})).status,200);
 });
 test('a stranger private message is dropped without keeping its text',async()=>{
@@ -73,14 +74,14 @@ test('private replies go out through the bridge once, keyed for idempotent resen
   h.setNow(start+3600000);assert.deepEqual((await h.bridge('claim',{})).data.jobs,[]);
 });
 test('a send that lost its receipt is re-claimed with the same id after the lease',async()=>{
-  const h=await setup();await h.bind();
+  const h=await setup();await h.bind();await h.bridge('events',h.message('你好'));await schedule(h,'你好呀');
   const first=(await h.bridge('claim',{})).data.jobs[0];
   assert.deepEqual((await h.bridge('claim',{})).data.jobs,[]);
   h.setNow(start+6*60000);
   assert.equal((await h.bridge('claim',{})).data.jobs[0].id,first.id);
 });
 test('needs_review stops retries instead of resending',async()=>{
-  const h=await setup();await h.bind();
+  const h=await setup();await h.bind();await h.bridge('events',h.message('你好'));await schedule(h,'你好呀');
   const job=(await h.bridge('claim',{})).data.jobs[0];
   await h.bridge('receipt',{id:job.id,state:'needs_review'});
   h.setNow(start+3600000);assert.deepEqual((await h.bridge('claim',{})).data.jobs,[]);
@@ -180,4 +181,11 @@ test('group context stays bounded',async()=>{
   for(let i=0;i<60;i++)await h.bridge('events',h.group('wxid-bob','消息'+i));
   const seen=[];await h.bridge('events',h.group('wxid-bob','@助理 总结',true));await schedule(h,'好',seen);
   const prompt=JSON.stringify(seen[0]);assert.ok(!prompt.includes('消息0"'));assert.ok(prompt.includes('消息59'));
+});
+test('binding on the old path: nothing is said by code and the event is dropped; there is no Agent there to wake',async()=>{
+  const h=await setup();await h.bind();
+  assert.deepEqual((await h.bridge('claim',{})).data.jobs,[]);
+  assert.equal((await schedule(h)).processed,0);
+  assert.deepEqual((await h.bridge('claim',{})).data.jobs,[]);
+  assert.equal(Object.values((await h.read()).wechat).filter(x=>x.kind==='event')[0].status,'ignored');
 });

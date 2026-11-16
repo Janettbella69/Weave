@@ -4,7 +4,7 @@ import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import {Store,withWorld} from './store.mjs';
 import {fail} from './domain.mjs';
 import {SAFETY_RULES} from './model.mjs';
-import {REPLIES,TICK_BUDGET_MS,START_BY_MS,DIRECT_SEND_TEXT,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
+import {REPLIES,TICK_BUDGET_MS,START_BY_MS,DIRECT_SEND_TEXT,wakeForMessage,wakeForEvent,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
 import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
 import {localClock,GROUP_TIMEZONE} from './proactivity.mjs';
 
@@ -16,6 +16,8 @@ const STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
 // 和 proactive.mjs 的 GRACE_MS 一样是 2 小时：晚了 2 小时的「今天走了吗」「提醒你：吃药」比不发更打扰。普通回复、绑定确认、群消息不带 dueAt，不过期。
 const LATE_MS=2*3600000;
 // Agent SDK path: a run that has been 'processing' this long lost its worker; it is never retried.
+// 交给 Weave 的事实（数据，不是替它说的话）。绑定成功后的原句由主人 2026-11-16 确认。
+const EVENT_TEXT={bound:'对方刚把微信连上了。打个招呼，告诉对方以后在这里找你就行。'};
 const ORPHAN_MS=10*60000,MAX_WAKES_PER_TICK=5,GROUP_RECEIPTS=50;
 // 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）：一条在等照片的消息最多等多久。
 // 平时由桥接说「照片来了」或「没有照片」来放行（/photo），这个上限只防桥接中途掉线。
@@ -130,7 +132,8 @@ async function ingestPrivate(world,message,{secret,now}){
       if(person.settings.wechatWxidHash)delete world.runtime[mappingKey(person.settings.wechatWxidHash)];
       person.settings.wechatWxidHash=senderHash;person.settings.wechatWxid=await seal(message.sender,secret,ownerId);person.settings.wechatBoundAt=now;
       world.runtime[mappingKey(senderHash)]={ownerId,updatedAt:now};delete world.runtime[bindKey(await hash(match[1]))];
-      queueOut(world,{ownerId,text:'微信已连接到你的 Weave 空间。之后可以直接在这里记录反馈、询问个人 Agent。',source:'binding'},now);
+      // 代码只做绑定（鉴权）；打招呼的话由 Weave 自己说：这里只排一条「事件」，等处理流程认领后叫醒它。
+      const eventId='in:event:'+crypto.randomUUID();world.wechat[eventId]={id:eventId,direction:'inbound',kind:'event',event:'bound',ownerId,status:'queued',createdAt:stamp(now)};
       mark('ignored');return {accepted:true,bound:true};
     }
     mark('ignored');return {accepted:true,ignored:true};
@@ -192,6 +195,8 @@ export async function processInbound(world,{secret,now=Date.now(),handleMessage,
   let processed=0;world.wechat??={};
   for(const entry of Object.values(world.wechat)){
     if(entry.direction!=='inbound'||!(entry.status==='queued'||overdue(entry,now)))continue;
+    // 事件（比如刚绑定）只在 Agent 路线上叫醒 Weave；旧路线没有 Agent，不替它说话。
+    if(entry.kind==='event'){entry.status='ignored';continue;}
     delete entry.photo;delete entry.photoUntil;
     const person=world.people[entry.ownerId];
     if(!person){entry.status='ignored';delete entry.text;delete entry.payload;continue;}
@@ -291,6 +296,7 @@ async function claimNext(db,secret,now){
     if(!world.people[entry.ownerId])return drop();
     if(entry.source!=='group'){
       entry.status='processing';entry.startedAt=stamp(now);
+      if(entry.kind==='event')return {id:entry.id,kind:'event',ownerId:entry.ownerId,event:entry.event};
       return {id:entry.id,kind:'private',ownerId:entry.ownerId,text:entry.text,...withPhoto};
     }
     const group=world.runtime[entry.groupAad];
@@ -308,7 +314,7 @@ async function markUncertain(db,claim,now){
     const entry=world.wechat?.[claim.id];
     if(!entry||entry.status!=='processing')return;
     entry.status='uncertain';entry.error='处理中断';delete entry.payload;
-    if(claim.kind==='private'&&world.people[claim.ownerId])queueOut(world,{ownerId:claim.ownerId,text:REPLIES.uncertain,source:'reply'},now);
+    if((claim.kind==='private'||claim.kind==='event')&&world.people[claim.ownerId])queueOut(world,{ownerId:claim.ownerId,text:REPLIES.uncertain,source:'reply'},now);
   });
 }
 
@@ -345,7 +351,13 @@ export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Dat
     const photo=claim.photo?await takePhoto(db,claim.photo,{secret,now}):null,image=photo?{image:{mediaType:photo.mediaType,data:photo.data}}:{};
     if(claim.photo)console.log(photo?`这一轮带一张照片（${photo.mediaType}，${photo.bytes} 字节）：${claim.id}`:`这一轮的照片读不出来或已过期，按没有照片回答：${claim.id}`);
     try{
-      if(claim.kind==='private'){
+      if(claim.kind==='event'){
+        await wakeForEvent({db,secret,ownerId:claim.ownerId,text:EVENT_TEXT[claim.event],service,fetcher,now,channel:'wechat',timeoutMs,afterWake:(world,person,done)=>{
+          const entry=world.wechat[claim.id];if(!entry)return;
+          entry.status=done.uncertain?'uncertain':'replied';entry.outcome=done.outcome;if(done.uncertain)entry.error='结果不确定';
+          if(person)queueOut(world,{ownerId:claim.ownerId,text:done.reply.slice(0,4000),source:'reply'},now);
+        }});
+      }else if(claim.kind==='private'){
         await wakeForMessage({db,secret,ownerId:claim.ownerId,text:claim.text,...image,service,fetcher,now,channel:'wechat',timeoutMs,afterWake:(world,person,done)=>{
           const entry=world.wechat[claim.id];if(!entry)return;
           entry.status=done.uncertain?'uncertain':'replied';entry.outcome=done.outcome;if(done.uncertain)entry.error='结果不确定';
