@@ -218,7 +218,7 @@ CI（`.github/workflows`）在每个 PR 上跑这些，另外还跑：容器契�
 线上跑在一台腾讯云服务器上，和 Azora 共用。docker compose 项目 `weave` 里有两个服务：
 
 - **`web`（网站）：** 容器里用 `wrangler dev` 跑 Worker，数据库在 Docker 卷里。端口只绑在 Docker 的内部网卡上，外网连不到，由 Azora 的 nginx 转发 `weave.azorashopping.site`。整站有访问密码（`WEAVE_BASIC_AUTH`），内部接口用各自的令牌鉴权。带看门狗：每 10 秒查一次，网站连续 3 次不回答，就让容器重启。
-- **`agent`（Agent 服务）：** 通过 Docker 给每一轮开一个一次性容器（镜像 `weave-agent:0.3.316`），每个人的工作目录在宿主机上。它也是服务器的闹钟：每分钟敲一次网站的 `/api/internal/tick`。
+- **`agent`（Agent 服务）：** 通过 Docker 给每一轮开一个一次性容器（镜像 `weave-agent:0.3.325`），每个人的工作目录在宿主机上。它也是服务器的闹钟：每分钟敲一次网站的 `/api/internal/tick`。
 
 第一次部署、更新、回退、内存和排错，见 [`deploy/tencent/README.md`](deploy/tencent/README.md)。
 
