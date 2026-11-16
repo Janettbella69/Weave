@@ -1,0 +1,1 @@
+{"name":"weave-ilink-bridge","private":true,"type":"module","engines":{"node":">=22"},"scripts":{"start":"node bridge.mjs run","test":"node --test"}}
