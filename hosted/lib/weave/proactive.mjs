@@ -316,7 +316,7 @@ export async function runProactive({db, secret, service, fetcher = fetch, now = 
     if (jev) {
       try {
         const answer = await askJev(jev, claim.jevState, {fetcher});
-        claim.jev = {noul: answer.noul, model: answer.model, threshold: jev.threshold};
+        claim.jev = {noul: answer.noul, model: answer.model, threshold: jev.threshold, ...(answer.cost !== undefined ? {cost: answer.cost} : {})};
       } catch (error) {
         console.error('Jev 这次没判断，照旧交给 Weave：' + (error instanceof Error ? error.message : 'unknown'));
         claim.jev = {error: true};

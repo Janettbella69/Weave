@@ -93,7 +93,17 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 主动提醒不用额外配置：部署以后，Agent 服务每分钟敲一次网站的 `/api/internal/tick`，到点的提醒、跟进和定期看看都由它触发，不再依赖 Mac。想关掉：`agent.env` 里加一行 `AGENT_TICK_SECONDS=0`，再部署一次。看它在不在跑：`docker logs weave-agent-1 | tail`，启动那一行写着 `tick: every 60s`，后台叫醒时会有 `tick started 1 background wake(s)`。
 
-Jev（TypeSafe 的判断模型）在后台叫醒 Weave 之前判断「现在值不值得主动找你」，可选。在 console.typesafe.ai 拿到 Key 以后，登上服务器用 `nano ~/weave/deploy/tencent/web.env` 加一行 `TYPESAFE_API_KEY=你的 Key`，再部署一次。不加就不启用，由 Weave 自己判断。可选的还有 `JEV_THRESHOLD`（0 到 1，默认 0.5，低于它就这次不打扰）和 `JEV_MODEL`（默认钉 `jev-1.14.0`）。Key 是密钥，在服务器上自己改，不要贴进聊天。
+Jev（TypeSafe 的判断模型）在后台叫醒 Weave 之前判断「现在值不值得主动找你」，可选。不配就不启用，由 Weave 自己判断。
+
+**用 OpenRouter 的 Key（不用另外注册 TypeSafe）：** OpenRouter 的 System One 接口沿用 TypeSafe 的请求和返回格式（openrouter.ai/docs/guides/community/typesafe-sdk）。建议在 OpenRouter 后台给它单独建一把 Key（比如叫 `weave-jev`，设个额度上限），后台按 Key 就能看到 Jev 一共花了多少。然后在 Mac 的终端（Terminal）里跑下面这条，粘贴 Key、回车（输入时不显示）。它先拉最新代码，再把 Key 和 `TYPESAFE_BASE_URL=https://openrouter.ai/api` 写进 `web.env`（改之前备份到 `~/weave-data/env-backups/`），然后重新部署：
+
+```
+read -s "K?粘贴 Jev 用的 OpenRouter Key（不显示），回车：" && echo && print -r -- "$K" | ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/weave && git pull --ff-only && bash deploy/tencent/set-jev-key.sh'; unset K
+```
+
+这条是 zsh 的写法（Mac 的终端默认就是 zsh）。用 TypeSafe 自己的 Key（console.typesafe.ai），就把 `set-jev-key.sh` 换成 `set-jev-key.sh --typesafe`。关掉 Jev：跑同一条命令，Key 那里直接回车（空行）。
+
+可选的还有 `JEV_THRESHOLD`（0 到 1，默认 0.5，低于它就这次不打扰）和 `JEV_MODEL`（直连 TypeSafe 默认钉 `jev-1.14.0`，经 OpenRouter 默认 `typesafe/jev-1.14`）。经 OpenRouter 时，每次打分的花费（返回里的 `usage.cost`，美元）记在主动服务日志每条的 `jev.cost` 里；总花费在 OpenRouter 后台按 Key 看。Key 是密钥，不要贴进聊天。
 
 ## 以后更新
 

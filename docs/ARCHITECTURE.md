@@ -392,11 +392,11 @@ Weave 服务只负责判断**该不该花这次钱叫醒它**（教材 p.20「Ag
 
 醒了之后说不说、说什么，都是 Agent 的事，方法写在 `proactive-judgment` 这个 Skill 里。群里没 @ 的消息只存记录，不叫醒模型。
 
-**Jev 决策模型放在后台叫醒之前（2026-11-03 她定：「决策模型是用来做是否主动提醒用户的」）。** 到点的跟进和定期看看，先问它一个是非题「现在值不值得主动找她」（`POST https://api.typesafe.ai/v1/systemone`，`noul` 分数），低于阈值（默认 0.5，草稿）就这次不叫醒、记成 `jev-quiet`；问不到就照旧叫醒，交给 Agent。她让设的提醒不经过它。细节见设计稿第 7 节。
+**Jev 决策模型放在后台叫醒之前（2026-11-03 她定：「决策模型是用来做是否主动提醒用户的」）。** 到点的跟进和定期看看，先问它一个是非题「现在值不值得主动找她」（`POST https://api.typesafe.ai/v1/systemone`，或者经 OpenRouter 的同一个接口 `https://openrouter.ai/api/v1/systemone`；`noul` 分数），低于阈值（默认 0.5，草稿）就这次不叫醒、记成 `jev-quiet`；问不到就照旧叫醒，交给 Agent。她让设的提醒不经过它。细节见设计稿第 7 节。
 
 - 位置是教材 p.20 的「Agent 启动之前 预处理」，不审 Agent 写出来的话，所以不是 p.26 的 auditor 反模式。
 - **它是全仓库唯一不走 SDK 的模型调用。** Jev 不是 Anthropic 格式，也不是 Agent，只决定要不要花这次钱叫醒，不决定醒了做什么。
-- 只在服务器配了 `TYPESAFE_API_KEY` 时启用。它是第三方服务，配 Key 之前隐私说明要加一句（草稿在设计稿第 7 节，待她确认）。
+- 只在服务器配了 `TYPESAFE_API_KEY` 时启用。Key 可以是 TypeSafe 自己的，也可以是 OpenRouter 的：再配 `TYPESAFE_BASE_URL=https://openrouter.ai/api`，模型名带 `typesafe/` 前缀（默认 `typesafe/jev-1.14`）；OpenRouter 另外返回这一次的花费 `usage.cost`，记进 `proactive.log`。地址只认这两个，配成别的就不启用。它是第三方服务，配 Key 之前隐私说明要加一句（草稿在设计稿第 7 节，待确认；经 OpenRouter 时还要写上 OpenRouter）。
 
 ## 8. 多 Agent 的唯一例外：Deep Research
 
