@@ -1,10 +1,12 @@
-# Weave · 住在微信里的习惯助理
+# Weave · 住在微信里的个人助理
 
 **走进你真实的生活。**
 
 Weave 是一个帮人坚持习惯的个人助理（Personal Agent）。习惯发生在一天里的各个角落：上班路上、午休、睡前，还有你和朋友的打卡群。所以 Weave 待在你每天用的微信里，不用你另装一个 App。你说一句话，它就记下；你定下的目标，它帮你拆成今天的一小步；它每天会看看你的进展，值得开口的时候才开口。
 
 适合想养成一个小习惯的人，也适合已经在打卡群里互相监督的人：一起考研的，一起读书的，一起减脂的。
+
+**技术上：** 底层是 Anthropic 的 Claude Agent SDK，和 Claude Code 用的是同一套工具、Agent 循环和上下文管理（官方原话：「the same tools, agent loop, and context management that power Claude Code」）。在这之上，Weave 加了看得见的长期记忆和会自己醒来的主动性，详见下方「技术架构」。
 
 **线上地址：** <https://weave.azorashopping.site/>（目前是单用户试用，进站需要访问密码）
 
@@ -91,6 +93,7 @@ Weave 是一个帮人坚持习惯的个人助理（Personal Agent）。习惯发
 - 网页：聊天、待办、目标、记录、助理主页
 - 微信私聊（试点）：和网页是同一个 Weave、同一份记录
 - 微信打卡群：@ 它就回答
+- Notion：在设置里一键连接，在 Notion 自己的页面里勾选允许 Weave 用的页面
 - 主动来问：你让设的提醒、它自己排的跟进、按档位定期看看；后台找你之前，先由决策模型 Jev 判断值不值得
 - 每天收尾，第二天接着聊；每周回顾
 
@@ -98,7 +101,7 @@ Weave 是一个帮人坚持习惯的个人助理（Personal Agent）。习惯发
 
 - 私聊改走腾讯给 Agent 的正式通道（iLink），每个人用自己的微信扫一次就能聊
 - 看照片：私聊里发图它能看到，打卡群里发照片就记成打卡
-- 连接 Notion：读你勾选的页面，在页面末尾追加
+- Notion 接进对话：Weave 在聊天里读写你勾选的页面（搜索、读页面、在页面末尾追加）
 - 每个人有自己的账号和空间
 - 用真实对话做评测
 
@@ -108,13 +111,35 @@ Weave 是一个帮人坚持习惯的个人助理（Personal Agent）。习惯发
 
 ### 一句话
 
-Weave 是一个个人 Agent（Personal Agent），架构和 Claude Code 一样：一个 Agent、一个循环、按需调用工具。在这之上，它多了两样东西：长期记忆和主动性。
+Weave 是一个个人 Agent（Personal Agent），底层是 Anthropic 的 **Claude Agent SDK**：和 Claude Code 是同一套工具、Agent 循环和上下文管理。所以 Weave 的架构和 Claude Code 一样：一个 Agent、一个循环、按需调用工具。在这之上，它多了两样东西：长期记忆和主动性。
 
 产品要走进用户真实的生活，技术上靠三根柱子：
 
-- **一个 Agent，长在微信里**：网页、微信私聊、打卡群，所有入口叫醒的都是同一个 Agent。
+- **一个 Agent，长在微信里**：网页、微信私聊、打卡群，所有入口叫醒的都是同一个 Agent，每次都是 Claude Agent SDK 的一次 `query()`。
 - **长期记忆**：它对这个人的了解，存成看得见的文件。
 - **主动性**：没人找它的时候，它也会自己醒来看一看；后台叫醒之前，先由决策模型 Jev 判断值不值得。
+
+### 底层：Claude Agent SDK
+
+Weave 所有的 Agent 行为都走 Claude Agent SDK 的 `query()`。全仓库只有 Agent 服务一个地方调用它，没有第二条直连模型的路。Agent 循环、工具调用、会话、权限、钩子都由 SDK 提供；Weave 自己的代码只做三件事：叫醒 Agent、在工具后端守规则、记账。
+
+| SDK 提供的 | Weave 怎么用 |
+| --- | --- |
+| Agent 循环（`query()`） | 每次唤醒跑一轮。调什么工具、调几次、用不用技能，都由模型决定，不设轮数上限 |
+| 内置工具 | Bash、Read、Write、Edit、Glob、Grep、Skill 每一轮都在，本人那一轮另有 WebSearch。Agent 用 Bash 写 SQL 查快照、跑统计脚本，用 Edit 改 `MEMORY.md` |
+| MCP 工具 | weave 自己的 8 个写工具（发消息、存目标、存习惯、记完成、设提醒、排跟进、取消、改档位），在 Agent 服务的进程里执行，转回网站后端 |
+| 技能（Skill）和插件 | `proactive-judgment`（后台醒来要不要开口）、`weekly-review`（每周回顾，带一段统计用的参考代码），从只读的插件目录加载 |
+| 会话 | 同一个当地日期 `resume` 接着同一段会话；后台那一轮用 `forkSession` 分叉，跑坏了也碰不到聊天那段 |
+| 权限 | `permissionMode: 'dontAsk'` 加允许清单：没人在场，不在清单上的工具直接拒绝，不弹确认 |
+| 钩子（Hooks） | `PostToolUse` 和 `PostToolUseFailure` 都挂上，每次工具调用都留记录 |
+| 费用熔断 | `maxBudgetUsd`：本人一轮 $2、群 $1 |
+| 自定义启动 | `spawnClaudeCodeProcess` 把 SDK 背后的 claude CLI 放进每轮一个的一次性容器 |
+| 配置隔离 | `settingSources: []`、`strictMcpConfig: true`：不读任何文件里的配置，防止 Agent 改了配置影响下一轮 |
+| 子 Agent | 只留给深度研究（还没上线），平时不给 |
+
+**模型怎么接：** SDK 说的是 Anthropic 的接口格式。容器里的 `ANTHROPIC_BASE_URL` 指向 Weave 自己的模型代理，代理换上真 Key，转给 DeepSeek 的 Anthropic 兼容接口。国产模型（Kimi、GLM、千问）也都用 Anthropic 格式的地址加 Key，不用 OpenAI 格式。
+
+**版本：** 钉在 `@anthropic-ai/claude-agent-sdk` 0.3.316。官方写明不支持把 Claude Code 经网关接到非 Claude 模型，所以每次升级前先跑 43 项探针（本地假模型，不花钱）和一次真接口冒烟。
 
 ### 整体结构
 
@@ -131,7 +156,7 @@ Agent 服务：唯一调用 Claude Agent SDK 的地方
    │  模型代理换上真 Key，按 token 记账
    ▼  每轮起一个一次性容器
 Agent 容器：用完即删，没有网络
-   │  模型循环 + Bash、Read、Write、Edit、Skill 等
+   │  claude CLI（SDK 背后的执行内核）：模型循环 + Bash、Read、Write、Edit、Skill 等
    │  长期记忆：这个人的工作目录
    │    MEMORY.md 长期的事 / HANDOFF.md 昨天的交接
    ▼  只能经模型代理出去
@@ -226,9 +251,18 @@ Jev 的边界：
 ### 模型和部署
 
 - 模型：DeepSeek，默认 deepseek-flash，也支持 deepseek-v4-pro。模型表里还有 Kimi、GLM、千问，还没用真 Key 跑过。
-- SDK 钉在 0.3.316，升级前先跑 43 项探针和一次真接口冒烟。
 - 部署：一台腾讯云服务器，用 docker compose 跑网站和 Agent 服务。微信的 wx 守护进程和桥接也在这台服务器上。wx 守护进程用的是开源客户端 agent-wechat，不是官方接口，所以只用小号。整站有访问密码，内部接口各用各的令牌。
 - 测试：行为测试、容器契约测试和部署冒烟，每个 PR 都在 CI 里跑。测试里的模型和微信是假的，验证的是规则对不对，不是建议好不好。
+
+### 连接器（持续更新）
+
+外部服务都按同一个办法接：钥匙只留在网站后端，Agent 拿到的是一层薄壳工具，规则在后端。
+
+| 连接器 | 现在 | 接下来 |
+| --- | --- | --- |
+| 微信私聊 | 试点：用一个微信小号，wx 守护进程和桥接都在服务器上；和网页是同一个 Weave、同一份记录 | 改走腾讯给 Agent 的正式身份 iLink，每个人扫一次就行；私聊里能看图 |
+| 微信打卡群 | 开启后 @ 它就回答；群消息加密保存，最多 50 条、14 天 | 群里发照片记成打卡 |
+| Notion | 设置里一键连接：在 Notion 自己的页面选择器里勾选页面，Weave 只用你勾选的页面，授权令牌只在网站后端解密 | 接进 Agent：一个 Notion MCP，三个动作（搜索、把页面读成 markdown、在页面末尾追加）。每个用户只在自己的私聊里读写自己勾选的页面，读回来的内容按不可信数据处理 |
 
 ### 现在的短板（2026-11-04 全代码审查）
 
@@ -256,7 +290,7 @@ Jev 的边界：
 
 再往后：
 
-- Notion 作为 MCP 工具接进来：能搜索、读页面、在页面末尾追加，只读写用户自己勾选的页面。
+- Notion 接进 Agent（见上面「连接器」）。
 - 深度研究（Deep Research）：唯一会开子 Agent 的场景。那一轮能上网，但看不到私人资料。
 - 多用户的真登录。
 
