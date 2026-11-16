@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {dockerArgs, isolationFor, removeContainer} from '../sandbox.mjs';
 import {scopeFor} from '../scopes.mjs';
 
-const dirs = {root: '/srv/weave/owner/ab12', workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home', snapshot: '/srv/weave/owner/ab12/snapshot'};
+const dirs = {root: '/srv/weave/owner/ab12', workspace: '/srv/weave/owner/ab12/workspace', config: '/srv/weave/owner/ab12/claude', home: '/srv/weave/owner/ab12/home', archive: '/srv/weave/owner/ab12/archive'};
 
 test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内存不够先杀它）；代理 socket 目录只读挂载', () => {
   const args = dockerArgs({
@@ -16,7 +16,7 @@ test('dockerArgs：断网、只读根目录、限资源（swap 也限住、内�
     'run', '-i', '--rm', '--init', '--name', 'weave-run-abc', '--user', '1001:1001', '--network', 'none',
     '--memory', '1g', '--memory-swap', '1g', '--oom-score-adj', '500', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', '/home/agent:uid=1001,gid=1001,size=64m',
-    '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace', '-v', '/srv/weave/owner/ab12/snapshot:/workspace/weave:ro',
+    '-w', '/workspace', '-v', '/srv/weave/owner/ab12/workspace:/workspace',
     '-v', '/srv/weave/owner/ab12/claude:/home/agent/.claude',
     '-v', '/opt/app/plugin:/opt/weave/plugin:ro', '-v', '/srv/weave/run:/run/weave:ro',
     '-e', 'ANTHROPIC_AUTH_TOKEN=run-token', '-e', 'HOME=/home/agent',
@@ -36,22 +36,23 @@ test('docker 模式：CLI 看到的是容器里的路径，模型地址是容器
   assert.deepEqual(iso.allowedTools, ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'mcp__weave__*']);
 });
 
-test('local 模式：文件工具只许碰工作目录；sandbox 打开时没有沙箱就直接失败', () => {
+test('local 模式：文件工具只许碰工作目录和 SDK 自带记忆的目录；sandbox 打开时没有沙箱就直接失败', () => {
   const iso = isolationFor({mode: 'local', scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', proxy: {url: 'http://127.0.0.1:5555'}});
   assert.equal(iso.cwd, dirs.workspace);
   assert.equal(iso.baseUrl, 'http://127.0.0.1:5555');
   assert.equal(iso.home, dirs.home);
   assert.equal(iso.configDir, dirs.config);
   assert.equal(iso.spawnClaudeCodeProcess, undefined);
-  assert.deepEqual(iso.allowedTools, ['Bash', 'Read(./**)', 'Edit(./**)', 'Glob', 'Grep', 'Skill', 'WebSearch', 'mcp__weave__*']);
+  const memory = '/srv/weave/owner/ab12/claude/projects/-srv-weave-owner-ab12-workspace/memory';
+  assert.deepEqual(iso.allowedTools, ['Bash', 'Read(./**)', `Read(/${memory}/**)`, 'Edit(./**)', `Edit(/${memory}/**)`, 'Glob', 'Grep', 'Skill', 'WebSearch', 'mcp__weave__*']);
   assert.deepEqual(iso.sandbox, {enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: {allowedDomains: []}});
   assert.equal(isolationFor({mode: 'local', scope: scopeFor('owner'), dirs, pluginDir: '/p', proxy: {url: 'http://x'}, sandbox: false}).sandbox, undefined);
 });
 
-test('快照目录：docker 写在工作目录外、只读挂进容器；local（本机开发）写在工作目录里的 weave/', () => {
-  const common = {scope: scopeFor('owner'), dirs, pluginDir: '/opt/app/plugin', image: 'weave-agent:0.3.325', name: 'weave-run-x', uid: 1001, gid: 1001};
-  assert.equal(isolationFor({...common, mode: 'docker', proxy: {socketDir: '/srv/weave/run'}}).snapshotDir, '/srv/weave/owner/ab12/snapshot');
-  assert.equal(isolationFor({...common, mode: 'local', proxy: {url: 'http://127.0.0.1:1'}}).snapshotDir, '/srv/weave/owner/ab12/workspace/weave');
+test('没有只读快照了：本子和记忆都在工作目录、配置目录里，可读可写地挂进容器', () => {
+  const args = dockerArgs({scope: scopeFor('owner'), dirs, pluginDir: '/p', socketDir: '/s', image: 'i', name: 'n', uid: 1, gid: 1, env: {}, cliArgs: []});
+  assert.ok(!args.some(a => a.includes('snapshot') || a.endsWith('/workspace/weave:ro')));
+  assert.ok(args.includes('/srv/weave/owner/ab12/workspace:/workspace') && args.includes('/srv/weave/owner/ab12/claude:/home/agent/.claude'));
 });
 
 test('removeContainer 等 docker rm 真正结束才返回；没有这个容器、或别的错误都不抛', async () => {

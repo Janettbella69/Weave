@@ -34,9 +34,8 @@ export function dockerArgs({scope, dirs, pluginDir, socketDir, image, name, uid,
     '--memory', memory, '--memory-swap', memory, '--oom-score-adj', '500', '--cpus', '1', '--pids-limit', '256', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--read-only', '--tmpfs', '/tmp:size=256m', '--tmpfs', `/home/agent:uid=${uid},gid=${gid},size=64m`,
     '-w', IN_CONTAINER.cwd,
+    // 工作目录就是它的本子（MEMORY.md、records.db），可读可写。
     '-v', `${dirs.workspace}:${IN_CONTAINER.cwd}`,
-    // 快照只读：Agent 用 SQL 查得到，改不了；宿主写入后的同步只碰这份宿主自己的文件。
-    '-v', `${dirs.snapshot}:${IN_CONTAINER.cwd}/weave:ro`,
     '-v', `${dirs.config}:${IN_CONTAINER.configDir}`,
     '-v', `${pluginDir}:${IN_CONTAINER.pluginPath}:ro`,
     // 所有容器共用这一个 socket，所以只读：连接 socket 不受影响，删掉或换掉它都会被拒绝（EROFS）。
@@ -50,7 +49,6 @@ export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, 
   if (mode === 'docker') {
     return {
       ...IN_CONTAINER,
-      snapshotDir: dirs.snapshot,
       allowedTools: [...scope.builtins, 'mcp__weave__*'],
       // SDK 传来的 command 是宿主机上的 CLI 路径，用不上；容器里有同版本的 claude。
       spawnClaudeCodeProcess: ({args, env, signal}) => spawn('docker',
@@ -59,11 +57,11 @@ export function isolationFor({mode, scope, dirs, pluginDir, proxy, image, name, 
     };
   }
   if (mode === 'local') {
-    const fileTools = {Read: ['Read(./**)'], Edit: ['Edit(./**)'], Write: []};
+    // 工作目录之外，只放开 SDK 自带记忆的目录（workspace.mjs 的 memoryDir）：// 开头是绝对路径。
+    const memory = join(dirs.config, 'projects', dirs.workspace.replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
+    const fileTools = {Read: ['Read(./**)', `Read(/${memory}/**)`], Edit: ['Edit(./**)', `Edit(/${memory}/**)`], Write: []};
     return {
       cwd: dirs.workspace,
-      // 本机开发没有容器，快照就放在工作目录里，Agent 改得到（只用于本机）。
-      snapshotDir: join(dirs.workspace, 'weave'),
       pluginPath: pluginDir,
       baseUrl: proxy.url,
       home: dirs.home,

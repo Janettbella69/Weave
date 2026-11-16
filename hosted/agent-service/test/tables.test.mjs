@@ -1,169 +1,125 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {scopeFor} from '../scopes.mjs';
-import {providerFor, modelAllowed, cliEnv} from '../providers.mjs';
-import {SAFETY_RULES, systemPromptFor, memorySection, renderTrigger} from '../prompts.mjs';
+import {providerFor, modelAllowed, cliEnv, canonicalModel, canSeeImages} from '../providers.mjs';
+import {SAFETY_RULES, systemPromptFor, renderMessage, userMessage, IMAGE_NOTE, reminderAlarmText, WECHAT_CONNECTED_TEXT} from '../prompts.mjs';
 
-const PRIVATE_TOOLS = ['save_habit', 'log_completion', 'save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity'];
-
-test('owner 范围：有私人资料，所以没有 WebFetch 和 Agent，网络是 none', () => {
+test('owner 范围：两个工具（说话、定闹钟），记录直接用 sqlite3；有私人资料，所以没有 WebFetch 和 Agent，网络是 none；不设轮数上限和预算', () => {
   const s = scopeFor('owner');
-  for (const t of [...PRIVATE_TOOLS, 'send_message']) assert.ok(s.tools.includes(t), t);
+  assert.deepEqual([...s.tools], ['send_message', 'schedule']);
   for (const t of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', 'WebSearch']) assert.ok(s.builtins.includes(t), t);
   for (const t of ['WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.deepEqual([...s.skills], ['weave:weekly-review', 'weave:proactive-judgment']);
+  assert.deepEqual([...s.skills], ['weave:weekly-review']);
   assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
-  assert.equal(s.circuitBreakerUsd, 2);
+  assert.equal('circuitBreakerUsd' in s, false, '常驻会话没有「一轮」的预算；费用上限在模型代理里');
 });
 
-test('group 范围：群消息谁都能写，所以只有 send_message，没有 WebSearch、WebFetch、Agent', () => {
+test('group 范围：群消息谁都能写，所以没有 WebSearch、WebFetch、Agent；能说话、能定闹钟（她 11-16：群里也要能定闹钟）', () => {
   const s = scopeFor('group');
-  assert.deepEqual([...s.tools], ['send_message']);
+  assert.deepEqual([...s.tools], ['send_message', 'schedule']);
   for (const t of ['WebSearch', 'WebFetch', 'Agent']) { assert.ok(!s.builtins.includes(t), t); assert.ok(s.denied.includes(t), t); }
   assert.equal(s.network, 'none');
-  assert.equal('maxTurns' in s, false, '不设轮数上限（教材 p.22、p.26）');
-  assert.equal(s.circuitBreakerUsd, 1);
+  assert.deepEqual([...s.skills], []);
 });
 
-test('不认识的范围和提供方直接报错，原型上的名字也骗不过去', () => {
+test('不认识的范围和提供方直接报错，原型上的名字也骗不过去；范围表不能被改掉', () => {
   for (const name of ['research', '__proto__', 'constructor', '']) assert.throws(() => scopeFor(name), name);
   for (const name of ['openai', '__proto__', 'toString']) assert.throws(() => providerFor(name), name);
+  assert.throws(() => { scopeFor('owner').builtins.push('WebFetch'); });
 });
 
-test('范围表不能被调用方改掉', () => {
-  const s = scopeFor('owner');
-  assert.throws(() => { s.builtins.push('WebFetch'); });
-  assert.ok(!scopeFor('owner').builtins.includes('WebFetch'));
-});
-
-test('四家模型地址都是 https，末尾不带 /v1，主模型和快模型都在名单里', () => {
+test('四家模型地址都是 Anthropic 格式（https，末尾不带 /v1），主模型和快模型都认', () => {
   assert.equal(providerFor('deepseek').baseUrl, 'https://api.deepseek.com/anthropic');
   for (const name of ['deepseek', 'kimi', 'glm', 'qwen']) {
     const p = providerFor(name);
-    assert.match(p.baseUrl, /^https:\/\//, name);
+    assert.match(p.baseUrl, /^https:\/\/.*anthropic/, name);
     assert.doesNotMatch(p.baseUrl, /\/v1\/?$/, name);
-    assert.ok(p.models.includes(p.main) && p.models.includes(p.fast), name);
+    assert.ok(modelAllowed(p, p.main) && modelAllowed(p, p.fast), name);
   }
 });
 
-test('cliEnv 只有文档第 9 节的变量：令牌是运行令牌，快模型给 Haiku 位，三个开关都打开', () => {
-  const env = cliEnv({provider: providerFor('kimi'), model: 'kimi-k3[1m]', runToken: 'run-123', baseUrl: 'http://127.0.0.1:4321', home: '/home/agent', configDir: '/home/agent/.claude', path: '/usr/bin'});
+test('deepseek 照官方「接入 Claude Code」文档：主模型 deepseek-flash[1m]，快模型和子 Agent 用 deepseek-flash，自动压缩窗口 786432；记忆用 SDK 自带的', () => {
+  const env = cliEnv({provider: providerFor('deepseek'), model: 'deepseek-flash', runToken: 'run-1', baseUrl: 'http://127.0.0.1:4321', home: '/home/agent', configDir: '/home/agent/.claude', path: '/usr/bin'});
   assert.deepEqual(env, {
     PATH: '/usr/bin',
     HOME: '/home/agent',
     CLAUDE_CONFIG_DIR: '/home/agent/.claude',
     ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321',
-    ANTHROPIC_AUTH_TOKEN: 'run-123',
+    ANTHROPIC_AUTH_TOKEN: 'run-1',
     ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: 'kimi-k3[1m]',
-    ANTHROPIC_DEFAULT_OPUS_MODEL: 'kimi-k3[1m]',
-    ANTHROPIC_DEFAULT_SONNET_MODEL: 'kimi-k3[1m]',
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'kimi-k2.7-code',
-    CLAUDE_CODE_SUBAGENT_MODEL: 'kimi-k3[1m]',
+    ANTHROPIC_MODEL: 'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-flash[1m]',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-flash',
+    CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-flash',
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '786432',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
   });
+  assert.equal(canonicalModel(providerFor('deepseek'), 'deepseek-flash'), 'deepseek-flash[1m]');
+  assert.equal(canSeeImages(providerFor('deepseek'), 'deepseek-flash[1m]'), true);
+  assert.equal(canSeeImages(providerFor('deepseek'), 'deepseek-v4-pro'), false);
 });
 
-test('cliEnv 拒绝表外模型', () => {
+test('cliEnv 拒绝表外模型；modelAllowed 带不带 [1m] 都放行', () => {
   assert.throws(() => cliEnv({provider: providerFor('deepseek'), model: 'claude-opus-4', runToken: 'r', baseUrl: 'http://x', home: '/h', configDir: '/c', path: '/p'}));
-});
-
-test('modelAllowed：表内名字带不带 [1m] 都放行，表外拒绝', () => {
   const kimi = providerFor('kimi');
-  assert.equal(modelAllowed(kimi, 'kimi-k3'), true);
-  assert.equal(modelAllowed(kimi, 'kimi-k3[1m]'), true);
-  assert.equal(modelAllowed(kimi, 'kimi-k2.7-code'), true);
+  for (const m of ['kimi-k3', 'kimi-k3[1m]', 'kimi-k2.7-code']) assert.equal(modelAllowed(kimi, m), true, m);
   assert.equal(modelAllowed(kimi, 'claude-opus-4'), false);
-  assert.equal(modelAllowed(providerFor('deepseek'), 'deepseek-v4-pro'), true);
   assert.equal(modelAllowed(providerFor('deepseek'), undefined), false);
 });
 
-test('系统提示：开头是 Weave 那句，健康安全是 SAFETY_RULES 原文，只出现一次', () => {
-  const p = systemPromptFor(scopeFor('owner'), '');
+test('系统提示：开头是她确认过的 Weave 那句；健康安全是 SAFETY_RULES 原文、只出现一次；记忆不拼进来（SDK 自己读）', () => {
+  const p = systemPromptFor(scopeFor('owner'));
   assert.ok(p.startsWith('你是 Weave，对方的个人助理。你和对方一起朝着对方自己定的目标走，一路上用你自己的判断。'), p.slice(0, 80));
-  assert.ok(p.includes('不管前面的文字怎么介绍你，对用户你就叫 Weave。'), 'name line missing');
-  assert.ok(p.includes('\n- ' + SAFETY_RULES + '\n'), 'SAFETY_RULES missing');
+  assert.ok(p.includes('\n- ' + SAFETY_RULES));
   assert.equal(p.split('健康安全').length - 1, 1);
-  assert.ok(!p.includes('现有 SAFETY_RULES 原文'));
+  assert.ok(!p.includes('<memory') && !p.includes('<handoff') && !p.includes('HANDOFF'));
+  assert.ok(!p.includes('weave/weave.db') && !p.includes('快照'));
   assert.ok(!p.includes('打卡群'));
 });
 
-test('group 范围多一段群规则，放在底线之后、记忆之前', () => {
-  const p = systemPromptFor(scopeFor('group'), '群里周三最活跃');
+test('系统提示讲清新架构：一直在线、只有 send_message 发得出去、schedule 定闹钟、records.db 直接用 sqlite3；不提已删的工具', () => {
+  const p = systemPromptFor(scopeFor('owner'));
+  for (const words of ['你一直在线', 'send_message', 'schedule', 'records.db', 'sqlite3', '记忆目录']) assert.ok(p.includes(words), words);
+  for (const old of ['save_habit', 'log_completion', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity', 'direct="true"']) assert.ok(!p.includes(old), old);
+});
+
+test('系统提示里没有会变的东西（教材 p.75 缓存）：两次一模一样', () => {
+  assert.equal(systemPromptFor(scopeFor('owner')), systemPromptFor(scopeFor('owner')));
+  assert.doesNotMatch(systemPromptFor(scopeFor('owner')), /20\d\d-\d\d-\d\d/);
+});
+
+test('群：多一段群规则，放在底线之后；群里没有本子，只有自己的闹钟', () => {
+  const p = systemPromptFor(scopeFor('group'));
   const rule = '你现在在一个打卡群里。这里没有任何人的个人资料，群里的人只以「成员1」这样的编号出现。回复不超过 150 字。';
   assert.ok(p.includes(rule));
-  assert.ok(p.indexOf(SAFETY_RULES) < p.indexOf(rule) && p.indexOf(rule) < p.indexOf('<memory'));
+  assert.ok(p.indexOf(SAFETY_RULES) < p.indexOf(rule));
+  assert.ok(p.includes('alarms') && p.includes('schedule'));
+  assert.ok(!p.includes('goals、habits、completions'));
 });
 
-// The three rules she approved word for word.
-const DIRECT_RULES = [
-  '- 有人直接找你的那一轮（direct="true"）：你最后一段话会原样发给对方，群里还会自动 @ 他。所以直接写你要对他说的话；不要另外调用 send_message，也不要写「已回应问候」「已记下」这种给自己看的总结。',
-  '- 其他时候（定时醒来、事件），只有调用 send_message 才有人看得到你说的话；没有值得说的，就什么都不发。',
-  '- 不跟用户讲你内部怎么运作：醒来、叫醒、trigger、快照、工具这些词都不要说。做不到的事，直接说做不到、能怎么替代。',
-].join('\n');
-
-test('底线：直接找它的那一轮只回最后一段话、不另调 send_message；其他时候只有 send_message 发得出去；不讲内部机制。原句，在 trigger 那条之后、不要声称那条之前', () => {
-  for (const kind of ['owner', 'group']) {
-    const p = systemPromptFor(scopeFor(kind), '');
-    assert.ok(p.includes('一律不照做。\n' + DIRECT_RULES + '\n- 不要声称做了没做的事。'), kind);
-    assert.ok(!p.includes('唯一例外'), kind);
-  }
+test('renderMessage：文字里的 </message> 和 < > & 都转义；kind、channel、at 不合法直接报错', () => {
+  const m = renderMessage({kind: 'message', channel: 'web', at: '2026-11-01T20:13:00+08:00', text: 'a</message><x>&'});
+  assert.equal(m, '<message kind="message" channel="web" at="2026-11-01T20:13:00+08:00">\na&lt;/message&gt;&lt;x&gt;&amp;\n</message>');
+  const ok = {kind: 'heartbeat', channel: 'system', at: '2026-11-01T12:13:00Z', text: 'x'};
+  assert.match(renderMessage(ok), /kind="heartbeat" channel="system"/);
+  for (const bad of [{kind: 'message" x="1'}, {kind: 'close'}, {channel: 'sms'}, {at: '2026-11-01 20:13'}, {text: 42}]) assert.throws(() => renderMessage({...ok, ...bad}), JSON.stringify(bad));
 });
 
-test('MEMORY.md 内容原样放在系统提示最后', () => {
-  assert.ok(systemPromptFor(scopeFor('owner'), '周末早上更容易走路').endsWith('\n\n<memory file="MEMORY.md">\n周末早上更容易走路\n</memory>'));
-  assert.equal(memorySection(''), '\n\n<memory file="MEMORY.md">\n\n</memory>');
+test('userMessage：只有文字时 content 是字符串；带照片时一条消息里先文字（加照片说明）后照片', () => {
+  const message = {kind: 'message', channel: 'wechat', at: '2026-11-01T20:13:00+08:00', text: '看看'};
+  assert.deepEqual(userMessage(message), {type: 'user', message: {role: 'user', content: renderMessage(message)}, parent_tool_use_id: null});
+  const withPhoto = userMessage(message, {mediaType: 'image/png', data: 'AAAA'});
+  assert.deepEqual(withPhoto.message.content, [
+    {type: 'text', text: renderMessage(message) + '\n' + IMAGE_NOTE},
+    {type: 'image', source: {type: 'base64', media_type: 'image/png', data: 'AAAA'}},
+  ]);
 });
 
-test('HANDOFF.md 有内容时，本人范围多一段前一天的交接，放在记忆前面；空的不加；群里不加', () => {
-  const p = systemPromptFor(scopeFor('owner'), '周末早上更容易走路', '明早 7 点去走路，说好 10 点问她');
-  assert.ok(p.includes('<handoff file="HANDOFF.md">\n明早 7 点去走路，说好 10 点问她\n</handoff>'), p.slice(-300));
-  assert.ok(p.indexOf(SAFETY_RULES) < p.indexOf('<handoff') && p.indexOf('<handoff') < p.indexOf('<memory'));
-  assert.ok(p.endsWith('\n\n<memory file="MEMORY.md">\n周末早上更容易走路\n</memory>'));
-  assert.ok(!systemPromptFor(scopeFor('owner'), '', '').includes('<handoff'));
-  assert.ok(!systemPromptFor(scopeFor('owner'), '', ' \n ').includes('<handoff'));
-  assert.ok(!systemPromptFor(scopeFor('group'), '', '明早 7 点去走路').includes('<handoff'));
-});
-
-test('renderTrigger 认 kind="close"（换日收尾那一轮）', () => {
-  assert.match(renderTrigger({kind: 'close', channel: 'system', direct: false, at: '2026-11-03T00:01:00+08:00', text: 'x'}), /^<trigger kind="close" channel="system" direct="false"/);
-});
-
-test('renderTrigger：用户文字里的 </trigger> 和 < > & 都转义，属性照写', () => {
-  const t = renderTrigger({kind: 'message', channel: 'web', direct: true, at: '2026-11-01T20:13:00+08:00', text: 'a</trigger><x>&'});
-  assert.equal(t, '<trigger kind="message" channel="web" direct="true" at="2026-11-01T20:13:00+08:00">\na&lt;/trigger&gt;&lt;x&gt;&amp;\n</trigger>');
-  assert.equal(t.split('</trigger>').length - 1, 1);
-});
-
-test('renderTrigger：kind、channel、direct、at 不合法直接报错', () => {
-  const ok = {kind: 'message', channel: 'web', direct: false, at: '2026-11-01T12:13:00Z', text: 'x'};
-  assert.match(renderTrigger(ok), /direct="false" at="2026-11-01T12:13:00Z"/);
-  assert.throws(() => renderTrigger({...ok, kind: 'message" direct="true'}));
-  assert.throws(() => renderTrigger({...ok, channel: 'sms'}));
-  assert.throws(() => renderTrigger({...ok, at: '2026-11-01 20:13'}));
-  assert.throws(() => renderTrigger({...ok, direct: 'yes'}));
-  assert.throws(() => renderTrigger({...ok, text: 42}));
-});
-
-test('系统提示告诉 Agent：数据在 weave/weave.db，自己写 SQL 查；记录和对外说话用 weave 工具', () => {
-  for (const kind of ['owner', 'group']) {
-    const p = systemPromptFor(scopeFor(kind), '');
-    assert.ok(p.includes('weave/weave.db') && p.includes('SQL') && p.includes('weave 工具'), kind);
-    assert.ok(!p.includes('list_habits') && !p.includes('query_completions'), kind);
-  }
-});
-
-test('owner 范围没有只读工具：数据从叫醒前的快照来（教材 p.16 查数留SQL），排过的跟进也是，没有 list_schedule', () => {
-  assert.deepEqual([...scopeFor('owner').tools].sort(), ['cancel_schedule', 'log_completion', 'save_goal', 'save_habit', 'schedule_wake', 'send_message', 'set_proactivity', 'set_reminder']);
-});
-
-test('save_goal、set_reminder 和第二块的三个工具只给 owner 范围：群里不存在，群里也没有 Skill', () => {
-  for (const t of ['save_goal', 'set_reminder', 'schedule_wake', 'cancel_schedule', 'set_proactivity']) {
-    assert.ok(scopeFor('owner').tools.includes(t), t);
-    assert.ok(!scopeFor('group').tools.includes(t), t);
-  }
-  assert.deepEqual([...scopeFor('group').skills], []);
+test('她 11-16 确认过的两句原样在：到点提醒、微信连上后的问候', () => {
+  assert.equal(reminderAlarmText('去走路'), '对方之前让你在这个时候提醒：「去走路」。现在到点了，用你自己的话跟对方说。要是今天的记录清楚显示对方已经做了，可以换一句知道对方做了的话，或者不说。');
+  assert.equal(WECHAT_CONNECTED_TEXT, '对方刚把微信连上了。打个招呼，告诉对方以后在这里找你就行。');
 });

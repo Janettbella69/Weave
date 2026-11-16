@@ -8,7 +8,9 @@ const deepFreeze = value => {
 export const PROVIDERS = deepFreeze({
   // vision：能看图的那个模型，带照片的一轮一律用它（DeepSeek 文档：deepseek-flash 收图片，deepseek-v4-pro 把图片换成「[Unsupported Image]」）。
   // 别的几家没有核实过，不写，带照片的一轮会被拒绝。
-  deepseek: {name: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: ['deepseek-flash', 'deepseek-v4-pro'], main: 'deepseek-flash', fast: 'deepseek-flash', vision: 'deepseek-flash', keyEnv: 'DEEPSEEK_API_KEY'},
+  // 照 DeepSeek 官方「接入 Claude Code」文档（api-docs.deepseek.com/quick_start/agent_integrations/claude_code，2026-11-16 读）：
+  // 主模型写 deepseek-flash[1m]（1M 上下文），快模型和子 Agent 用 deepseek-flash，CLAUDE_CODE_AUTO_COMPACT_WINDOW=786432。
+  deepseek: {name: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: ['deepseek-flash[1m]', 'deepseek-v4-pro'], main: 'deepseek-flash[1m]', fast: 'deepseek-flash', subagent: 'deepseek-flash', vision: 'deepseek-flash[1m]', compactWindow: 786432, keyEnv: 'DEEPSEEK_API_KEY'},
   kimi: {name: 'kimi', baseUrl: 'https://api.moonshot.cn/anthropic', models: ['kimi-k3[1m]', 'kimi-k2.7-code'], main: 'kimi-k3[1m]', fast: 'kimi-k2.7-code', keyEnv: 'KIMI_API_KEY'},
   glm: {name: 'glm', baseUrl: 'https://open.bigmodel.cn/api/anthropic', models: ['glm-5.2[1m]', 'glm-4.7'], main: 'glm-5.2[1m]', fast: 'glm-4.7', keyEnv: 'GLM_API_KEY'},
   // 同一份文档还给了按工作空间的地址，先用 dashscope 这个。
@@ -26,8 +28,14 @@ export function modelAllowed(provider, model) {
   return typeof model === 'string' && provider.models.some(m => bare(m) === bare(model));
 }
 
+// 网站传来的模型名（比如 deepseek-flash）换成这一家文档里写的那个（比如 deepseek-flash[1m]）。
+export const canonicalModel = (provider, model) => provider.models.find(m => bare(m) === bare(model)) ?? model;
+// 这个模型能不能看图。
+export const canSeeImages = (provider, model) => !!provider.vision && bare(provider.vision) === bare(model);
+
 export function cliEnv({provider, model, runToken, baseUrl, home, configDir, path}) {
   if (!modelAllowed(provider, model)) throw Error(`${provider.name} 不支持模型 ${model}`);
+  const main = canonicalModel(provider, model);
   return {
     PATH: path,
     HOME: home,
@@ -35,13 +43,17 @@ export function cliEnv({provider, model, runToken, baseUrl, home, configDir, pat
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_AUTH_TOKEN: runToken,
     ANTHROPIC_API_KEY: '',
-    ANTHROPIC_MODEL: model,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    ANTHROPIC_MODEL: main,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: main,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: main,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.fast,
-    CLAUDE_CODE_SUBAGENT_MODEL: model,
+    CLAUDE_CODE_SUBAGENT_MODEL: provider.subagent ?? main,
+    ...(provider.compactWindow ? {CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(provider.compactWindow)} : {}),
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: '1',
-    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    // 记忆用 SDK 自带的（教材 p.47「ClaudeAgentSDK自己就有记忆啊」「不要重新自己做一套记忆机制」）：
+    // $CLAUDE_CONFIG_DIR/projects/<工作目录>/memory/ 下的 MEMORY.md 索引加一件事一个文件，会话开始时 CLI 自己读进第一条消息
+    // （2026-11-16 用假模型核过：自定义系统提示时也会读）。每个人的 CLAUDE_CONFIG_DIR 是自己的，不会串到别人那里。
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
   };
 }

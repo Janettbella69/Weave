@@ -89,7 +89,7 @@ test('createTicker：一次没回来，再敲也不发；回来了下一拍照�
   assert.equal(pending.length, 2);
 });
 
-test('createTicker：失败只记第一次，之后 10 分钟最多一行，只写状态码或错误名，不写正文和令牌；叫醒了几轮记一行', async t => {
+test('createTicker：失败只记第一次，之后 10 分钟最多一行，只写状态码或错误名，不写正文和令牌；200 就是成功，不看回复内容', async t => {
   const errors = t.mock.method(console, 'error', () => {});
   const logs = t.mock.method(console, 'log', () => {});
   let clock = 0, reply;
@@ -104,17 +104,11 @@ test('createTicker：失败只记第一次，之后 10 分钟最多一行，只�
   assert.equal(errors.mock.callCount(), 1, '10 分钟内只记一次');
   await beatAt(10);
   reply = () => new Response('not json', {status: 200});
-  await beatAt(15);
-  await beatAt(20);
+  await beatAt(25);
   const lines = errors.mock.calls.map(call => call.arguments.join(' '));
-  assert.deepEqual(lines, ['Agent service: tick failed: HTTP 502', 'Agent service: tick failed: TypeError', 'Agent service: tick failed: SyntaxError']);
+  assert.deepEqual(lines, ['Agent service: tick failed: HTTP 502', 'Agent service: tick failed: TypeError']);
   assert.ok(lines.every(line => !line.includes(TOKEN) && !line.includes('secret') && !line.includes('ECONNREFUSED')), lines.join(' | '));
-  reply = () => tickAnswer({started: 0});
-  await beatAt(21);
-  assert.equal(logs.mock.callCount(), 0, '没开始后台叫醒就不记');
-  reply = () => tickAnswer({started: 2});
-  await beatAt(22);
-  assert.deepEqual(logs.mock.calls.map(call => call.arguments.join(' ')), ['Agent service: tick started 2 background wake(s)']);
+  assert.equal(logs.mock.callCount(), 0);
 });
 
 test('close() 之后进程自己退出：还在等的那一次（真的 fetch）被断掉，闹钟也不拖住进程', async t => {

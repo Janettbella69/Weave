@@ -1,36 +1,45 @@
-// Agent 服务（docs/ARCHITECTURE.md 第 1、11 节）：全仓库唯一调用 query() 的地方。
-//   POST /wake    叫醒一轮。Weave 服务决定该不该叫醒，醒了做什么由 Agent 自己决定。
-//                 background: true 是后台那一轮（定时、定期看看）：从当天的会话分叉，失败了原会话不动。
-//   POST /forget  注销时删掉这个人的工作目录和会话记录。
-//   POST /memory  读本人的 MEMORY.md，给网页看。
+// Agent 服务（docs/ARCHITECTURE.md）：全仓库唯一调用 query() 的地方。每个人（或每个群）一个一直开着的 Weave（live.mjs）。
+//   POST /message          往一个人（或群）的那段会话里推一条消息。wait: true 等这一轮做完再回（网页聊天，她在等）；
+//                          否则马上回 202，做完了向网站回报结果（微信、闹钟：没有谁挂着等，教材 p.61、p.75「延迟预算」）。
+//   POST /tick             网站的闹钟每分钟一次，带上要看的人和群（各自这一分钟的通行证）：到点的闹钟、该来的心跳推进各自的会话。
+//   POST /notebook/read    网页读这个人的本子（records.db）。
+//   POST /notebook/check   网页给习惯打勾、取消。
+//   POST /notebook/cancel-alarm  网页取消一个闹钟。
+//   POST /memory           网页读这个人的记忆文件（SDK 自带的记忆目录）。
+//   POST /forget           注销或关群：关掉会话，删掉工作目录和会话记录。
 //   GET  /health
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
 // 服务器自己的闹钟也在这里：每隔 AGENT_TICK_SECONDS 秒 POST 一次网站的 /api/internal/tick（createTicker）。
 import http from 'node:http';
 import {timingSafeEqual, createHash, randomUUID} from 'node:crypto';
-import {mkdir, chmod, rm} from 'node:fs/promises';
+import {mkdir, chmod, rm, readFile, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {query} from '@anthropic-ai/claude-agent-sdk';
 import {scopeFor} from './scopes.mjs';
-import {providerFor, modelAllowed} from './providers.mjs';
-import {renderTrigger} from './prompts.mjs';
+import {providerFor, modelAllowed, canonicalModel, canSeeImages} from './providers.mjs';
+import {userMessage, reminderAlarmText, selfAlarmText, lateText, heartbeatText, KINDS} from './prompts.mjs';
 import {createLedger} from './ledger.mjs';
 import {createModelProxy} from './model-proxy.mjs';
 import {toolBackend} from './mcp/rpc.mjs';
 import {isolationFor, removeContainer} from './sandbox.mjs';
-import {wake} from './runner.mjs';
+import {createLive} from './live.mjs';
 import {createRunQueue} from './queue.mjs';
 import {checkImage, IMAGE_MAX_BASE64} from './images.mjs';
 import * as workspace from './workspace.mjs';
-import {fetchSnapshot, writeSnapshot, prepareMountpoint, mirroringRpc, SNAPSHOT_DIR} from './snapshot.mjs';
+import {ensureNotebook, readNotebook, setCompletion, addAlarm, dueAlarms, markFired, cancelAlarm, localISO} from './notebook.mjs';
+import {fetchLegacy} from './legacy-import.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('./plugin', import.meta.url));
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digest = value => createHash('sha256').update(value).digest();
-// /wake 可能带一张照片（base64，微信看图），所以只给它多留出一张照片的大小；别的接口还是 64 KiB。
-const JSON_LIMIT = 64 * 1024, WAKE_LIMIT = JSON_LIMIT + IMAGE_MAX_BASE64;
+// /message 可能带一张照片（base64），所以只给它多留出一张照片的大小；别的接口 64 KiB。/tick 带很多人的通行证，给 1 MiB。
+const JSON_LIMIT = 64 * 1024, MESSAGE_LIMIT = JSON_LIMIT + IMAGE_MAX_BASE64, TICK_LIMIT = 1024 * 1024;
 const fail = (status, message) => { throw Object.assign(Error(message), {status}); };
+// 心跳多久一次、白天哪几个钟点给（她当地时间）：省钱的基础设施设置，和 OpenClaw 的 activeHours 一样；说不说由 Weave 定。
+export const HEARTBEAT = Object.freeze({everyMs: 30 * 60 * 1000, from: '07:00', to: '23:00'});
+const LATE_MS = 5 * 60 * 1000;
+const WEEKDAYS = '日一二三四五六';
 
 async function readJson(req, limit) {
   const chunks = [];
@@ -54,40 +63,59 @@ function checkScope(input) {
   return null;
 }
 const checkId = id => { if (typeof id !== 'string' || !id || id.length > 200) fail(400, 'id 无效'); };
+const checkCapability = c => { if (typeof c !== 'string' || !c || c.length > 4096) fail(400, '通行证无效'); };
+const checkTimezone = tz => {
+  if (typeof tz !== 'string' || !tz) fail(400, '时区无效');
+  try { new Intl.DateTimeFormat('en-US', {timeZone: tz}); } catch { fail(400, '时区无效'); }
+};
 
-function checkWake(input) {
-  const scope = checkScope(input);
-  checkId(input.id);
-  if (typeof input.capability !== 'string' || !input.capability || input.capability.length > 4096) fail(400, '通行证无效');
-  if (typeof input.localDate !== 'string' || !DATE.test(input.localDate)) fail(400, '当地日期无效');
-  if (!input.trigger || typeof input.trigger !== 'object' || typeof input.trigger.text !== 'string' || input.trigger.text.length > 20000) fail(400, 'trigger 无效');
-  try { renderTrigger(input.trigger); } catch { fail(400, 'trigger 无效'); }
+// 这个人（或群）用哪个模型。会话开着的时候不能换：换了就关掉重开，接着同一段会话（live.mjs 的 fingerprint）。
+function checkModel(input) {
   let provider;
   try { provider = providerFor(input.provider); } catch { fail(400, '模型提供方无效'); }
   if (!modelAllowed(provider, input.model)) fail(400, '模型无效');
   if (input.userKey !== undefined && (typeof input.userKey !== 'string' || input.userKey.length < 12 || input.userKey.length > 512 || /\s/.test(input.userKey))) fail(400, 'Key 无效');
-  if (input.background !== undefined && typeof input.background !== 'boolean') fail(400, 'background 无效');
-  // 换日收尾（hosted/lib/weave/day-close.mjs）只给本人、只在后台；localDate 是要收的那一天。
-  const close = input.trigger.kind === 'close';
-  if (close && (scope.kind !== 'owner' || input.background !== true)) fail(400, '收尾只给本人那一轮，而且是后台');
+  return {provider, model: canonicalModel(provider, input.model), userKey: input.userKey};
+}
+
+function checkMessage(input) {
+  const scope = checkScope(input);
+  checkId(input.id);
+  checkCapability(input.capability);
+  const m = input.message;
+  if (!m || typeof m !== 'object' || typeof m.text !== 'string' || m.text.length > 20000) fail(400, '消息无效');
+  if (!KINDS.includes(m.kind)) fail(400, '消息无效');
+  try { userMessage(m); } catch { fail(400, '消息无效'); }
+  if (input.alarmKind !== undefined && !['reminder', 'self'].includes(input.alarmKind)) fail(400, '消息无效');
+  if (input.ref !== undefined && (typeof input.ref !== 'string' || input.ref.length > 200)) fail(400, 'ref 无效');
+  const model = checkModel(input);
   let image;
   if (input.image !== undefined) {
-    // 只有能看图的模型收照片：DeepSeek 只有 deepseek-flash 能看，v4-pro 会把照片换成「[Unsupported Image]」（DeepSeek 文档）。
-    if (!provider.vision) fail(400, '这个模型提供方不能看图');
     try { image = checkImage(input.image); } catch { fail(400, '照片无效'); }
   }
-  // 叫 photo，不叫 image：createAgentService 里的 image 是容器镜像的名字。
-  return {scope, provider, background: input.background === true, photo: image, close};
+  return {scope, ...model, image};
 }
+
+// 当地时间写成「11月17日（周二）19:30」。
+function label(ms, timezone) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {timeZone: timezone, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short'})
+    .formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday);
+  return `${p.month}月${p.day}日（周${WEEKDAYS[weekday]}）${p.hour}:${p.minute}`;
+}
+const minuteOf = (ms, timezone) => {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  return Number(p.hour) * 60 + Number(p.minute);
+};
+const toMinutes = hhmm => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 
 const TICK_TIMEOUT_MS = 170_000;
 const TICK_LOG_EVERY_MS = 10 * 60 * 1000;
 // setInterval 超过这个数会悄悄改成 1 毫秒一次。
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
-// 服务器自己的闹钟（设计文档 2026-11-03-proactive-wake-design.md 4.7）：每隔一段时间 POST 一次网站的 /api/internal/tick。
-// 到点的提醒、排进微信、该不该后台叫醒，都由网站那边的代码判断（教材 p.20：代码合法的位置「Agent启动之前 预处理」），
-// 这里只管敲。上一次没回来就跳过这一拍；失败只记第一次，之后最多 10 分钟记一行，只写状态码或错误名，不写正文和令牌。
+// 服务器自己的闹钟：每隔一段时间 POST 一次网站的 /api/internal/tick。网站那边收微信、再把要看的人和群发回 /tick。
+// 上一次没回来就跳过这一拍；失败只记第一次，之后最多 10 分钟记一行，只写状态码或错误名，不写正文和令牌。
 export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now}) {
   const url = `${weaveUrl.replace(/\/+$/, '')}/api/internal/tick`;
   let busy = false, stopped = false, loggedAt = -Infinity, controller = null;
@@ -106,16 +134,10 @@ export function createTicker({weaveUrl, token, fetcher = fetch, now = Date.now})
         method: 'POST', redirect: 'manual',
         headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + token},
         body: '{}',
-        // 关服务时断掉还在等的这一次，不让它拖住进程。
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TICK_TIMEOUT_MS)]),
       });
-      if (response.status !== 200) {
-        response.body?.cancel().catch(() => {});
-        failed(`HTTP ${response.status}`);
-        return;
-      }
-      const started = (await response.json())?.proactive?.started;
-      if (typeof started === 'number' && started > 0) console.log(`Agent service: tick started ${started} background wake(s)`);
+      response.body?.cancel().catch(() => {});
+      if (response.status !== 200) failed(`HTTP ${response.status}`);
     } catch (error) {
       failed(error?.name || 'Error');
     } finally {
@@ -130,6 +152,7 @@ export async function createAgentService({
   token, dataDir, isolation = 'docker', image = 'weave-agent:0.3.325', weaveUrl, keys = {}, upstreams,
   limits = {perAccount: 400000, total: 6000000}, maxConcurrent = 3, pluginDir = PLUGIN_DIR, sandbox = true,
   fetcher = fetch, queryFn = query, host = '127.0.0.1', port = 0, containerMemory = '1g', tickEveryMs = 0,
+  heartbeat = HEARTBEAT, idleMs, now = Date.now,
   uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000,
 }) {
   if (typeof token !== 'string' || token.length < 32) throw Error('请配置至少32字符的 AGENT_SERVICE_TOKEN');
@@ -154,90 +177,208 @@ export async function createAgentService({
     proxyInfo = {url: `http://127.0.0.1:${proxyServer.address().port}`};
   }
   const queue = createRunQueue({maxConcurrent});
+  const live = createLive({queryFn, now, ...(idleMs ? {idleMs} : {})});
+  // CLI 看到的工作目录：容器里是 /workspace，本机开发是宿主上的路径（SDK 记忆目录的名字跟着它，workspace.mjs）。
+  const cwdFor = dirs => isolation === 'docker' ? '/workspace' : dirs.workspace;
 
-  async function handleWake(input) {
-    const {scope, provider, background, photo, close} = checkWake(input);
-    // 带照片的一轮一律用能看图的模型，不管这个人选的是哪个。
-    const model = photo ? provider.vision : input.model;
-    if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
-    if (isolation === 'docker' && uid === 0) fail(503, '请用非 root 用户运行 Agent 服务');
-    if (!input.userKey && !keys[provider.name]) fail(503, `没有 ${provider.name} 的模型 Key`);
-    return queue.run(`${scope.kind}:${input.id}`, async () => {
-      const dirs = workspace.scopeDirs(dataDir, scope.kind, input.id);
-      await workspace.prepare(dirs);
-      // 收尾那一轮只接要收的那一天的会话。那一天没有会话（没聊过、出错清掉了、新的一天已经开了一段），
-      // 就没什么可收的：不叫醒模型，也不重写上一份 HANDOFF.md。
-      if (close && !(await workspace.sessionFor(dirs, input.localDate))) return {outcome: 'skipped', reply: '', sessionId: null, tools: []};
-      const name = 'weave-run-' + randomUUID().replaceAll('-', '').slice(0, 12);
-      const runIsolation = isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory});
-      // 叫醒前把数据写成快照（教材 p.16、p.20）。docker 下快照在工作目录外，只读挂到 /workspace/weave，
-      // Agent 改不到，写入后的同步也只碰宿主自己的文件。取不到就不醒：回 503，dispatcher 当成「没有处理」。
-      let dbPath;
-      try {
-        const snapshot = await fetchSnapshot({weaveUrl, capability: input.capability, fetcher});
-        if (isolation === 'docker') await prepareMountpoint(join(dirs.workspace, SNAPSHOT_DIR), dirs.root);
-        ({dbPath} = await writeSnapshot(runIsolation.snapshotDir, snapshot, Date.now(), {trashDir: dirs.root}));
-      } catch (error) {
-        console.error('Agent service: snapshot unavailable:', error instanceof Error ? error.message : 'unknown');
-        fail(503, '取不到 Weave 的数据快照，这一轮没有叫醒');
-      }
-      const memory = await workspace.readMemory(dirs);
-      // 前一天收尾写的交接：只给本人那一轮（群里没有收尾）。
-      const handoff = scope.kind === 'owner' ? await workspace.readHandoff(dirs) : '';
-      const sessionId = await workspace.sessionFor(dirs, input.localDate);
-      const run = proxy.openRun({account: input.id, provider: provider.name, model, userKey: input.userKey});
-      try {
-        const result = await wake({
-          scope, trigger: input.trigger, memory, handoff, provider, model, runToken: run.token, sessionId, queryFn,
-          // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
-          forkSession: background,
-          // 微信看图：这一轮带的那张照片（没有就是 undefined）。
-          image: photo,
-          isolation: runIsolation,
-          rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
-        });
-        // 成功了就接着用这段（后台那一轮是分叉出来的那段）：她回「走了」，下一轮接得上 Weave 刚才问的话。
-        // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
-        // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
-        // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
-        // 收尾那一轮也不动：那一天已经结束，下一轮是新的一天，开新的一段。
-        if (photo || close) { /* sessions.json stays as it was */ }
-        else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
-        else if (!background) await workspace.clearSession(dirs);
-        return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};
-      } finally {
+  // 第一次用这个空间时：建本子（本人的从网站导入以前的数据，只这一次）；以前的 MEMORY.md 挪进 SDK 的记忆目录。
+  async function ready(scope, id, capability) {
+    const dirs = workspace.scopeDirs(dataDir, scope.kind, id);
+    await workspace.prepare(dirs);
+    await workspace.moveOldMemory(dirs, cwdFor(dirs));
+    const legacy = scope.kind === 'owner' && capability && weaveUrl ? () => fetchLegacy({weaveUrl, capability, fetcher}) : undefined;
+    await ensureNotebook(dirs, {legacy});
+    return dirs;
+  }
+
+  // 一个人（或群）的会话开起来时要的东西（live.mjs）。工具按这一条消息的上下文（state.current）走。
+  function setupFor({scope, id, dirs, provider, model, userKey, fingerprint}) {
+    const name = 'weave-live-' + randomUUID().replaceAll('-', '').slice(0, 12);
+    const runIsolation = isolationFor({mode: isolation, scope, dirs, pluginDir, proxy: proxyInfo, image, name, uid, gid, sandbox, memory: containerMemory});
+    const run = proxy.openRun({account: id, provider: provider.name, model, userKey});
+    return workspace.sessionFor(dirs).then(sessionId => ({
+      scope, dirs, provider, model, runToken: run.token, isolation: runIsolation, sessionId, fingerprint,
+      handlers: state => ({
+        send_message: (args, toolUseId) => toolBackend({weaveUrl, capability: state.current.capability, turn: {kind: state.current.kind, ...(state.current.alarmKind ? {alarmKind: state.current.alarmKind} : {})}, fetcher})('send_message', args, toolUseId),
+        schedule: async args => {
+          try { return {ok: true, text: JSON.stringify({alarm: addAlarm(dirs, {...args, now: now()})})}; }
+          catch (error) { if (error.status === 400) return {ok: false, text: error.message}; throw error; }
+        },
+      }),
+      async release() {
         run.close();
-        // 等容器真的没了再放下一轮进来（队列在这个函数返回后才放行）。
         if (isolation === 'docker') await removeContainer(name);
-      }
+      },
+    }));
+  }
+
+  // 推一条消息进这个人（或群）的会话，等这一轮做完。同一个 key 排队，不同的人并行（queue.mjs）。
+  function deliver({scope, id, capability, message, image, alarmKind, provider, model, userKey}) {
+    const key = `${scope.kind}:${id}`;
+    return queue.run(key, async () => {
+      if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
+      if (isolation === 'docker' && uid === 0) fail(503, '请用非 root 用户运行 Agent 服务');
+      if (!userKey && !keys[provider.name]) fail(503, `没有 ${provider.name} 的模型 Key`);
+      let dirs;
+      try { dirs = await ready(scope, id, capability); }
+      catch (error) { console.error('Agent service: workspace not ready:', error instanceof Error ? error.message : 'unknown'); fail(503, '这个人的本子暂时没准备好'); }
+      // 看不了图的模型：照片不发，告诉它有一张照片它看不了（草稿文案，待确认）。
+      const see = image && canSeeImages(provider, model);
+      const text = image && !see ? message.text + '\n（对方发来一张照片，但现在用的模型看不了图。）' : message.text;
+      const fingerprint = [provider.name, model, userKey ? createHash('sha256').update(userKey).digest('hex').slice(0, 12) : ''].join('|');
+      const result = await live.turn(key, {
+        open: () => setupFor({scope, id, dirs, provider, model, userKey, fingerprint}),
+        fingerprint,
+        message: userMessage({...message, text}, see ? image : undefined),
+        context: {capability, kind: message.kind, ...(alarmKind ? {alarmKind} : {})},
+        meta: {scope: scope.kind, channel: message.channel},
+      });
+      if (result.sessionId) await workspace.saveSession(dirs, result.sessionId);
+      return result;
     });
   }
 
-  // 本人在网页上看 Agent 记了什么（docs/ARCHITECTURE.md 第 10 节：MEMORY.md 本人可看）。只读，只给 owner。
+  // 没人等的那一轮做完以后，告诉网站结果：她发来的话没处理成、又什么都没发出去时，网站如实告诉她（基础设施的报错）。
+  async function report({capability, ref, kind}, outcome) {
+    try {
+      const response = await fetcher(`${weaveUrl.replace(/\/+$/, '')}/api/internal/agent/outcome`, {
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000),
+        headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + capability},
+        body: JSON.stringify({outcome, kind, ...(ref ? {ref} : {})}),
+      });
+      response.body?.cancel().catch(() => {});
+    } catch (error) {
+      console.error('Agent service: outcome not reported:', error instanceof Error ? error.name : 'unknown');
+    }
+  }
+
+  async function handleMessage(input) {
+    const checked = checkMessage(input);
+    const job = {...checked, id: input.id, capability: input.capability, message: input.message, alarmKind: input.alarmKind};
+    if (input.wait === true) {
+      const result = await deliver(job);
+      return {outcome: result.outcome, reply: result.reply, tools: result.tools, sessionId: result.sessionId};
+    }
+    deliver(job)
+      .then(result => report({capability: input.capability, ref: input.ref, kind: input.message.kind}, result.outcome))
+      .catch(error => report({capability: input.capability, ref: input.ref, kind: input.message.kind}, error?.status === 429 ? 'busy' : 'unavailable'));
+    return {status: 202, body: {accepted: true}};
+  }
+
+  // 心跳：上一次之后过了 everyMs，而且在她当地的白天钟点里。上一次的时间记在工作目录外，重启后不会一下子补很多次。
+  const heartbeatFile = dirs => join(dirs.root, 'heartbeat.json');
+  async function heartbeatDue(dirs, at, timezone) {
+    const minute = minuteOf(at, timezone);
+    if (minute < toMinutes(heartbeat.from) || minute >= toMinutes(heartbeat.to)) return false;
+    let last = 0;
+    try { last = JSON.parse(await readFile(heartbeatFile(dirs), 'utf8')).at || 0; } catch { /* first time */ }
+    return at - last >= heartbeat.everyMs;
+  }
+
+  // 网站的闹钟：到点的闹钟先响（一个闹钟一条消息），再看要不要心跳（只给本人）。都推进各自的那段会话，不等它们做完。
+  async function handleTick(input) {
+    if (!Array.isArray(input.entries) || input.entries.length > 1000) fail(400, 'entries 无效');
+    const jobs = [];
+    for (const entry of input.entries) {
+      const scope = checkScope(entry);
+      checkId(entry.id);
+      checkCapability(entry.capability);
+      checkTimezone(entry.timezone);
+      jobs.push({scope, entry, ...checkModel(entry)});
+    }
+    for (const job of jobs) fire(job).catch(error => console.error('Agent service: tick entry failed:', error instanceof Error ? error.message : 'unknown'));
+    return {status: 202, body: {accepted: jobs.length}};
+  }
+
+  async function fire({scope, entry, provider, model, userKey}) {
+    const {id, capability, timezone} = entry;
+    const dirs = await ready(scope, id, capability);
+    const at = now(), base = {scope, id, capability, provider, model, userKey};
+    // 先记成响过，再推消息：同一个闹钟最多响一次（推的时候出错不重来，和「出错不自动重试」一致）。
+    for (const alarm of dueAlarms(dirs, at)) {
+      markFired(dirs, alarm, {now: at, timezone});
+      const late = at - Date.parse(alarm.at);
+      const text = (alarm.kind === 'reminder' ? reminderAlarmText(alarm.note) : selfAlarmText(alarm.note)) + (late > LATE_MS ? lateText(label(Date.parse(alarm.at), timezone), Math.round(late / 60000)) : '');
+      const message = {kind: 'alarm', channel: 'system', at: localISO(at, timezone), text};
+      deliver({...base, message, alarmKind: alarm.kind})
+        .then(result => report({capability, kind: 'alarm'}, result.outcome))
+        .catch(error => report({capability, kind: 'alarm'}, error?.status === 429 ? 'busy' : 'unavailable'));
+    }
+    if (scope.kind === 'owner' && entry.heartbeat === true && await heartbeatDue(dirs, at, timezone)) {
+      await writeFile(heartbeatFile(dirs), JSON.stringify({at}), {mode: 0o600});
+      const message = {kind: 'heartbeat', channel: 'system', at: localISO(at, timezone), text: heartbeatText(label(at, timezone))};
+      deliver({...base, message})
+        .then(result => report({capability, kind: 'heartbeat'}, result.outcome))
+        .catch(error => report({capability, kind: 'heartbeat'}, error?.status === 429 ? 'busy' : 'unavailable'));
+    }
+  }
+
+  // 网页读本子。第一次读时也会建本子（从网站导入以前的数据），所以要这个人的通行证。
+  async function handleNotebook(path, input) {
+    checkId(input.id);
+    checkCapability(input.capability);
+    const scope = scopeFor('owner');
+    return queue.run(`owner:${input.id}`, async () => {
+      let dirs;
+      try { dirs = await ready(scope, input.id, input.capability); }
+      catch { fail(503, '这个人的本子暂时没准备好'); }
+      if (path === '/notebook/read') {
+        if (input.since !== undefined && (typeof input.since !== 'string' || !DATE.test(input.since))) fail(400, 'since 无效');
+        return readNotebook(dirs, {since: input.since ?? ''});
+      }
+      if (path === '/notebook/check') {
+        if (typeof input.habitId !== 'string' || !input.habitId || typeof input.date !== 'string' || !DATE.test(input.date) || typeof input.done !== 'boolean') fail(400, '参数无效');
+        const out = setCompletion(dirs, {habitId: input.habitId, date: input.date, done: input.done, now: now()});
+        if (!out) fail(404, '没有这个习惯');
+        return {completion: out};
+      }
+      if (typeof input.alarmId !== 'string' || !input.alarmId) fail(400, '参数无效');
+      if (!cancelAlarm(dirs, input.alarmId)) fail(404, '没有这个闹钟，或者它已经结束了');
+      return {ok: true};
+    });
+  }
+
+  // 本人在网页上看 Weave 记了什么（她 11-03：按文件显示，文件名 + 原文，只读）。
   async function handleMemory(input) {
     const scope = checkScope(input);
     if (scope.kind !== 'owner') fail(400, '范围无效');
     checkId(input.id);
-    return {text: await workspace.readMemory(workspace.scopeDirs(dataDir, 'owner', input.id))};
+    const dirs = workspace.scopeDirs(dataDir, 'owner', input.id);
+    return {files: await workspace.readMemoryFiles(dirs, cwdFor(dirs))};
   }
 
   async function handleForget(input) {
     const scope = checkScope(input);
     checkId(input.id);
-    await queue.run(`${scope.kind}:${input.id}`, () => workspace.forget(dataDir, scope.kind, input.id));
+    const key = `${scope.kind}:${input.id}`;
+    await queue.run(key, async () => {
+      await live.close(key);
+      await workspace.forget(dataDir, scope.kind, input.id);
+    });
     return {ok: true};
   }
+
+  const ROUTES = {
+    '/message': [MESSAGE_LIMIT, handleMessage],
+    '/tick': [TICK_LIMIT, handleTick],
+    '/notebook/read': [JSON_LIMIT, input => handleNotebook('/notebook/read', input)],
+    '/notebook/check': [JSON_LIMIT, input => handleNotebook('/notebook/check', input)],
+    '/notebook/cancel-alarm': [JSON_LIMIT, input => handleNotebook('/notebook/cancel-alarm', input)],
+    '/memory': [JSON_LIMIT, handleMemory],
+    '/forget': [JSON_LIMIT, handleForget],
+  };
 
   const server = http.createServer(async (req, res) => {
     const reply = (status, data) => { res.writeHead(status, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}); res.end(JSON.stringify(data)); };
     const path = new URL(req.url, 'http://agent').pathname;
-    if (path === '/health' && req.method === 'GET') return reply(200, {ok: true});
-    if (req.method !== 'POST' || !['/wake', '/forget', '/memory'].includes(path)) return reply(404, {error: '未找到'});
+    if (path === '/health' && req.method === 'GET') return reply(200, {ok: true, live: live.size});
+    if (req.method !== 'POST' || !Object.hasOwn(ROUTES, path)) return reply(404, {error: '未找到'});
     if (!timingSafeEqual(digest(req.headers.authorization || ''), digest('Bearer ' + token))) return reply(401, {error: '未授权'});
     try {
-      const input = await readJson(req, path === '/wake' ? WAKE_LIMIT : JSON_LIMIT);
-      const handlers = {'/wake': handleWake, '/forget': handleForget, '/memory': handleMemory};
-      return reply(200, await handlers[path](input));
+      const [limit, handle] = ROUTES[path];
+      const out = await handle(await readJson(req, limit));
+      if (out && typeof out.status === 'number' && out.body) return reply(out.status, out.body);
+      return reply(200, out);
     } catch (error) {
       if (error.status) return reply(error.status, {error: error.message});
       console.error('Agent service error:', error instanceof Error ? error.message : 'unknown');
@@ -246,7 +387,12 @@ export async function createAgentService({
   });
   await new Promise(ok => server.listen(port, host, ok));
 
-  // 能接 /wake 了再开始敲：网站那边的后台叫醒会回头调这里的 /wake。默认关（0），只有入口按 AGENT_TICK_SECONDS 打开。
+  // 空闲太久的会话关掉，腾出内存；关在这个人的队列里，不会关在一轮中间。
+  const reaper = setInterval(() => {
+    for (const key of live.idleKeys()) queue.run(key, () => live.close(key)).catch(() => {});
+  }, 60_000);
+  reaper.unref();
+  // 能接 /message 了再开始敲：网站那边会回头调这里的 /tick。默认关（0），只有入口按 AGENT_TICK_SECONDS 打开。
   const ticker = tickEveryMs > 0 && weaveUrl ? createTicker({weaveUrl, token, fetcher}) : null;
   const tickTimer = ticker ? setInterval(ticker.beat, tickEveryMs) : null;
   // 闹钟本身不让进程一直活着。
@@ -255,9 +401,12 @@ export async function createAgentService({
   return {
     server,
     url: `http://${host}:${server.address().port}`,
+    live,
     async close() {
       clearInterval(tickTimer);
+      clearInterval(reaper);
       ticker?.stop();
+      await live.closeAll();
       server.closeAllConnections(); proxyServer.closeAllConnections();
       await Promise.all([new Promise(r => server.close(r)), new Promise(r => proxyServer.close(r))]);
     },

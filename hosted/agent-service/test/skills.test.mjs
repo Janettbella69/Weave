@@ -1,13 +1,12 @@
-// Every skill a scope lists has its SKILL.md in the plugin, with the same frontmatter name. The proactive-judgment
-// text names tools and snapshot tables; this keeps those names real, so a rename on either side shows up here.
+// Every skill a scope lists has its SKILL.md in the plugin, with the same frontmatter name. The weekly-review text names
+// the notebook file, a table and its script; this keeps those names real, so a rename on either side shows up here.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {SCOPES, scopeFor} from '../scopes.mjs';
-import {TOOL_DEFS} from '../mcp/tools.mjs';
-import {TABLES} from '../snapshot.mjs';
+import {NOTEBOOK_FILE, SCHEMA} from '../notebook.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('../plugin', import.meta.url));
 const PLUGIN_NAME = JSON.parse(readFileSync(join(PLUGIN_DIR, '.claude-plugin/plugin.json'), 'utf8')).name;
@@ -18,7 +17,7 @@ const frontmatter = text => {
 
 test('范围里列的每个 Skill 都有 SKILL.md，frontmatter 的 name 和名单对得上', () => {
   const listed = Object.values(SCOPES).flatMap(scope => [...scope.skills]);
-  assert.ok(listed.includes('weave:proactive-judgment') && listed.includes('weave:weekly-review'), listed.join(', '));
+  assert.deepEqual(listed, ['weave:weekly-review']);
   for (const full of listed) {
     const [plugin, name] = full.split(':');
     assert.equal(plugin, PLUGIN_NAME, full);
@@ -28,16 +27,10 @@ test('范围里列的每个 Skill 都有 SKILL.md，frontmatter 的 name 和名�
   }
 });
 
-test('proactive-judgment：description 是架构文档第 5 节那句；正文提到的工具都在 owner 范围里，表都在快照里', () => {
-  const text = readFileSync(join(PLUGIN_DIR, 'skills/proactive-judgment/SKILL.md'), 'utf8');
-  assert.deepEqual(frontmatter(text), {name: 'proactive-judgment', description: '被定时或事件叫醒，要决定现在值不值得开口时使用。'});
-  for (const tool of ['send_message', 'schedule_wake', 'cancel_schedule']) {
-    assert.ok(text.includes(tool), tool);
-    assert.ok(scopeFor('owner').tools.includes(tool) && Object.hasOwn(TOOL_DEFS, tool), tool);
-  }
-  for (const table of ['habits', 'completions', 'goals', 'schedules', 'proactive_settings']) {
-    assert.ok(text.includes(table), table);
-    assert.ok(Object.hasOwn(TABLES, table), table);
-  }
-  assert.ok(!scopeFor('group').skills.includes('weave:proactive-judgment'), '群里没有这个 Skill');
+test('weekly-review：读的是本子 records.db 的 completions 表，参考脚本在；群里没有这个 Skill', () => {
+  const text = readFileSync(join(PLUGIN_DIR, 'skills/weekly-review/SKILL.md'), 'utf8');
+  assert.ok(text.includes(NOTEBOOK_FILE) && !text.includes('weave/weave.db'), text);
+  assert.ok(text.includes('completions') && SCHEMA.includes('CREATE TABLE IF NOT EXISTS completions'));
+  assert.ok(existsSync(join(PLUGIN_DIR, 'skills/weekly-review/scripts/stats.py')));
+  assert.ok(!scopeFor('group').skills.includes('weave:weekly-review'));
 });

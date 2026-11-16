@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """weekly-review 的参考代码：数完成次数和连续天数。数字以这里为准，Agent 不要自己心算。
 
-用法：python3 stats.py <weave.db 或 记录文件.json> [--today YYYY-MM-DD]
+用法：python3 stats.py <records.db 或 记录文件.json> [--today YYYY-MM-DD]
 
-weave.db 是叫醒前的数据快照（SQLite）：读 completions，习惯名取 habits，今天取 meta 表的 today，
+records.db 是这个人的本子（SQLite）：读 completions，习惯名取 habits（有 meta 表时今天取它的 today），
 没有完成记录的习惯也列出来。JSON 文件可以是 {"today": ..., "completions": [...]}，也可以直接是一个列表。
 今天依次取 --today、数据里的 today、系统日期。今天还没记不打断连续天数，昨天也没记才断。
 只用标准库，兼容 Python 3.9。

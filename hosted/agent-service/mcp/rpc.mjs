@@ -3,7 +3,9 @@
 // 草稿文案，待确认。
 export const UNCERTAIN = '这一步的结果不确定（可能没有执行，也可能已经执行），不要重复调用，如实告诉对方。';
 
-export function toolBackend({weaveUrl, capability, fetcher = fetch, timeoutMs = 15000}) {
+// turn：这一条消息是什么（{kind, alarmKind}），网站据此知道 Weave 这句话是回对方的、对方让设的提醒，还是它主动开口
+// （主动开口时才问 Jev，docs/ARCHITECTURE.md「主动性」）。它来自 Agent 服务自己（不是模型），和通行证一起发。
+export function toolBackend({weaveUrl, capability, turn = null, fetcher = fetch, timeoutMs = 15000}) {
   const base = weaveUrl.replace(/\/+$/, '');
   return async (name, args, toolUseId) => {
     try {
@@ -11,7 +13,7 @@ export function toolBackend({weaveUrl, capability, fetcher = fetch, timeoutMs = 
         method: 'POST',
         redirect: 'manual',
         headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + capability},
-        body: JSON.stringify({args, toolUseId}),
+        body: JSON.stringify({args, toolUseId, ...(turn ? {turn} : {})}),
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.status !== 200) return {ok: false, text: UNCERTAIN};
