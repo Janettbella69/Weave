@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {Store} from '../hosted/lib/weave/store.mjs';
 import {setup, ok, until, SERVICE_TOKEN} from './helpers/wechat-sdk.mjs';
 import {checkTimes, quietReason, limitsFor, runProactive, publicActivity} from '../hosted/lib/weave/proactive.mjs';
-import {JEV_URL, JEV_MODEL, jevConfig} from '../hosted/lib/weave/jev.mjs';
+import {JEV_URL, JEV_MODEL, OPENROUTER_JEV_URL, askJev, jevConfig} from '../hosted/lib/weave/jev.mjs';
 import {SERVICE, secret as SECRET} from './helpers/wechat-sdk.mjs';
 import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {following, nextAfter, zonedTime, localParts} from '../hosted/lib/weave/repeat.mjs';
@@ -354,9 +354,52 @@ test('jevConfig：没配 Key、Key 太短或带空格就不启用；默认钉 je
   assert.equal(jevConfig({}), null);
   assert.equal(jevConfig({TYPESAFE_API_KEY: 'short'}), null);
   assert.equal(jevConfig({TYPESAFE_API_KEY: 'has space ' + 'x'.repeat(20)}), null);
-  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY}), {key: JEV_KEY, model: 'jev-1.14.0', threshold: 0.5});
-  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '0.7', JEV_MODEL: 'jev-latest'}), {key: JEV_KEY, model: 'jev-latest', threshold: 0.7});
-  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '7', JEV_MODEL: 'gpt; rm -rf'}), {key: JEV_KEY, model: 'jev-1.14.0', threshold: 0.5});
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY}), {key: JEV_KEY, url: JEV_URL, model: 'jev-1.14.0', threshold: 0.5});
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '0.7', JEV_MODEL: 'jev-latest'}), {key: JEV_KEY, url: JEV_URL, model: 'jev-latest', threshold: 0.7});
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, JEV_THRESHOLD: '7', JEV_MODEL: 'gpt; rm -rf'}), {key: JEV_KEY, url: JEV_URL, model: 'jev-1.14.0', threshold: 0.5});
+});
+
+test('jevConfig：TYPESAFE_BASE_URL 设成 OpenRouter 就经 OpenRouter 调（默认 typesafe/jev-1.14）；只认 TypeSafe 和 OpenRouter 两个地址，别的地址不启用', () => {
+  const viaOpenRouter = {key: JEV_KEY, url: OPENROUTER_JEV_URL, model: 'typesafe/jev-1.14', threshold: 0.5};
+  assert.equal(OPENROUTER_JEV_URL, 'https://openrouter.ai/api/v1/systemone');
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: 'https://openrouter.ai/api'}), viaOpenRouter);
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: ' https://openrouter.ai/api/ '}), viaOpenRouter, '前后空格和末尾的斜杠不算');
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: 'https://openrouter.ai/api', JEV_MODEL: 'typesafe/jev-1.13'}), {...viaOpenRouter, model: 'typesafe/jev-1.13'});
+  const direct = {key: JEV_KEY, url: JEV_URL, model: 'jev-1.14.0', threshold: 0.5};
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: ''}), direct);
+  assert.deepEqual(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: 'https://api.typesafe.ai'}), direct);
+  for (const base of ['http://openrouter.ai/api', 'https://openrouter.ai', 'https://openrouter.ai/api/v1', 'https://evil.example/api', 'constructor', '__proto__']) {
+    assert.equal(jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: base}), null, base);
+  }
+});
+
+test('经 OpenRouter 问 Jev：发到 OpenRouter 的 System One 地址，带 OpenRouter 的 Key 和 typesafe/ 模型名；这一次的花费（usage.cost）记进日志', async () => {
+  const s = await harness();
+  s.setNow(at(1, '10:00')); await s.active();
+  const key = 'sk-or-v1-' + 'a'.repeat(64), calls = [];
+  const fetcher = async (url, options) => {
+    if (url === OPENROUTER_JEV_URL) {
+      calls.push({auth: options.headers.Authorization, body: JSON.parse(options.body)});
+      return Response.json({id: 'gen-1', provider: 'TypeSafe', model: 'typesafe/jev-1.14', answers: {reach_out: {type: 'noul', noul: 0.3}}, usage: {prompt_tokens: 410, completion_tokens: 0, cost: 0.0000172}});
+    }
+    throw Error('unexpected fetch ' + url);
+  };
+  const jev = jevConfig({TYPESAFE_API_KEY: key, TYPESAFE_BASE_URL: 'https://openrouter.ai/api'});
+  assert.equal(await runProactive({db: s.db, secret: SECRET, service: {url: SERVICE, token: SERVICE_TOKEN}, fetcher, now: s.now, jev}), 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].auth, 'Bearer ' + key);
+  assert.deepEqual([calls[0].body.model, Object.keys(calls[0].body).sort()], ['typesafe/jev-1.14', ['model', 'questions', 'state']]);
+  assert.equal(calls[0].body.questions.reach_out.type, 'noul');
+  const p = await s.person();
+  assert.deepEqual({...p.proactive.log.at(-1), at: 0}, {at: 0, kind: 'check', scheduleId: null, outcome: 'jev-quiet', spoke: false, jev: {noul: 0.3, model: 'typesafe/jev-1.14', threshold: 0.5, cost: 0.0000172}});
+});
+
+test('askJev：花费只认非负的数字；缺、字符串、负数都不记', async () => {
+  const config = jevConfig({TYPESAFE_API_KEY: JEV_KEY, TYPESAFE_BASE_URL: 'https://openrouter.ai/api'});
+  for (const [usage, extra] of [[{cost: 0.00002}, {cost: 0.00002}], [{cost: 0}, {cost: 0}], [{cost: 'free'}, {}], [{cost: -1}, {}], [undefined, {}]]) {
+    const fetcher = async () => Response.json({model: 'typesafe/jev-1.14', answers: {reach_out: {type: 'noul', noul: 0.6}}, ...(usage ? {usage} : {})});
+    assert.deepEqual(await askJev(config, {}, {fetcher}), {noul: 0.6, model: 'typesafe/jev-1.14', ...extra}, JSON.stringify(usage));
+  }
 });
 
 test('Jev 说不值得（低于阈值）：这次不叫醒 Weave，记成 jev-quiet，不占今天的后台次数；请求格式按官方文档，状态里没有聊天原文', async () => {

@@ -34,7 +34,7 @@ Weave 是一个帮人坚持习惯的个人助理（Personal Agent）。你在网
 - **档位：** 关、低、中、高。在聊天里说一句就能调，也可以在助理主页的「提醒」栏点「多找我一点」「少找我一点」「别主动找我」。关掉以后，你让设的提醒照常响。
 - **不打扰：** 只在允许的时段里找你（默认 09:00–21:00，按你的时区）。每天主动说的话有上限，低 1 句、中 2 句、高 4 句。连着两句主动的话送到了你却没回（没送到的不算），或者 7 天没来，就先不定期看看，你说一句话就恢复。
 - **晚了就不发：** 主动消息和提醒，比本该送到的时间晚了 2 小时还没发到微信（比如放微信桥接的电脑睡着了），就不发了，网页聊天里照样留着。
-- **Jev 先打分：** 后台叫醒 Weave 之前，先问决策模型 Jev 现在值不值得找你。低于阈值（默认 0.5）这次就不叫醒，也省下这一轮的钱。服务器配了 `TYPESAFE_API_KEY` 才启用；没配或者连不上，就交给 Weave 自己判断。你让设的提醒不经过 Jev。
+- **Jev 先打分：** 后台叫醒 Weave 之前，先问决策模型 Jev 现在值不值得找你。低于阈值（默认 0.5）这次就不叫醒，也省下这一轮的钱。服务器配了 `TYPESAFE_API_KEY` 才启用（TypeSafe 自己的 Key，或者 OpenRouter 的 Key 再加 `TYPESAFE_BASE_URL=https://openrouter.ai/api`）；没配或者连不上，就交给 Weave 自己判断。经 OpenRouter 时，每次打分花了多少钱也记在主动服务的日志里。你让设的提醒不经过 Jev。
 - **发到哪：** 都会出现在网页的聊天里；绑了微信的，同时发到微信。
 
 这些次数和阈值都是草稿数字。设计见 [`docs/superpowers/specs/2026-11-03-proactive-wake-design.md`](docs/superpowers/specs/2026-11-03-proactive-wake-design.md)。
@@ -147,7 +147,7 @@ DeepSeek，默认 `deepseek-flash`，也支持 `deepseek-v4-pro`，走 DeepSeek 
 - **加密保存的：** 模型 Key、Notion 授权令牌、微信号、打卡群的消息记录（AES-GCM）。
 - **Agent 服务：** 每个用户一个工作目录（`MEMORY.md`、`HANDOFF.md`、笔记、当天的会话），在服务器上。
 - **DeepSeek：** 你的消息、`MEMORY.md`、`HANDOFF.md` 和这一轮查到的数据，会发给它来生成回复。
-- **Jev（TypeSafe，可选）：** 配了才用。后台叫醒前发给它的是整理过的事实：习惯名和今天做没做、最近 7 天做了几次、跟进的备忘、今天主动说了几句、你多久没说话、有几句主动的话还没回。不发聊天原文。
+- **Jev（TypeSafe，可选）：** 配了才用。后台叫醒前发给它的是整理过的事实：在追踪的目标名；每个习惯的名字、触发时机、最小一步、今天做没做、最近 7 天做了几次；跟进的备忘；当地时间和允许打扰的时段；今天主动说了几句、你多久没说话、有几句主动的话还没回。不发聊天原文。经 OpenRouter 调用时，这些先发到 OpenRouter，再由它转给 TypeSafe。
 - **导出和删除：** 设置里能导出你在网站里的数据。删除账号会先删掉 Agent 的工作目录（包括你开启过的打卡群的），删不掉就不注销。
 
 完整说明在网站的[隐私说明](https://weave.azorashopping.site/privacy)页面。
@@ -226,7 +226,7 @@ CI（`.github/workflows`）在每个 PR 上跑这些，另外还跑：容器契�
 
 - **`WEAVE_ENCRYPTION_KEY` 要备份**（在 `web.env` 里）。丢了，之前存的 Key 和令牌都解不开。
 - **`wrangler dev` 不跑 Cloudflare 的定时任务（Cron），所以分两路。** 到点的提醒、跟进和定期看看，由 Agent 服务的闹钟触发（`AGENT_TICK_SECONDS`，默认 60，0 是关掉），不靠 Mac。微信消息由 Mac 上的微信桥接每分钟调一次 `/api/internal/wechat/tick`（桥接设 `WEAVE_TICK=1`）。网页开着时，每次请求也会把到点的提醒送进聊天和通知。
-- **Jev 是可选的。** 在 `web.env` 里加 `TYPESAFE_API_KEY` 才启用，可选的还有 `JEV_THRESHOLD`、`JEV_MODEL`，见 [`deploy/tencent/README.md`](deploy/tencent/README.md) 的「主动提醒和 Jev」。
+- **Jev 是可选的。** 在 `web.env` 里加 `TYPESAFE_API_KEY` 才启用；用 OpenRouter 的 Key 时再加 `TYPESAFE_BASE_URL=https://openrouter.ai/api`（`deploy/tencent/set-jev-key.sh` 两行一起写）。可选的还有 `JEV_THRESHOLD`、`JEV_MODEL`，见 [`deploy/tencent/README.md`](deploy/tencent/README.md) 的「主动提醒和 Jev」。
 - **数据库每次读取全部用户的数据**，只适合早期规模。
 - **连接器要另外配。** `setup-env.sh` 不写这几项：Notion 要在 `web.env` 里加 `NOTION_OAUTH_CLIENT_ID`、`NOTION_OAUTH_CLIENT_SECRET`、`NOTION_PUBLIC_ORIGIN`，并在 Notion 的集成里登记回调地址 `<站点>/api/connections/notion/callback`（见 [`hosted/README.md`](hosted/README.md) 的 Notion 一节）；微信的桥接令牌由 Mac 上的 `deploy/wechat-mac/set-token.sh` 通过 `deploy/tencent/set-wechat-token.sh` 写进去。
 
