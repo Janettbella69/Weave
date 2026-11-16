@@ -7,8 +7,6 @@
     "dev": "npm --prefix hosted run dev",
     "start": "npm --prefix hosted start",
     "test": "node --test 'test/*.test.mjs'",
-    "test:e2e": "node scripts/smoke-weave.mjs",
-    "demo": "node --env-file-if-exists=.env server.mjs",
     "product:build": "npm --prefix hosted run build",
     "product:install": "npm --prefix hosted ci"
   },
