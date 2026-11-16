@@ -4,7 +4,6 @@
 //   POST /forget  注销时删掉这个人的工作目录和会话记录。
 //   POST /memory  读本人的 MEMORY.md，给网页看。
 //   GET  /health
-//   POST /query   旧路，第 2 步删（runtime.mjs）。
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
 // 服务器自己的闹钟也在这里：每隔 AGENT_TICK_SECONDS 秒 POST 一次网站的 /api/internal/tick（createTicker）。
 import http from 'node:http';
@@ -13,7 +12,6 @@ import {mkdir, chmod, rm} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {query} from '@anthropic-ai/claude-agent-sdk';
-import {runAgent} from './runtime.mjs';
 import {scopeFor} from './scopes.mjs';
 import {providerFor, modelAllowed} from './providers.mjs';
 import {renderTrigger} from './prompts.mjs';
@@ -156,7 +154,6 @@ export async function createAgentService({
     proxyInfo = {url: `http://127.0.0.1:${proxyServer.address().port}`};
   }
   const queue = createRunQueue({maxConcurrent});
-  let legacyActive = 0;
 
   async function handleWake(input) {
     const {scope, provider, background, photo, close} = checkWake(input);
@@ -235,15 +232,8 @@ export async function createAgentService({
     const reply = (status, data) => { res.writeHead(status, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'}); res.end(JSON.stringify(data)); };
     const path = new URL(req.url, 'http://agent').pathname;
     if (path === '/health' && req.method === 'GET') return reply(200, {ok: true});
-    if (req.method !== 'POST' || !['/wake', '/forget', '/memory', '/query'].includes(path)) return reply(404, {error: '未找到'});
+    if (req.method !== 'POST' || !['/wake', '/forget', '/memory'].includes(path)) return reply(404, {error: '未找到'});
     if (!timingSafeEqual(digest(req.headers.authorization || ''), digest('Bearer ' + token))) return reply(401, {error: '未授权'});
-    if (path === '/query') {
-      if (legacyActive >= 4) return reply(429, {error: 'Agent 服务繁忙'});
-      legacyActive++;
-      try { return reply(200, {output: await runAgent(await readJson(req, 32000), queryFn)}); }
-      catch { return reply(502, {error: 'Agent 生成失败，请重试'}); }
-      finally { legacyActive--; }
-    }
     try {
       const input = await readJson(req, path === '/wake' ? WAKE_LIMIT : JSON_LIMIT);
       const handlers = {'/wake': handleWake, '/forget': handleForget, '/memory': handleMemory};

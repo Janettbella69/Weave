@@ -75,8 +75,8 @@ test('服务器的闹钟：令牌不对 401；没配 Agent 服务 503；对了 2
   await s.tick();
   assert.equal(s.wakes().length, 1, '桥接的 tick 照旧回');
   assert.equal(await basicAuthGate(new Request('https://weave.example/api/internal/tick', {method: 'POST'}), 'me:pw'), null);
-  const legacy = await setup({runtime: ''});
-  assert.equal((await legacy.call(null, 'internal/tick', {}, {Authorization: 'Bearer ' + SERVICE_TOKEN})).status, 503);
+  const unconfigured = await setup({configured: false});
+  assert.equal((await unconfigured.call(null, 'internal/tick', {}, {Authorization: 'Bearer ' + SERVICE_TOKEN})).status, 503);
 });
 
 test('定期看看：10:00 叫醒一次（后台、system、不是直接找它），没说话就什么都没发；同一个点不醒第二次；晚了 2 小时以上不补', async () => {

@@ -6,7 +6,7 @@ import {handleAPI} from '../hosted/lib/weave/api.mjs';
 import {ensurePerson} from '../hosted/lib/weave/domain.mjs';
 import {hash,seal} from '../hosted/lib/weave/crypto.mjs';
 import {runScheduled} from '../hosted/lib/weave/scheduler.mjs';
-import {groupRecord} from '../hosted/lib/weave/wechat.mjs';
+import {groupRecord,groupSnapshotMessages} from '../hosted/lib/weave/wechat.mjs';
 
 const secret='ab'.repeat(32),token='bridge-token-'+'x'.repeat(32),wechat={token};
 const start=Date.parse('2030-01-01T00:00:00Z'),ROOM='123456@chatroom';
@@ -21,19 +21,19 @@ async function setup(){
   const read=()=>new Store(db).load();
   return {db,id,call,bridge,message,group,bind,read,setNow(v){now=v;},get now(){return now;}};
 }
-// A model stub: records what the group prompt actually received.
+// The Agent service stub: every /wake is recorded in `seen` and answered with `reply`. Messages are answered by waking the Agent.
+const SERVICE='https://agent.test',SERVICE_TOKEN='t'.repeat(40);
 function schedule(h,reply='收到',seen=[]){
-  const fetcher=async(_url,options)=>{const b=JSON.parse(options.body);seen.push(b);return Response.json({content:[{type:'text',text:reply}],stop_reason:'end_turn'});};
-  return runScheduled({db:h.db,secret,env:{WECHAT_BRIDGE_TOKEN:token},agentProviderApiKey:'managed-provider-key',fetcher,now:h.now});
+  const fetcher=async(url,options)=>{if(!String(url).startsWith(SERVICE))throw Error('unexpected fetch '+url);seen.push({path:new URL(url).pathname,body:JSON.parse(options.body)});return Response.json({outcome:'success',reply,sessionId:'s-1',tools:[]});};
+  return runScheduled({db:h.db,secret,env:{WECHAT_BRIDGE_TOKEN:token},agentServiceUrl:SERVICE,agentServiceToken:SERVICE_TOKEN,fetcher,now:h.now});
 }
 
-test('the tick endpoint needs the bridge token and does the scheduled work',async()=>{
+test('the tick endpoint needs the bridge token; without an Agent service the message stays queued',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.message('你好'));
   assert.equal((await h.call(null,'internal/wechat/tick',{})).status,401);
   const r=await h.bridge('tick',{});
-  // No model is configured in this harness, so the message is attempted and recorded as uncertain.
-  assert.equal(r.status,200);assert.equal(r.data.processed,1);
-  assert.equal(Object.values((await h.read()).wechat).filter(x=>x.direction==='inbound'&&x.status==='queued').length,0);
+  assert.equal(r.status,200);assert.equal(r.data.processed,0);
+  assert.equal(Object.values((await h.read()).wechat).filter(x=>x.direction==='inbound'&&x.status==='queued').length,1);
 });
 test('bridge endpoints reject a missing or wrong token',async()=>{
   const h=await setup();
@@ -119,8 +119,8 @@ test('a duplicate group event is not stored twice',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));
   const m=h.group('wxid-bob','一条消息');await h.bridge('events',m);
   assert.equal((await h.bridge('events',m)).data.duplicate,true);
-  const seen=[];await h.bridge('events',h.group('wxid-bob','@助理 怎么样',true));await schedule(h,'好',seen);
-  const prompt=JSON.stringify(seen[0]);assert.equal(prompt.split('一条消息').length-1,1);
+  const rows=await groupSnapshotMessages(await h.read(),{groupId:await hash(ROOM),ownerId:h.id,secret});
+  assert.equal(rows.filter(r=>r.text==='一条消息').length,1);
 });
 test('「别记」messages are not stored and do not trigger a reply',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));
@@ -128,26 +128,6 @@ test('「别记」messages are not stored and do not trigger a reply',async()=>{
   assert.equal((await h.bridge('events',h.group('wxid-bob','@助理 别记 我今天情绪很差',true))).data.skipped,true);
   const seen=[];await h.bridge('events',h.group('wxid-bob','@助理 今天如何',true));await schedule(h,'好',seen);
   assert.ok(!JSON.stringify(seen).includes('情绪很差'));
-});
-test('a group reply sees only the group: never private memory, ids or other groups',async()=>{
-  const h=await setup();await h.bind();
-  const store=new Store(h.db),world=await store.load();world.people[h.id].profile.goal='PRIVATE_GOAL_减到50公斤';world.people[h.id].checkins.push({id:'c',text:'PRIVATE_FEEDBACK',createdAt:new Date(start).toISOString()});await store.save(world);
-  await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));
-  await h.bridge('events',h.group('wxid-bob','今天走了八千步'));
-  await h.bridge('events',h.group('wxid-alice','@助理 我们这周怎么样',true));
-  const seen=[];assert.equal((await schedule(h,'你们这周都在坚持',seen)).processed,1);
-  const prompt=JSON.stringify(seen[0]);
-  assert.match(prompt,/八千步/);assert.match(prompt,/这周怎么样/);
-  for(const secretText of ['PRIVATE_GOAL','PRIVATE_FEEDBACK','wxid-bob','wxid-alice'])assert.ok(!prompt.includes(secretText),secretText);
-  await h.bridge('claim',{});
-});
-test('a group reply mentions the asker and is not written into personal memory',async()=>{
-  const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));await h.bridge('claim',{});
-  await h.bridge('events',h.group('wxid-bob','@助理 今天怎么样',true));await schedule(h,'今天不错');
-  const job=(await h.bridge('claim',{})).data.jobs.find(j=>j.text==='今天不错');
-  assert.equal(job.threadId,ROOM);assert.deepEqual(job.mentions,{userIds:['wxid-bob']});
-  const person=(await h.read()).people[h.id];
-  assert.ok(!JSON.stringify(person.messages).includes('今天不错'));assert.ok(!JSON.stringify(person.messages).includes('今天怎么样'));
 });
 test('after sending, group text is scrubbed from the queue',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));await h.bridge('claim',{});
@@ -178,6 +158,6 @@ test('group replies have no daily cap: every @ in one day is queued',async()=>{
 test('group context stays bounded',async()=>{
   const h=await setup();await h.bind();await h.bridge('events',h.group('wxid-alice','@助理 开启打卡群',true));
   for(let i=0;i<60;i++)await h.bridge('events',h.group('wxid-bob','消息'+i));
-  const seen=[];await h.bridge('events',h.group('wxid-bob','@助理 总结',true));await schedule(h,'好',seen);
-  const prompt=JSON.stringify(seen[0]);assert.ok(!prompt.includes('消息0"'));assert.ok(prompt.includes('消息59'));
+  const rows=await groupSnapshotMessages(await h.read(),{groupId:await hash(ROOM),ownerId:h.id,secret});
+  assert.ok(rows.length<60);assert.ok(!rows.some(r=>r.text==='消息0'));assert.ok(rows.some(r=>r.text==='消息59'));
 });

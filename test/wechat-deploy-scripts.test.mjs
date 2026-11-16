@@ -174,11 +174,12 @@ test('server script: a token that is too short or has odd characters changes not
   } finally { box.done(); }
 });
 
-test('server script: warns when web.env does not turn the Agent SDK on, and refuses when web.env is missing', () => {
+test('server script: refuses when web.env is missing', () => {
   const box = serverBox('A=1\n');
   try {
     const r = runServer(box, GOOD + '\n', {WEAVE_SKIP_DEPLOY: '1'});
-    assert.match(r.stdout, /WEAVE_AGENT_RUNTIME=sdk/);
+    assert.equal(r.status, 0);
+    assert.doesNotMatch(r.stdout, /WEAVE_AGENT_RUNTIME/);
     rmSync(box.webEnv);
     const missing = runServer(box, GOOD + '\n', {WEAVE_SKIP_DEPLOY: '1'});
     assert.notEqual(missing.status, 0);

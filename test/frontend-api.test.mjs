@@ -100,12 +100,12 @@ test('a connection the server finished by itself is recognised, and asked about 
   assert.deepEqual(await waitForNotionPages(async()=>({ready:true,pages:[{id:'a',title:'b'}]}),{sleep,isConnected}),{pages:[{id:'a',title:'b'}]});
 });
 
-test('a status answer is only used when it has what the workspace shows; friend lists may be missing',()=>{
-  const real={profile:{name:'Me',timezone:'Asia/Shanghai',slots:[],activities:['散步']},settings:{agent:true},messages:[],plans:[],checkins:[],calendar:[],reminders:[],notifications:[],people:[],invites:[],negotiations:[]};
+test('a status answer is only used when it has what the workspace shows; the habit lists may be missing',()=>{
+  const real={profile:{name:'Me',timezone:'Asia/Shanghai',slots:[],activities:['散步']},settings:{agent:true},messages:[],plans:[],checkins:[],reminders:[],notifications:[]};
   assert.deepEqual(normalizeStatus(real),{...real,goals:[],habits:[],completions:[],today:''},'what an older server does not send is filled in');
   const slim={profile:{name:'Me',timezone:'UTC'},settings:{},messages:[],plans:[],checkins:[],reminders:[],notifications:[]};
   const filled=normalizeStatus(slim);
-  assert.deepEqual([filled.people,filled.invites,filled.negotiations,filled.calendar,filled.profile.slots,filled.profile.activities,filled.goals,filled.habits,filled.completions],[[],[],[],[],[],[],[],[],[]]);
+  assert.deepEqual([filled.profile.slots,filled.profile.activities,filled.goals,filled.habits,filled.completions],[[],[],[],[],[]]);
   assert.equal(filled.today,'');
   for(const bad of [null,undefined,{},[],'x',{...real,settings:undefined},{...real,messages:null},{...real,reminders:'no'},{...real,profile:{timezone:'UTC'}},{...real,profile:{name:'x'}}])assert.equal(normalizeStatus(bad),null);
 });

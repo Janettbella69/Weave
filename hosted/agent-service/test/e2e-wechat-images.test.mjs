@@ -40,7 +40,7 @@ async function start() {
     token: TOKEN, dataDir, isolation: 'local', sandbox: false, weaveUrl: `http://127.0.0.1:${server.address().port}`,
     keys: {deepseek: 'real-key'}, upstreams: {deepseek: fake.baseUrl}, limits: {perAccount: 1e9, total: 1e10},
   });
-  const options = () => ({db, secret, wechat: {token: BRIDGE, images: true}, agentServiceUrl: agent.url, agentServiceToken: TOKEN, agentRuntime: 'sdk'});
+  const options = () => ({db, secret, wechat: {token: BRIDGE, images: true}, agentServiceUrl: agent.url, agentServiceToken: TOKEN});
   const web = async (path, data) => (await handleAPI(new Request('https://weave.test/api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://weave.test'}, body: JSON.stringify(data)}), {...options(), identity: {userId: 'alice', displayName: 'Alice', email: 'alice@example.test'}})).json();
   // The bridge with its own switch on says so on every request (X-Weave-Photos: on).
   const bridge = async (path, data) => (await handleAPI(new Request('https://weave.test/api/internal/wechat/' + path, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + BRIDGE, 'X-Weave-Photos': 'on'}, body: JSON.stringify(data)}), options())).json();

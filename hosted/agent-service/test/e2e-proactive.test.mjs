@@ -44,7 +44,7 @@ async function start() {
     token: TOKEN, dataDir, isolation: 'local', sandbox: false, weaveUrl: `http://127.0.0.1:${server.address().port}`,
     keys: {deepseek: 'real-key'}, upstreams: {deepseek: fake.baseUrl}, limits: {perAccount: 1e9, total: 1e10},
   });
-  const options = () => ({db, secret, agentServiceUrl: agent.url, agentServiceToken: TOKEN, agentRuntime: 'sdk'});
+  const options = () => ({db, secret, agentServiceUrl: agent.url, agentServiceToken: TOKEN});
   // 服务器的闹钟：Agent 服务平时每分钟自己来敲（AGENT_TICK_SECONDS），这里手动敲一次。
   const serverTick = async () => (await handleAPI(new Request('https://weave.test/api/internal/tick', {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN}, body: '{}'}), options())).json();
   return {

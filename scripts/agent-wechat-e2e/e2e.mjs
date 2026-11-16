@@ -1,5 +1,5 @@
 // End to end: real agent-wechat hub + simulated WeChat upstream + the real bridge + real Weave code.
-// Weave runs on the Agent SDK path (WEAVE_AGENT_RUNTIME=sdk). Only the Agent service is faked: it records
+// Weave runs on the Agent SDK path. Only the Agent service is faked: it records
 // each /wake and /forget Weave sends and answers with a canned reply. See README.md in this folder for the simulator setup.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
@@ -62,7 +62,7 @@ try{
   };
   const weave=async(path,body)=>{
     if(path==='events'&&body.createdAt)now=Math.max(now,Date.parse(body.createdAt)+1000);
-    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},agentRuntime:'sdk',agentServiceUrl:AGENT,agentServiceToken:AGENT_TOKEN,fetcher:fakeAgent,now});
+    const r=await handleAPI(new Request('https://weave.example/api/internal/wechat/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+bridgeToken},body:JSON.stringify(body)}),{db,secret,identity:null,wechat:{token:bridgeToken},agentServiceUrl:AGENT,agentServiceToken:AGENT_TOKEN,fetcher:fakeAgent,now});
     if(!r.ok)throw Error('weave '+path+' '+r.status+' '+await r.text());
     const result=await r.json();if(path==='events'){forwarded.push({message:body,result});lastResult=result;}return result;
   };

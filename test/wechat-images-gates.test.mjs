@@ -14,7 +14,7 @@ const photoRows = h => { try { return h.db.sql.prepare('SELECT COUNT(*) AS n FRO
 const tableExists = h => !!h.db.sql.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='weave_wechat_photos'").get();
 const groupRecord = async h => (await h.read()).runtime['wechat-group:' + await hash(ROOM)];
 const groupTexts = jobs => jobs.filter(j => j.threadId === ROOM).map(j => j.text);
-const ENV_ON = {WEAVE_WECHAT_IMAGES: '1', WEAVE_AGENT_RUNTIME: 'sdk'};
+const ENV_ON = {WEAVE_WECHAT_IMAGES: '1'};
 
 test('server on, Mac off: no photo sentence, no hints, nothing held or stored, and the privacy line stays hidden', async () => {
   const h = await setup({images: true, bridgePhotos: false});
@@ -43,7 +43,7 @@ test('the Mac\'s word: X-Weave-Photos turns photos on (written at most once a mi
   const first = (await h.read()).runtime['runtime:wechat-photos'];
   assert.equal(first.seenAt, h.now);
   assert.equal(await wechatPhotosShown({env: ENV_ON, db: h.db, now: h.now}), true);
-  for (const env of [{}, {WEAVE_WECHAT_IMAGES: '1'}, {WEAVE_WECHAT_IMAGES: '0', WEAVE_AGENT_RUNTIME: 'sdk'}]) assert.equal(await wechatPhotosShown({env, db: h.db, now: h.now}), false, JSON.stringify(env));
+  for (const env of [{}, {WEAVE_WECHAT_IMAGES: '0'}]) assert.equal(await wechatPhotosShown({env, db: h.db, now: h.now}), false, JSON.stringify(env));
   h.setNow(h.now + 30_000);
   await h.bridge('claim', {});
   assert.equal((await h.read()).runtime['runtime:wechat-photos'].seenAt, first.seenAt, 'not rewritten within the minute');
