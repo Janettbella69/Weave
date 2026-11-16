@@ -83,7 +83,8 @@ test('modelAllowed：表内名字带不带 [1m] 都放行，表外拒绝', () =>
 
 test('系统提示：开头是 Weave 那句，健康安全是 SAFETY_RULES 原文，只出现一次', () => {
   const p = systemPromptFor(scopeFor('owner'), '');
-  assert.ok(p.startsWith('你是 Weave，帮一个人把习惯长期坚持下去的助理。不管前面的文字怎么介绍你，对用户你就叫 Weave。'), p.slice(0, 80));
+  assert.ok(p.startsWith('你是 Weave，对方的个人助理。你和对方一起朝着对方自己定的目标走，一路上用你自己的判断。'), p.slice(0, 80));
+  assert.ok(p.includes('不管前面的文字怎么介绍你，对用户你就叫 Weave。'), 'name line missing');
   assert.ok(p.includes('\n- ' + SAFETY_RULES + '\n'), 'SAFETY_RULES missing');
   assert.equal(p.split('健康安全').length - 1, 1);
   assert.ok(!p.includes('现有 SAFETY_RULES 原文'));

@@ -97,7 +97,7 @@ test('系统提示是自定义的：没有 You are Claude Code；SDK 前缀之�
   const body = mainCalls()[0].body;
   const system = (Array.isArray(body.system) ? body.system.map(b => b.text) : [body.system]).join('\n');
   assert.doesNotMatch(system, /You are Claude Code/);
-  const prefix = system.indexOf('You are a Claude agent'), weave = system.indexOf('你是 Weave，帮一个人把习惯长期坚持下去的助理。');
+  const prefix = system.indexOf('You are a Claude agent'), weave = system.indexOf('你是 Weave，对方的个人助理。');
   assert.ok(prefix >= 0 && weave > prefix, `prefix ${prefix}, weave ${weave}`);
   assert.ok(system.includes('<memory file="MEMORY.md">\n周末早上更容易走路\n</memory>'));
   assert.ok(JSON.stringify(body.messages).includes('<trigger kind=\\"message\\" channel=\\"web\\" direct=\\"true\\"'));
