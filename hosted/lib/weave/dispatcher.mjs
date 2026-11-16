@@ -142,6 +142,19 @@ export async function wakeForMessage({db, secret, ownerId, text, image, service,
   return done;
 }
 
+// 发生了一件事（比如刚把微信绑上），不是用户说的话：叫醒它，事实当数据交给它。
+// 不往 person.messages 里存任何用户消息；直接叫醒的一轮（direct），最后一段话就是回复，照常记成助理消息。
+export async function wakeForEvent({db, secret, ownerId, text, service, fetcher = fetch, now = Date.now(), channel = 'wechat', timeoutMs, afterWake}) {
+  const result = await wake({db, secret, service, fetcher, now, ownerId, channel, timeoutMs, trigger: {kind: 'event', channel, direct: true, text}});
+  const reply = answerFor(result), done = {reply, outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};
+  await withWorld(db, async world => {
+    const person = world.people[ownerId];
+    if (person) record(person, reply, {source: 'agent', runId: done.runId, outcome: done.outcome, ...(done.uncertain ? {uncertain: true} : {})});
+    await afterWake?.(world, person, done);
+  });
+  return done;
+}
+
 // 打卡群里有人 @ 它：群范围，通道是微信，触发信息的通道是 group。
 // 不往本人的任何记录里写东西；回复排进哪个群、@ 谁，由 afterWake 决定。
 export async function wakeForGroup({db, secret, ownerId, groupId, text, image, service, fetcher = fetch, now = Date.now(), timeoutMs, afterWake}) {

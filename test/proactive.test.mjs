@@ -73,7 +73,8 @@ test('服务器的闹钟：令牌不对 401；没配 Agent 服务 503；对了 2
   assert.equal(r.data.processed, 0);
   assert.equal(s.wakes().length, 0, '服务器的闹钟不替桥接回微信消息');
   await s.tick();
-  assert.equal(s.wakes().length, 1, '桥接的 tick 照旧回');
+  // 桥接的 tick 照旧回：先是绑定的事件，再是她的消息。
+  assert.deepEqual(s.wakes().map(c => c.body.trigger.kind), ['event', 'message']);
   assert.equal(await basicAuthGate(new Request('https://weave.example/api/internal/tick', {method: 'POST'}), 'me:pw'), null);
   const legacy = await setup({runtime: ''});
   assert.equal((await legacy.call(null, 'internal/tick', {}, {Authorization: 'Bearer ' + SERVICE_TOKEN})).status, 503);

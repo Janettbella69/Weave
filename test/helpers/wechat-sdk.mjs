@@ -50,9 +50,20 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
   const message = (body, over = {}) => ({id: 'msg_' + (++seq), threadId: 'wxid-alice', senderId: 'wxid-alice', type: 1, direction: 'incoming', body, createdAt: new Date(now).toISOString(), mentions: {state: 'known', userIds: [], self: false, all: false, source: null}, ...over});
   const group = (sender, body, mentioned = false, over = {}) => message(body, {threadId: ROOM, senderId: sender, mentions: {state: 'known', userIds: mentioned ? ['wxid-bot'] : [], self: mentioned, all: false, source: 'msgsource.atuserlist'}, ...over});
   const bind = async () => bridge('events', message((await call('alice', 'wechat/bind', {})).data.instruction));
-  const enableGroup = async () => { await bind(); await bridge('events', group('wxid-alice', '@助理 开启打卡群', true)); await bridge('claim', {}); };
+  // Binds and lets the greeting turn (the bind event wakes the Agent once) finish and be delivered, with the Agent service's
+  // usual fake in charge of it, so a test about something else starts from a quiet, bound account: no queued work, no sends
+  // waiting, and no calls recorded. Tests about the binding itself use bind().
+  const bindQuiet = async () => {
+    const mine = state.agent;
+    state.agent = async () => reply('收到');
+    await bind();
+    await bridge('tick', {});
+    for (const job of (await bridge('claim', {})).data.jobs) await bridge('receipt', {id: job.id, state: 'accepted'});
+    state.agent = mine; calls.length = 0;
+  };
+  const enableGroup = async () => { await bindQuiet(); await bridge('events', group('wxid-alice', '@助理 开启打卡群', true)); await bridge('claim', {}); };
   return {
-    db, id, call, bridge, photo, tool, message, group, bind, enableGroup, calls, options,
+    db, id, call, bridge, photo, tool, message, group, bind, bindQuiet, enableGroup, calls, options,
     tick: () => bridge('tick', {}),
     wakes: () => calls.filter(c => c.path === '/wake'),
     read: () => new Store(db).load(),

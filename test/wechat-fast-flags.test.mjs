@@ -30,12 +30,12 @@ test('private chat: a bound person\'s message says wake; a stranger\'s, a stale 
   for (const over of [{type: 3}, {direction: 'outgoing'}, {body: ''}]) bothAbsent((await h.bridge('events', h.message('你好', over))).data);
 });
 
-test('binding: the confirmation that is queued says outbound, and no wake', async () => {
+test('binding: the event that is queued says wake, and nothing is sent by code', async () => {
   const h = await setup();
   const bound = await h.bind();
   assert.equal(bound.data.bound, true);
-  assert.deepEqual(flags(bound.data), outbound);
-  assert.equal((await h.bridge('claim', {})).data.jobs.length, 1);
+  assert.deepEqual(flags(bound.data), wake);
+  assert.equal((await h.bridge('claim', {})).data.jobs.length, 0);
 });
 
 test('groups: enabling, refusing and closing say outbound; an @ in an enabled group says wake; chatter, a repeat, 别记 and the daily limit say nothing', async () => {
@@ -100,16 +100,17 @@ test('the hints are true exactly when a tick would find work and a claim would f
   }
   for (const row of rows) {
     assert.equal(row.wake, row.work, `${row.name}: wake ${row.wake}, a tick found work ${row.work}`);
-    if (row.name !== 'a bound person says hi' && row.name !== 'an @ in the group') assert.equal(row.outbound, row.sends, `${row.name}: outbound ${row.outbound}, a claim found a message ${row.sends}`);
+    if (!['the binding', 'a bound person says hi', 'an @ in the group'].includes(row.name)) assert.equal(row.outbound, row.sends, `${row.name}: outbound ${row.outbound}, a claim found a message ${row.sends}`);
   }
   // after a wake the tick queues the reply itself; the bridge delivers it once the tick returns, so the answer to the event did not need to say outbound
   const wakes = rows.filter(row => row.wake).map(row => row.name);
-  assert.deepEqual(wakes, ['a bound person says hi', 'an @ in the group']);
+  assert.deepEqual(wakes, ['the binding', 'a bound person says hi', 'an @ in the group']);
 });
 
 test('claim and receipt answers carry no hints, and the fields the bridge already reads are unchanged', async () => {
   const h = await setup();
   await h.bind();
+  assert.equal((await h.tick()).data.processed, 1);          // the bind event's greeting turn queues the first send
   const claim = await h.bridge('claim', {});
   assert.deepEqual(Object.keys(claim.data), ['jobs']);
   const receipt = await h.bridge('receipt', {id: claim.data.jobs[0].id, state: 'accepted'});

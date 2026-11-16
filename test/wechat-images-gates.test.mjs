@@ -18,7 +18,7 @@ const ENV_ON = {WEAVE_WECHAT_IMAGES: '1', WEAVE_AGENT_RUNTIME: 'sdk'};
 
 test('server on, Mac off: no photo sentence, no hints, nothing held or stored, and the privacy line stays hidden', async () => {
   const h = await setup({images: true, bridgePhotos: false});
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true, {photo: 'watch'}));
   assert.deepEqual(groupTexts(await h.deliverAll()), [GROUP_ENABLED_TEXT]);
   const ask = await h.bridge('events', h.group('wxid-bob', '@助理 这顿多少卡', true, {photo: 'ready'}));
@@ -56,7 +56,7 @@ test('the Mac\'s word: X-Weave-Photos turns photos on (written at most once a mi
 
 test('a group opened while photos are on uses them only after the opening text (which carries the notice) went out', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   await h.bridge('events', h.group('wxid-alice', '@助理 开启打卡群', true));
   const early = await h.bridge('events', h.group('wxid-bob', '@助理 这顿多少卡', true, {photo: 'ready'}));
   assert.ok(!('photo' in early.data), 'the notice has not gone out yet');
@@ -108,7 +108,7 @@ test('a notice that did not go out (failed, cancelled or needs review) is sent a
 
 test('deleting the account deletes its waiting photos at once, before they expire', async () => {
   const h = await setup({images: true, agent: async () => reply('好')});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   assert.equal((await h.photo(text.id, PHOTO)).data.attached, true);
@@ -119,7 +119,7 @@ test('deleting the account deletes its waiting photos at once, before they expir
 
 test('if writing the world keeps failing after the photo was stored, the photo is deleted, and the message still starts by itself later', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   // Every world write now loses the race (another writer always committed first), so withWorld gives up with 409.
@@ -138,7 +138,7 @@ test('if writing the world keeps failing after the photo was stored, the photo i
 
 test('with photos on, every event also sweeps photos that expired', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   await h.photo(text.id, PHOTO);
@@ -178,7 +178,7 @@ test('a notice that keeps coming back unconfirmed is sent again at most once a B
 
 test('the Agent service\'s server tick (/api/internal/tick, every minute since #35) sweeps expired photos too, without any bridge request', async () => {
   const h = await setup({images: true});
-  await h.bind();
+  await h.bindQuiet();
   const text = h.message('这顿多少卡', {photo: 'ready'});
   await h.bridge('events', text);
   await h.photo(text.id, PHOTO);

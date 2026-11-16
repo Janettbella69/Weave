@@ -71,8 +71,10 @@ export async function runScheduled({db,secret,env={},agentRuntime='',agentServic
     const store=new Store(db),world=await store.load();
     const enabled=!!(wechatConfig(env).token&&secret),delivered=deliverReminders(world,now)+deliverRoutines(world,now),queued=queueReminderMessages(world,now,enabled);
     // Replies are only queued here; the local bridge is what actually reaches WeChat.
+    // 旧路线没有 Agent，绑定的事件会被 processInbound 丢掉：只有它改了世界时也要存。
+    const droppedEvents=Object.values(world.wechat||{}).some(x=>x.kind==='event'&&x.status==='queued');
     const processed=enabled?await processInbound(world,{secret,now,handleMessage:(person,text)=>chatFor(person,world,text,agent),handleGroup:(person,input)=>groupChatFor(person,world,input,agent)}):0;
-    if(delivered||queued||processed)await store.save(world);
+    if(delivered||queued||processed||(enabled&&droppedEvents))await store.save(world);
     return {delivered,queued,processed};
   }catch(error){if(attempt===2)throw error;}
 }
