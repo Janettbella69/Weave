@@ -23,7 +23,6 @@ WEAVE_VPS_USER_ID=ci@example.test
 WEAVE_VPS_EMAIL=ci@example.test
 WEAVE_VPS_NAME=CI
 WEAVE_BASIC_AUTH=weave:ci-password
-WEAVE_AGENT_RUNTIME=sdk
 AGENT_SERVICE_TOKEN=$token
 EOF
 printf 'AGENT_SERVICE_TOKEN=%s\nDEEPSEEK_API_KEY=sk-ci-not-a-real-key\n' "$token" > agent.env

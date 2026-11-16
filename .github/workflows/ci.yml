@@ -37,8 +37,6 @@ jobs:
       - name: Tencent deployment smoke (compose up with test config, fake key)
         timeout-minutes: 15
         run: bash deploy/tencent/ci-smoke.sh
-      - name: Hermes adapter isolation and protocol configuration
-        run: python3 -m unittest discover -s test -p 'hermes_runtime_test.py'
       - name: Install product dependencies
         working-directory: hosted
         run: npm ci --no-audit --no-fund

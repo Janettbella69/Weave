@@ -22,7 +22,7 @@
 
 **现状，别跳过：**
 
-- 微信消息走 Agent SDK 那条路，需要网站的 `WEAVE_AGENT_RUNTIME=sdk`（`setup-env.sh` 已经写进服务器的 `web.env`，下面第 1 步会检查）。私聊叫醒的是「本人范围」，群里 @ 叫醒的是「群范围」，看不到任何人的个人资料。
+- 微信消息只走 Agent SDK 那条路。私聊叫醒的是「本人范围」，群里 @ 叫醒的是「群范围」，看不到任何人的个人资料。
 - 群里助理读群上下文，靠另一个分支（`fix/harness-textbook`）里的「调用前快照」。它合并之前，助理在群里只看得到 @ 它的那一句话。**所以先试私聊，群等那个分支合并以后再试。**
 - 这套东西从来没有连过真实的微信：模拟微信的端到端测试通过了，真实账号没有试过。agent-wechat 作者自己的真实账号验证都在 Linux x64 上做的，macOS 的真实账号验收在他们的清单里还是「待做」（[PLATFORM-ACCEPTANCE.md](https://github.com/thisnick/agent-wechat/blob/v1.3.3/PLATFORM-ACCEPTANCE.md)）。所以这是一次**试点**。
 
@@ -38,13 +38,7 @@
   node -v
   ```
 
-- 服务器上的网站已经部署好（`deploy/tencent/README.md` 的第 0 到 6 步），而且 `web.env` 里有 `WEAVE_AGENT_RUNTIME=sdk`。这条命令应该打印出那一行：
-
-  ```
-  ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'grep -c "^WEAVE_AGENT_RUNTIME=sdk$" ~/weave/deploy/tencent/web.env'
-  ```
-
-  打印 `1` 就对了；打印 `0`，先在服务器的 `web.env` 里加上这一行，再重新部署。
+- 服务器上的网站已经部署好（`deploy/tencent/README.md` 的第 0 到 6 步）。
 - 代码：给这件事单独拉一份干净的，不碰你平时改的那份：
 
   ```

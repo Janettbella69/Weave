@@ -153,7 +153,6 @@ if [ -z "$bridge_token" ]; then
   die "然后重跑这个脚本。"
 fi
 [[ "$bridge_token" =~ ^[A-Za-z0-9]{32,128}$ ]] || die "${web_env} 里的 WECHAT_BRIDGE_TOKEN 格式不对（要 32 到 128 位的字母和数字）。没有改任何东西。"
-grep -q '^WEAVE_AGENT_RUNTIME=sdk$' "$web_env" || say "注意：${web_env} 里没有 WEAVE_AGENT_RUNTIME=sdk，微信消息会走旧路（见 docs/WECHAT.md「谁来回答」）。"
 # 桥接从 wx 的网络经公网地址连 Weave（bridge.mjs 只认 HTTPS），这里走同一条路先试一下。
 probe=$(printf '%s\n' "$bridge_token" | weave_probe)
 without="${probe% *}" with="${probe#* }"
