@@ -127,10 +127,10 @@ function answerFor(result) {
 
 // 本人发来一条消息（网页或微信私聊）：先存用户消息，叫醒，回来重读再存回复。
 // afterWake(world, person, done) 在存回复的同一个事务里跑，微信用它把回复排进发送队列。
-export async function wakeForMessage({db, secret, ownerId, text, image, service, fetcher = fetch, now = Date.now(), channel = 'web', timeoutMs, afterWake}) {
+export async function wakeForMessage({db, secret, ownerId, text, facts, image, service, fetcher = fetch, now = Date.now(), channel = 'web', timeoutMs, afterWake}) {
   const result = await wake({
     // 照片只交给这一轮，不写进 person.messages：那里只存文字。
-    db, secret, service, fetcher, now, ownerId, channel, timeoutMs, trigger: {channel, text}, image,
+    db, secret, service, fetcher, now, ownerId, channel, timeoutMs, trigger: {channel, text: facts ? `${text}\n${facts}` : text}, image,
     beforeWake: (world, person) => { person.messages.push({id: crypto.randomUUID(), role: 'user', text, createdAt: new Date(now).toISOString()}); },
   });
   const reply = answerFor(result), done = {reply, outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};

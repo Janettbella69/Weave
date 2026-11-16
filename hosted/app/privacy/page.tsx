@@ -94,6 +94,7 @@ export default async function PrivacyPage() {
         <section className="landing-block">
           <h2 className="landing-section-title">微信和打卡群</h2>
           <ul>
+            {/* 草稿，待确认：上线 iLink 私聊（deploy/tencent/ilink）以后这一句不再对，要先按 docs/WECHAT.md「私聊走 iLink」里起草的文字改。现在还没改，因为现在还没上线。 */}
             <li>微信通过第三方开源客户端接入，不是腾讯官方接口。</li>
             <li>没有开启的群，消息到达后直接丢弃，不留任何记录。</li>
             <li>开启时助理会先在群里说明。任何成员都可以 @助理 说「关闭打卡群」，之后停止读取，并删除这个群的记录。</li>

@@ -8,8 +8,8 @@
 // 模型代理也在这个进程里：docker 模式监听 Unix socket（挂进容器），本机模式监听 127.0.0.1 随机端口。
 // 服务器自己的闹钟也在这里：每隔 AGENT_TICK_SECONDS 秒 POST 一次网站的 /api/internal/tick（createTicker）。
 import http from 'node:http';
-import {timingSafeEqual, createHash, randomUUID} from 'node:crypto';
-import {mkdir, chmod, rm} from 'node:fs/promises';
+import {timingSafeEqual, createHash, randomUUID, randomBytes} from 'node:crypto';
+import {mkdir, chmod, rm, writeFile, lstat} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {query} from '@anthropic-ai/claude-agent-sdk';
@@ -32,6 +32,7 @@ const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const digest = value => createHash('sha256').update(value).digest();
 // /wake 可能带一张照片（base64，微信看图），所以只给它多留出一张照片的大小；别的接口还是 64 KiB。
 const JSON_LIMIT = 64 * 1024, WAKE_LIMIT = JSON_LIMIT + IMAGE_MAX_BASE64;
+const EXTENSIONS = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp'};
 const fail = (status, message) => { throw Object.assign(Error(message), {status}); };
 
 async function readJson(req, limit) {
@@ -155,6 +156,19 @@ export async function createAgentService({
     await new Promise(ok => proxyServer.listen(0, '127.0.0.1', ok));
     proxyInfo = {url: `http://127.0.0.1:${proxyServer.address().port}`};
   }
+  // 本人私聊发来的照片是她自己的东西，存进她的工作目录（权限只给这个用户），Agent 用自带的 Read 看、看到的写进记录和 MEMORY.md。
+  // 文件名：照片那条消息的当地日期时间（trigger.at 的写法本身就是当地时间）加 6 位随机十六进制，不会重名。返回工作目录里的相对路径。
+  async function keepPhoto(dirs, at, photo) {
+    const stamp = at.slice(0, 16).replace('T', '-').replace(':', '');
+    const name = `${stamp}-${randomBytes(3).toString('hex')}.${EXTENSIONS[photo.mediaType]}`;
+    // Agent 能把 photos 换成指向别处的链接：不是真目录就先删掉，免得照片写到工作目录外面去。
+    const folder = join(dirs.workspace, 'photos');
+    const kind = await lstat(folder).catch(() => null);
+    if (kind && !kind.isDirectory()) await rm(folder, {force: true});
+    await mkdir(folder, {recursive: true, mode: 0o700});
+    await writeFile(join(dirs.workspace, 'photos', name), Buffer.from(photo.data, 'base64'), {mode: 0o600, flag: 'wx'});
+    return `photos/${name}`;
+  }
   const queue = createRunQueue({maxConcurrent});
   let legacyActive = 0;
 
@@ -185,6 +199,8 @@ export async function createAgentService({
         fail(503, '取不到 Weave 的数据快照，这一轮没有叫醒');
       }
       const memory = await workspace.readMemory(dirs);
+      // 只有本人那一轮的照片存下来；群里的照片是别人的，看一次就不留。
+      const imageFile = photo && scope.kind === 'owner' ? await keepPhoto(dirs, input.trigger.at, photo) : undefined;
       // 前一天收尾写的交接：只给本人那一轮（群里没有收尾）。
       const handoff = scope.kind === 'owner' ? await workspace.readHandoff(dirs) : '';
       const sessionId = await workspace.sessionFor(dirs, input.localDate);
@@ -195,16 +211,17 @@ export async function createAgentService({
           // 后台那一轮从当天的会话分叉出去（设计文档 4.6），跑坏了也碰不到她聊天的那段。
           forkSession: background,
           // 微信看图：这一轮带的那张照片（没有就是 undefined）。
-          image: photo,
+          image: photo, imageFile,
           isolation: runIsolation,
           rpc: mirroringRpc(toolBackend({weaveUrl, capability: input.capability, fetcher}), dbPath),
         });
         // 成功了就接着用这段（后台那一轮是分叉出来的那段）：她回「走了」，下一轮接得上 Weave 刚才问的话。
         // 出错的那段会话可能停在半路，下次重新开一段，靠 MEMORY.md 带过去。
-        // 带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
+        // 群里带照片的一轮没有写会话记录（runner.mjs 的 persistSession: false），这里也不动 sessions.json：下一轮接着用叫醒前那段。
+        // 本人带照片的一轮照常写会话、照常记 sessions.json，照片也在工作目录里。
         // 后台那一轮出错不清：原会话没动过，她的聊天上下文还在。
         // 收尾那一轮也不动：那一天已经结束，下一轮是新的一天，开新的一段。
-        if (photo || close) { /* sessions.json stays as it was */ }
+        if ((photo && scope.kind !== 'owner') || close) { /* sessions.json stays as it was */ }
         else if (result.outcome === 'success' && result.sessionId) await workspace.saveSession(dirs, input.localDate, result.sessionId);
         else if (!background) await workspace.clearSession(dirs);
         return {outcome: result.outcome, reply: result.reply, sessionId: result.sessionId, tools: result.tools};

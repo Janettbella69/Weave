@@ -12,6 +12,8 @@ export const bridgeToken = 'bridge-token-' + 'x'.repeat(32);
 export const SERVICE = 'https://agent.test';
 export const SERVICE_TOKEN = 's'.repeat(40);
 export const ROOM = '123456@chatroom';
+// iLink user ids always end with @im.wechat (the official plugin's channel.ts).
+export const ILINK_ALICE = 'o9alice@im.wechat';
 export const start = Date.parse('2030-01-01T00:00:00Z');
 export const ok = data => Response.json(data);
 export const reply = text => ok({outcome: 'success', reply: text, sessionId: 's-1', tools: []});
@@ -42,6 +44,13 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
     const r = await handleAPI(new Request('https://weave.example/api/internal/wechat/photo', {method: 'POST', headers: {'Content-Type': type, Authorization: 'Bearer ' + bridgeToken, 'X-Weave-For': forId, 'X-Weave-Thread': thread, 'X-Weave-Sender': sender}, body: bytes}), {...options(), identity: null});
     return {status: r.status, data: await r.json()};
   };
+  // The iLink bridge (hosted/ilink-bridge): the same internal API, with X-Weave-Channel: ilink on every request.
+  const ilink = (path, data) => call(null, 'internal/wechat/' + path, data, {Authorization: 'Bearer ' + bridgeToken, 'X-Weave-Channel': 'ilink'});
+  // A photo message from the iLink bridge: the decrypted bytes as the body, which message it is and who sent it in headers.
+  const image = async (messageId, bytes, {type = 'image/jpeg', sender = ILINK_ALICE, createdAt = new Date(now).toISOString(), channel = 'ilink'} = {}) => {
+    const r = await handleAPI(new Request('https://weave.example/api/internal/wechat/image', {method: 'POST', headers: {'Content-Type': type, Authorization: 'Bearer ' + bridgeToken, 'X-Weave-Channel': channel, 'X-Weave-Message': messageId, 'X-Weave-Sender': sender, 'X-Weave-Created-At': createdAt}, body: bytes}), {...options(), identity: null});
+    return {status: r.status, data: await r.json()};
+  };
   // What the Agent service's MCP shells do: call the tool backend with the capability from /wake.
   const tool = async (name, args, capability, toolUseId = 'toolu_1') => {
     const r = await handleAPI(new Request('https://weave.example/api/internal/agent/tools/' + name, {method: 'POST', headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + capability}, body: JSON.stringify({args, toolUseId})}), {db, secret, now});
@@ -50,9 +59,13 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
   const message = (body, over = {}) => ({id: 'msg_' + (++seq), threadId: 'wxid-alice', senderId: 'wxid-alice', type: 1, direction: 'incoming', body, createdAt: new Date(now).toISOString(), mentions: {state: 'known', userIds: [], self: false, all: false, source: null}, ...over});
   const group = (sender, body, mentioned = false, over = {}) => message(body, {threadId: ROOM, senderId: sender, mentions: {state: 'known', userIds: mentioned ? ['wxid-bot'] : [], self: mentioned, all: false, source: 'msgsource.atuserlist'}, ...over});
   const bind = async () => bridge('events', message((await call('alice', 'wechat/bind', {})).data.instruction));
+  // A private message over iLink: the thread is the sender's iLink id, never a group.
+  const ilinkMessage = (body, over = {}) => message(body, {threadId: ILINK_ALICE, senderId: ILINK_ALICE, mentions: undefined, ...over});
+  const bindIlink = async () => ilink('events', ilinkMessage((await call('alice', 'wechat/bind', {})).data.instruction));
   const enableGroup = async () => { await bind(); await bridge('events', group('wxid-alice', '@助理 开启打卡群', true)); await bridge('claim', {}); };
   return {
     db, id, call, bridge, photo, tool, message, group, bind, enableGroup, calls, options,
+    ilink, image, ilinkMessage, bindIlink,
     tick: () => bridge('tick', {}),
     wakes: () => calls.filter(c => c.path === '/wake'),
     read: () => new Store(db).load(),

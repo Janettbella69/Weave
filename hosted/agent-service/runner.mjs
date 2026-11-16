@@ -12,8 +12,9 @@ const LIMIT_OUTCOMES = ['error_max_budget_usd'];
 // SDK 文档原文：fork「creates a new session that starts with a copy of the original's history. The original stays unchanged.」
 // 要和 resume 一起用（sdk.d.ts：「Use with `resume`」），所以没有 sessionId 时不设；返回的 sessionId 是分叉出来的那段。
 // image：可选，{mediaType, data}（base64），这一轮带的那张照片（微信看图，docs/superpowers/specs/2026-11-03-wechat-images-design.md）。
+// imageFile：本人这张照片存在工作目录里的相对路径（server.mjs 存的），写进这一轮的说明里；群里的照片没有。
 // handoff：HANDOFF.md 的内容（换日收尾写的交接），只有本人范围会放进系统提示（prompts.mjs）。
-export async function wake({scope, trigger, memory = '', handoff = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, queryFn = sdkQuery}) {
+export async function wake({scope, trigger, memory = '', handoff = '', provider, model, runToken, isolation, rpc, sessionId, forkSession = false, image, imageFile, queryFn = sdkQuery}) {
   const tools = [];
   const audit = async input => { if (input?.tool_name) tools.push(input.tool_name); return {}; };
   const abortController = new AbortController();
@@ -38,9 +39,10 @@ export async function wake({scope, trigger, memory = '', handoff = '', provider,
     ...(isolation.spawnClaudeCodeProcess ? {spawnClaudeCodeProcess: isolation.spawnClaudeCodeProcess} : {}),
     ...(isolation.sandbox ? {sandbox: isolation.sandbox} : {}),
     ...(sessionId ? {resume: sessionId, ...(forkSession ? {forkSession: true} : {})} : {}),
-    // 带照片的一轮不写会话记录：照片不落在这台机器的磁盘上，下一轮接着用叫醒前那段会话（SDK 文档 sessions：
+    // 群里的照片是别人的，看一次就不留：这一轮不写会话记录，下一轮接着用叫醒前那段会话（SDK 文档 sessions：
     // persistSession: false「The session exists only in memory for the duration of the call」）。server.mjs 也不动 sessions.json。
-    ...(image ? {persistSession: false} : {}),
+    // 本人的照片会存进工作目录（server.mjs），这一轮照常写会话记录：下一轮的历史里还有这张照片。
+    ...(image && scope.kind !== 'owner' ? {persistSession: false} : {}),
     // 不设轮数上限（教材 p.22、p.26）；兜底是 maxBudgetUsd 熔断和 10 分钟超时。
     maxBudgetUsd: scope.circuitBreakerUsd,
     thinking: {type: 'disabled'},
@@ -50,7 +52,7 @@ export async function wake({scope, trigger, memory = '', handoff = '', provider,
   };
 
   // 只有文字的一轮照旧传字符串；带照片的一轮用流式输入：一条用户消息，先文字后照片（prompts.mjs 的 imageMessage）。
-  const prompt = image ? (async function* () { yield imageMessage(trigger, image); })() : renderTrigger(trigger);
+  const prompt = image ? (async function* () { yield imageMessage(trigger, image, imageFile); })() : renderTrigger(trigger);
   let last = null, failure = null;
   try {
     // 一直读到结束：后台子 Agent 完成后，同一个 query() 会再出一个 result（实测）。

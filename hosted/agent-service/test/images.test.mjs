@@ -12,7 +12,7 @@ import {scopeFor} from '../scopes.mjs';
 import {wake} from '../runner.mjs';
 import {isolationFor} from '../sandbox.mjs';
 import {providerFor} from '../providers.mjs';
-import {IMAGE_NOTE, renderTrigger} from '../prompts.mjs';
+import {IMAGE_NOTE, imageNote, renderTrigger} from '../prompts.mjs';
 import {checkImage, IMAGE_MAX_BYTES, sniffImage} from '../images.mjs';
 
 let h;
@@ -37,15 +37,19 @@ function assertNoPhotoOnDisk(dirs) {
   }
 }
 
-test('a photo turn: the model gets one user message, the trigger and the note first, then the photo exactly as sent', async () => {
+// A trigger from a check-in group. Group photos are other people's: they are seen once and never kept (unlike the owner's own).
+const groupMessage = text => ({...message(text), channel: 'group'});
+const GROUP = scopeFor('group');
+
+test('a group photo turn: the model gets one user message, the trigger and the note first, then the photo exactly as sent; nothing of it is left on disk', async () => {
   fresh(steps([{text: '这顿大约 600 千卡'}]));
-  const r = await h.wakeOnce({trigger: message('这顿多少卡'), image: IMAGE});
+  const r = await h.wakeOnce({scope: GROUP, trigger: groupMessage('成员2：这顿多少卡'), image: IMAGE});
   assert.equal(r.outcome, 'success');
   assert.equal(r.reply, '这顿大约 600 千卡');
   const body = mainCalls()[0].body, last = userMessages(body).at(-1);
   assert.ok(Array.isArray(last.content), JSON.stringify(last).slice(0, 300));
   const text = last.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  assert.ok(text.includes(renderTrigger(message('这顿多少卡'))), text);
+  assert.ok(text.includes(renderTrigger(groupMessage('成员2：这顿多少卡'))), text);
   assert.ok(text.includes(IMAGE_NOTE), text);
   assert.deepEqual(photosIn(body), [{type: 'image', source: {type: 'base64', media_type: 'image/png', data: IMAGE.data}}]);
   const kinds = last.content.map(b => b.type).filter(t => t === 'text' || t === 'image');
@@ -53,17 +57,17 @@ test('a photo turn: the model gets one user message, the trigger and the note fi
   assertNoPhotoOnDisk(r.dirs);
 });
 
-test('resume with a generator prompt works in SDK 0.3.316; the photo turn writes no session, and the next text turn resumes the session from before it', async () => {
+test('resume with a generator prompt works in SDK 0.3.316; a group photo turn writes no session, and the next text turn resumes the session from before it', async () => {
   const dirs = h.tenant();
   const assistants = body => (body.messages || []).filter(m => m.role === 'assistant').map(m => JSON.stringify(m.content));
   fresh(body => !isMain(body) ? {text: 't'} : imageBlocks(body).length ? {text: '这顿大约 600 千卡'} : assistants(body).length ? {text: '你午饭吃了沙拉'} : {text: '记住了'});
-  const a = await h.wakeOnce({dirs, trigger: message('我午饭吃了沙拉')});
+  const a = await h.wakeOnce({scope: GROUP, dirs, trigger: groupMessage('成员2：我午饭吃了沙拉')});
   assert.equal(a.outcome, 'success');
   const saved = sessionFile(dirs, a.sessionId);
   assert.ok(saved, 'the first turn should write its session');
   const before = readFileSync(saved), sessions = files(dirs.config).filter(f => f.endsWith('.jsonl')).sort();
 
-  const b = await h.wakeOnce({dirs, sessionId: a.sessionId, trigger: message('这顿多少卡'), image: IMAGE});
+  const b = await h.wakeOnce({scope: GROUP, dirs, sessionId: a.sessionId, trigger: groupMessage('成员2：这顿多少卡'), image: IMAGE});
   assert.equal(b.outcome, 'success');
   assert.equal(b.reply, '这顿大约 600 千卡');
   const photoCall = mainCalls().at(-1).body;
@@ -73,7 +77,7 @@ test('resume with a generator prompt works in SDK 0.3.316; the photo turn writes
   assert.deepEqual(files(dirs.config).filter(f => f.endsWith('.jsonl')).sort(), sessions, 'no new session file');
   assertNoPhotoOnDisk(dirs);
 
-  const c = await h.wakeOnce({dirs, sessionId: a.sessionId, trigger: message('我午饭吃了什么')});
+  const c = await h.wakeOnce({scope: GROUP, dirs, sessionId: a.sessionId, trigger: groupMessage('成员2：我午饭吃了什么')});
   assert.equal(c.outcome, 'success');
   assert.equal(c.reply, '你午饭吃了沙拉');
   const next = mainCalls().at(-1).body;
@@ -84,6 +88,27 @@ test('resume with a generator prompt works in SDK 0.3.316; the photo turn writes
   assert.ok(!JSON.stringify(next.messages).includes('这顿多少卡') && !JSON.stringify(next.messages).includes('600 千卡'));
   assert.equal(imageBlocks(next).length, 0, 'the photo must not come back in a later turn');
   assertNoPhotoOnDisk(dirs);
+});
+
+test('the owner\'s own photo turn is kept: the note names the file, the session is written, and the next turn\'s history still has the photo', async () => {
+  const dirs = h.tenant();
+  const file = 'photos/2026-11-02-0800-a1b2c3.png';
+  fresh(body => !isMain(body) ? {text: 't'} : {text: '看到了，是一碗沙拉'});
+  const a = await h.wakeOnce({dirs, trigger: message('这是我的午饭'), image: IMAGE, imageFile: file});
+  assert.equal(a.outcome, 'success');
+  const first = mainCalls().at(-1).body, last = userMessages(first).at(-1);
+  const text = last.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  assert.ok(text.includes(imageNote(file)), text);
+  assert.ok(text.includes(file));
+  assert.equal(imageBlocks(first).length, 1);
+  assert.ok(sessionFile(dirs, a.sessionId), 'an owner photo turn writes its session');
+
+  const b = await h.wakeOnce({dirs, sessionId: a.sessionId, trigger: message('刚才那张是什么')});
+  assert.equal(b.outcome, 'success');
+  const next = mainCalls().at(-1).body;
+  assert.equal(imageBlocks(next).length, 1, 'the photo is still in the history of the next turn');
+  assert.deepEqual(photosIn(next), photosIn(first));
+  assert.ok(JSON.stringify(next.messages).includes(file));
 });
 
 test('a photo turn can still call the weave tools (SDK MCP over the control channel) and its hooks still run', async () => {
@@ -121,6 +146,13 @@ test('what query() is given: a text turn is the same string as before with no pe
   });
   assert.equal(seen[1].options.persistSession, false);
   assert.equal(seen[1].options.resume, 'prev');
+  // The owner's own photo is kept (a file in the workspace, a session that has it): persistSession is not turned off, and the note names the file.
+  const ownerScope = scopeFor('owner');
+  const ownerIsolation = isolationFor({mode: 'local', scope: ownerScope, dirs: h.tenant(), pluginDir: PLUGIN_DIR, proxy: {url: h.proxyUrl}, sandbox: false});
+  const ownerTrigger = {...trigger, channel: 'wechat', text: '这顿多少卡'};
+  await wake({...common, scope: ownerScope, trigger: ownerTrigger, isolation: ownerIsolation, sessionId: 'prev', image: IMAGE, imageFile: 'photos/x.png'});
+  assert.ok(!('persistSession' in seen[2].options));
+  assert.equal(seen[2].prompt[0].message.content[0].text, renderTrigger(ownerTrigger) + '\n' + imageNote('photos/x.png'));
   const {persistSession, ...rest} = seen[1].options;
   assert.equal(persistSession, false);
   assert.deepEqual(Object.keys(rest).sort(), Object.keys(seen[0].options).sort(), 'nothing else changes for a photo turn');
