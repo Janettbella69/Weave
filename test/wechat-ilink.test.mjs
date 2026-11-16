@@ -7,7 +7,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {hash} from '../hosted/lib/weave/crypto.mjs';
 import {PHOTO_MAX_BYTES} from '../hosted/lib/weave/wechat-photos.mjs';
-import {PHOTO_MESSAGE_TEXT, PHOTO_UNREADABLE_TEXT} from '../hosted/lib/weave/wechat.mjs';
+import {PHOTO_MESSAGE_TEXT, PHOTO_UNAVAILABLE_FACT} from '../hosted/lib/weave/wechat.mjs';
 import {setup, reply, ROOM, ILINK_ALICE} from './helpers/wechat-sdk.mjs';
 
 const jpeg = (size = 6000, seed = 5) => { const b = new Uint8Array(size); let x = seed; for (let i = 0; i < size; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; b[i] = x >> 16 & 0xff; } b.set([0xff, 0xd8, 0xff, 0xe0]); return b; };
@@ -111,20 +111,37 @@ test('a photo for a person whose private chat is on the alt account is not taken
   assert.equal(photoRows(h), 0);
 });
 
-test('too big or not an image: not stored, no wake, and the owner is told in one short line', async () => {
-  for (const [bytes, type] of [[jpeg(PHOTO_MAX_BYTES + 1), 'image/jpeg'], [new TextEncoder().encode('not a photo at all'), 'image/jpeg']]) {
-    const h = await setup();
+test('too big or not an image: not stored, but Weave is still woken, with the fact that the photo did not open; what is said back is Weave\'s own', async () => {
+  for (const [bytes, type] of [[jpeg(PHOTO_MAX_BYTES + 1), 'image/jpeg'], [new TextEncoder().encode('not a photo at all'), 'image/jpeg'], [new Uint8Array(0), 'image/jpeg']]) {
+    const h = await setup({agent: async () => reply('这张照片没打开，再发一次好吗')});
     await h.bindIlink();
     await h.ilink('claim', {});
     const answer = await h.image('img_x', bytes, {type});
-    assert.equal(answer.data.accepted, true);
-    assert.ok(answer.data.rejected);
+    assert.deepEqual(answer.data, {accepted: true, queued: true, wake: true});
     assert.equal(photoRows(h), 0);
+    assert.deepEqual(await jobsOf(h, 'ilink'), [], 'code says nothing by itself');
     await h.ilink('tick', {});
-    assert.equal(h.wakes().length, 0);
+    const wake = h.wakes().at(-1);
+    assert.equal(wake.body.image, undefined);
+    assert.equal(wake.body.trigger.text, PHOTO_MESSAGE_TEXT + '\n' + PHOTO_UNAVAILABLE_FACT);
     const [job] = await jobsOf(h, 'ilink');
-    assert.equal(job.text, PHOTO_UNREADABLE_TEXT);
+    assert.equal(job.text, '这张照片没打开，再发一次好吗');
+    const messages = (await h.read()).people[h.id].messages;
+    assert.ok(messages.some(m => m.role === 'user' && m.text === PHOTO_MESSAGE_TEXT), 'the chat shows only the message, not the fact');
+    assert.ok(!messages.some(m => (m.text || '').includes(PHOTO_UNAVAILABLE_FACT)));
   }
+});
+
+test('a stored photo that has expired or cannot be read by the time of the turn: Weave is woken with the same fact', async () => {
+  const h = await setup({agent: async () => reply('照片过期了，麻烦重发')});
+  await h.bindIlink();
+  await h.ilink('claim', {});
+  assert.equal((await h.image('img_late', PHOTO)).data.queued, true);
+  h.setNow(h.now + 11 * 60_000);
+  await h.ilink('tick', {});
+  const wake = h.wakes().at(-1);
+  assert.equal(wake.body.image, undefined);
+  assert.equal(wake.body.trigger.text, PHOTO_MESSAGE_TEXT + '\n' + PHOTO_UNAVAILABLE_FACT);
 });
 
 test('an old photo (more than 6 hours late, like old text) is not answered', async () => {

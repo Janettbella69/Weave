@@ -44,8 +44,9 @@ const personChannel=person=>person?.settings?.wechatChannel==='ilink'?'ilink':'w
 const heartbeatKey=channel=>channel==='ilink'?'runtime:ilink-bridge':'runtime:wechat-bridge';
 // 草稿文案，待她确认。私聊里收到一张照片时，她的聊天记录里那一条写成这样，这也是交给 Agent 的那一轮的文字（照片另外附上）。
 export const PHOTO_MESSAGE_TEXT='[照片]';
-// 草稿文案，待她确认。私聊照片太大（超过 2 MB）或者打不开时，回她的一句。
-export const PHOTO_UNREADABLE_TEXT='这张照片我没能打开（太大或者格式不支持）。可以换一张再发。';
+// 草稿文案，待她确认。私聊里那张照片没能打开（太大、格式不支持、下载失败、过期）时，写进这一轮给 Weave 的数据里的一句事实。
+// 代码不替 Weave 跟她说话（教材 p.20）：怎么回、回不回，Weave 自己决定。这句接在 PHOTO_MESSAGE_TEXT 后面，只给 Weave，不存进她的聊天记录。
+export const PHOTO_UNAVAILABLE_FACT='这条消息附带了一张照片，但没能打开（可能太大、格式不支持或已经过期），所以你看不到它。';
 const groupKey=hashed=>`wechat-group:${hashed}`;
 // Written when a group is closed: its Agent workspace is deleted on the next tick, and retried until the service confirms.
 const forgetKey=hashed=>`wechat-forget:${hashed}`;
@@ -301,12 +302,12 @@ async function claimNext(db,secret,now){
     const entry=Object.values(world.wechat).filter(x=>x.direction==='inbound'&&(x.status==='queued'||overdue(x,now))).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt)))[0];
     if(!entry)return null;
     // 照片 id 在这里离开 world：认领结果带着它，processInboundSdk 读一次就删掉照片。
-    const photo=entry.photo,withPhoto=photo?{photo}:{};delete entry.photo;delete entry.photoUntil;
+    const photo=entry.photo,withPhoto=photo?{photo}:{},problem=entry.photoProblem;delete entry.photo;delete entry.photoUntil;delete entry.photoProblem;
     const drop=()=>{entry.status='ignored';delete entry.text;delete entry.payload;return {skipped:true,...withPhoto};};
     if(!world.people[entry.ownerId])return drop();
     if(entry.source!=='group'){
       entry.status='processing';entry.startedAt=stamp(now);
-      return {id:entry.id,kind:'private',ownerId:entry.ownerId,text:entry.text,...withPhoto};
+      return {id:entry.id,kind:'private',ownerId:entry.ownerId,text:entry.text,...withPhoto,...(problem?{photoProblem:problem}:{})};
     }
     const group=world.runtime[entry.groupAad];
     if(!group||group.ownerId!==entry.ownerId)return drop();
@@ -358,10 +359,12 @@ export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Dat
     const timeoutMs=Math.max(5000,Math.min(180000,deadline-clock()));
     // 看图：照片读出来就删掉，这一轮不管成败都不会再用到它。读不出来（过期、坏了）就按没有照片回答。日志只写 id 和大小。
     const photo=claim.photo?await takePhoto(db,claim.photo,{secret,now}):null,image=photo?{image:{mediaType:photo.mediaType,data:photo.data}}:{};
+    // 私聊里附带了照片却没有拿到（收的时候就打不开，或者存着存着过期、坏了）：照样叫醒，把这件事当事实交给 Weave，不由代码替它回。
+    const facts=claim.kind==='private'&&(claim.photoProblem||(claim.photo&&!photo))?PHOTO_UNAVAILABLE_FACT:undefined;
     if(claim.photo)console.log(photo?`这一轮带一张照片（${photo.mediaType}，${photo.bytes} 字节）：${claim.id}`:`这一轮的照片读不出来或已过期，按没有照片回答：${claim.id}`);
     try{
       if(claim.kind==='private'){
-        await wakeForMessage({db,secret,ownerId:claim.ownerId,text:claim.text,...image,service,fetcher,now,channel:'wechat',timeoutMs,afterWake:(world,person,done)=>{
+        await wakeForMessage({db,secret,ownerId:claim.ownerId,text:claim.text,facts,...image,service,fetcher,now,channel:'wechat',timeoutMs,afterWake:(world,person,done)=>{
           const entry=world.wechat[claim.id];if(!entry)return;
           entry.status=done.uncertain?'uncertain':'replied';entry.outcome=done.outcome;if(done.uncertain)entry.error='结果不确定';
           if(person)queueOut(world,{ownerId:claim.ownerId,text:done.reply.slice(0,4000),source:'reply'},now);
@@ -498,7 +501,7 @@ async function receivePhoto(request,{db,secret,readBody,now}){
 // X-Weave-Message 是这条消息的 id（去重用），X-Weave-Sender 是发照片的人，X-Weave-Created-At 是发出的时间。
 // 只收已经绑定、私聊就在这个通道上的人发来的；别人的照片什么都不存。照片加密暂存在 D1（wechat-photos.mjs，最多 10 分钟），
 // 排进队的那一条文字是 PHOTO_MESSAGE_TEXT；那一轮开始时照片交给 Agent（只用能看图的模型）并从这里删掉。
-// 太大或者打不开：不存，回她一句 PHOTO_UNREADABLE_TEXT。和文字一样，超过 6 小时才到的不回。
+// 太大或者打不开：不存，但消息照样排队、照样叫醒 Weave，并把 PHOTO_UNAVAILABLE_FACT 交给它，由它自己回。和文字一样，超过 6 小时才到的不回。
 async function receiveImage(request,{db,secret,now,channel}){
   const messageId=request.headers.get('x-weave-message'),sender=request.headers.get('x-weave-sender');
   if(!messageId||messageId.length>8192||!sender||sender.length>8192)fail('缺少消息 id 或发送人');
@@ -511,15 +514,17 @@ async function receiveImage(request,{db,secret,now,channel}){
   if(!ownerId)return {accepted:true,ignored:true};
   if(before.wechat?.[entryId])return {accepted:true,duplicate:true};
   if(Number.isFinite(sentAt)&&now-sentAt>STALE_MS)return {accepted:true,stale:true};
+  // 打不开的照片：不存，但这条消息照样排进队、照样叫醒 Weave，「照片没能打开」作为事实交给它（claimNext 带出 photoProblem）。
   if(problem){
+    let queued=false;
     await withWorld(db,world=>{
-      world.wechat??={};
+      queued=false;world.wechat??={};
       if(world.wechat[entryId]||ownerOf(world)!==ownerId)return;
-      world.wechat[entryId]={id:entryId,direction:'inbound',status:'ignored',createdAt:stamp(now)};
-      queueOut(world,{ownerId,text:PHOTO_UNREADABLE_TEXT,source:'reply'},now);
+      world.wechat[entryId]={id:entryId,direction:'inbound',ownerId,text:PHOTO_MESSAGE_TEXT,photoProblem:problem,status:'queued',createdAt:stamp(now)};
+      queued=true;
     });
-    console.log(`私聊照片没有收（${problem}）：${entryId}`);
-    return {accepted:true,rejected:problem};
+    console.log(`私聊照片没能打开（${problem}），照样叫醒 Weave：${entryId}`);
+    return queued?{accepted:true,queued:true,wake:true}:{accepted:true,ignored:true};
   }
   const photo=await putPhoto(db,{bytes:raw,mediaType:type,owner:ownerId},{secret,now});
   let queued=false,duplicate=false,committed=false;
