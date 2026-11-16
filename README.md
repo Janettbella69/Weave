@@ -138,7 +138,6 @@ DeepSeek，默认 `deepseek-flash`，也支持 `deepseek-v4-pro`，走 DeepSeek 
 - **连接器**：微信搬到服务器、看图、Notion 接进 Agent（见上）。
 - **多用户登录**：每个人有自己的账号和空间。
 - **深度研究（Deep Research）**：唯一会开子 Agent 的场景（ARCHITECTURE 第 8 节）。
-- **删掉旧路径**（见文末「旧代码」）。
 - **评测**：从真实对话攒评测集，人工判对错：该不该开口、记得对不对、有没有泄露、有没有说没做的事。现在的测试验证的是规则对不对，不是建议好不好。
 
 ## 数据和隐私
@@ -194,7 +193,6 @@ npm start
 再在 `hosted/.dev.vars` 里加上：
 
 ```text
-WEAVE_AGENT_RUNTIME=sdk
 AGENT_SERVICE_URL=http://127.0.0.1:4320
 AGENT_SERVICE_TOKEN=<和 Agent 服务的一样>
 ```
@@ -206,10 +204,9 @@ npm test                                   # 根目录：业务规则、工具�
 npm --prefix hosted/agent-service ci
 npm --prefix hosted/agent-service test     # Agent 服务契约测试：本地假模型，不要 Key；容器那组没有 Docker 会跳过
 node scripts/agent-sdk-probe/probe.mjs     # SDK 探针：43 项，本地假模型
-npm run test:e2e                           # 旧演示的 HTTP 流程
 ```
 
-CI（`.github/workflows`）在每个 PR 上跑这些，另外还跑：容器契约测试（容器里没有网络、读不到真 Key）、部署冒烟（用测试配置把 compose 起起来）、旧的 Hermes 适配测试、类型检查和生产构建。
+CI（`.github/workflows`）在每个 PR 上跑这些，另外还跑：容器契约测试（容器里没有网络、读不到真 Key）、部署冒烟（用测试配置把 compose 起起来）、类型检查和生产构建。
 
 测试里的模型、Notion 和微信上游都是假的，通过测试不代表外部账号已经连通。用真 DeepSeek 跑一次冒烟见 [`scripts/agent-sdk-probe`](scripts/agent-sdk-probe/README.md) 的 `real-smoke.mjs`，要真 Key，会花一点钱。
 
@@ -232,10 +229,9 @@ CI（`.github/workflows`）在每个 PR 上跑这些，另外还跑：容器契�
 
 `hosted/` 也能发布到 Sites / Cloudflare，那里定时任务会自动触发，见 [`hosted/README.md`](hosted/README.md)。
 
-## 旧代码（会删）
+## 已删除的旧代码
 
-- 不设 `WEAVE_AGENT_RUNTIME=sdk` 时，网页聊天和微信走旧路径：直连模型的 `chatFor`、三个角色合成的当天计划（`habitCouncil`）、模型参与的朋友协商、Hermes 后台判断（`hosted/hermes-runner`）。线上已经设了 `sdk`，新界面上也没有这些入口。按 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第 11 节会删掉。
-- 根目录的 `server.mjs`、`council.mjs` 等文件和 `public/` 是黑客松时期的本机演示（`npm run demo`，见 [`docs/DEMO.md`](docs/DEMO.md)），和 `hosted/` 是两套代码。
+早期的直连模型聊天（`chatFor`）、三个角色合成的当天计划（`habitCouncil`）、模型参与的朋友协商、Hermes 后台判断（`hosted/hermes-runner`）、旧的 `/query`，以及根目录的黑客松演示（`server.mjs`、`public/` 等）都已经删除，原因和清单见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 第 11 节。网页聊天和微信现在只走 Agent SDK 服务，`WEAVE_AGENT_RUNTIME` 不再起作用。旧数据里残留的协商、邀请等字段照常读取、不使用。
 
 ## 参与开发
 

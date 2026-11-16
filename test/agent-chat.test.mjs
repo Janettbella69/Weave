@@ -10,6 +10,7 @@ const secret = 'ab'.repeat(32), SERVICE = 'https://agent.test', TOKEN = 't'.repe
 const identity = name => ({userId: name, displayName: name, email: name + '@example.test'});
 
 function harness(agent, {runtime = 'sdk', serviceUrl = SERVICE} = {}) {
+  // runtime: the old WEAVE_AGENT_RUNTIME value. Nothing reads it any more; the tests pass it to show that.
   const db = new D1(), calls = [];
   const fetcher = async (url, options) => {
     if (!url.startsWith(serviceUrl)) throw Error('unexpected fetch ' + url);
@@ -41,7 +42,7 @@ test('GET /api/agent-memory 返回 Agent 自己记下的 MEMORY.md，只问本�
 });
 
 test('GET /api/agent-memory：新版 Agent 没配置、或 Agent 服务出错时是 503', async () => {
-  const off = harness(async () => ok({text: 'x'}), {runtime: null});
+  const off = harness(async () => ok({text: 'x'}), {serviceUrl: null});
   assert.equal((await off.api('Alice', 'agent-memory')).status, 503);
   assert.equal(off.calls.length, 0);
   const broken = harness(async () => Response.json({error: 'boom'}, {status: 500}));
@@ -50,12 +51,13 @@ test('GET /api/agent-memory：新版 Agent 没配置、或 Agent 服务出错时
   assert.match(r.data.error, /记忆/);
 });
 
-test('开关关着时 /api/chat 走旧路，一次 /wake 都不请求', async () => {
-  const h = harness(async call => call.path === '/query' ? ok({output: '旧路的回复'}) : ok({}), {runtime: null});
-  const r = await h.api('Alice', 'chat', {text: '你好'});
-  assert.deepEqual(r, {status: 200, data: {reply: '旧路的回复'}});
-  assert.equal(wakes(h).length, 0);
-  assert.deepEqual(h.calls.map(c => c.path), ['/query']);
+test('WEAVE_AGENT_RUNTIME 不再起作用：空的或别的值，/api/chat 一样叫醒 Agent，没有 /query', async () => {
+  for (const runtime of [undefined, '', 'nonsense']) {
+    const h = harness(async () => ok({outcome: 'success', reply: '好的', sessionId: 's', tools: []}), {runtime});
+    const r = await h.api('Alice', 'chat', {text: '你好'});
+    assert.deepEqual(r, {status: 200, data: {reply: '好的'}});
+    assert.deepEqual(h.calls.map(c => c.path), ['/wake']);
+  }
 });
 
 test('开关打开：先存用户消息，再叫醒，回来重读再存回复；Agent 中途记的完成记录不被覆盖，也不报 409', async () => {

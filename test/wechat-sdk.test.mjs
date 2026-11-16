@@ -1,4 +1,4 @@
-// WeChat private messages on the Agent SDK path (WEAVE_AGENT_RUNTIME=sdk), and the dispatcher
+// WeChat private messages on the Agent SDK path, and the dispatcher
 // functions the WeChat and proactive code share. Fake Agent service, fake D1, no model.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
@@ -60,17 +60,6 @@ test('a WeChat message where the Agent also calls send_message: that call sends 
   assert.deepEqual(answers, [{ok: false, text: '把话写在最后一段就行。'}]);
   assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => [j.threadId, j.text]), [['wxid-alice', final]]);
   assert.deepEqual((await h.read()).people[h.id].messages.slice(-2).map(m => [m.role, m.text]), [['user', '你好'], ['assistant', final]]);
-});
-
-test('with the switch off, WeChat keeps the old path: the legacy /query, never a /wake', async () => {
-  // null, not undefined: setup() would fill in the default 'sdk' for undefined.
-  const h = await setup({runtime: null, agent: async () => ok({output: '旧路的回复'})});
-  await h.bind();
-  await h.bridge('claim', {});
-  await h.bridge('events', h.message('你好'));
-  await h.tick();
-  assert.deepEqual(h.calls.map(c => c.path), ['/query']);
-  assert.deepEqual((await h.bridge('claim', {})).data.jobs.map(j => j.text), ['旧路的回复']);
 });
 
 test('busy, unavailable and uncertain answers reach WeChat with the same words as the web, and a run is never retried', async () => {

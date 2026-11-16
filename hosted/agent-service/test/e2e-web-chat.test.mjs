@@ -41,7 +41,7 @@ async function chat(name, text) {
   const request = new Request('https://weave.test/api/chat', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://weave.test'}, body: JSON.stringify({text})});
   const response = await handleAPI(request, {
     db, secret, identity: {userId: name, displayName: name, email: name + '@example.test'},
-    agentServiceUrl: agent.url, agentServiceToken: TOKEN, agentRuntime: 'sdk',
+    agentServiceUrl: agent.url, agentServiceToken: TOKEN,
   });
   return {status: response.status, data: await response.json()};
 }

@@ -84,9 +84,6 @@ export default async function PrivacyPage() {
             <li>
               <strong>Notion：</strong>只有你连接后才会读取你选择的页面，页面文字会一起发给 DeepSeek。只有你确认过的计划才会写回去。
             </li>
-            <li>
-              <strong>朋友：</strong>只有你每次单独授权时，才会共享这次活动的可用时间和活动偏好。你的聊天和反馈不会给朋友。
-            </li>
           </ul>
           <p>Weave 不包含广告，也不出售你的数据。</p>
         </section>
@@ -121,7 +118,7 @@ export default async function PrivacyPage() {
             <li>你的资料会一直保留，直到你删除账号。</li>
             <li>在「设置」里可以导出全部数据，也可以永久删除账号。删除后无法恢复。</li>
             <li>
-              删除账号会同时取消你和朋友的共同安排，并关闭你开启的打卡群。已经发给 DeepSeek 或写进你 Notion 的内容，要到对方那里处理。
+              删除账号会关闭你开启的打卡群。已经发给 DeepSeek 或写进你 Notion 的内容，要到对方那里处理。
             </li>
             <li>访客退出后找不回原来的空间，所以需要删除的话，请先删除再退出。</li>
           </ul>

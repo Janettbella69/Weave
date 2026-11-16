@@ -11,14 +11,14 @@ test('没设密码就不拦', async () => {
   assert.equal(await basicAuthGate(at('/api/status'), undefined), null);
 });
 
-test('内部接口不拦：它们有自己的令牌（Agent 服务、微信桥接、后台判断）', async () => {
-  for (const path of ['/api/internal/agent/tools/log_completion', '/api/internal/agent/snapshot', '/api/internal/wechat/tick', '/api/internal/hermes/claim']) {
+test('内部接口不拦：它们有自己的令牌（Agent 服务、微信桥接）', async () => {
+  for (const path of ['/api/internal/agent/tools/log_completion', '/api/internal/agent/snapshot', '/api/internal/wechat/tick']) {
     assert.equal(await basicAuthGate(at(path), SETTING), null, path);
   }
 });
 
 test('快照接口只放行这一个地址，长得像的照样要密码', async () => {
-  for (const path of ['/api/internal/agent/snapshotx', '/api/internal/agent/snapshot/x']) {
+  for (const path of ['/api/internal/agent/snapshotx', '/api/internal/agent/snapshot/x', '/api/internal/hermes/claim']) {
     assert.equal((await basicAuthGate(at(path), SETTING))?.status, 401, path);
   }
 });

@@ -15,7 +15,8 @@ const LA_LATE = Date.parse('2026-11-03T07:30:00Z');
 // The model-facing draft text from habits.mjs (TEXT.notFound); keep the two in step.
 const HABIT_NOT_FOUND = '没有这个习惯。先查 weave/weave.db 的 habits 表，看现有的习惯和编号。';
 // Every top-level key of GET /api/status before the web check-in work, and the four it adds.
-const OLD_STATUS_KEYS = ['profile', 'personId', 'people', 'messages', 'plans', 'checkins', 'calendar', 'reminders', 'notifications', 'negotiations', 'settings', 'invites', 'agentRuntime'];
+// people, calendar, negotiations and invites went with the friend feature (the old model-driven negotiation).
+const OLD_STATUS_KEYS = ['profile', 'personId', 'messages', 'plans', 'checkins', 'reminders', 'notifications', 'settings', 'agentRuntime'];
 const NEW_STATUS_KEYS = ['goals', 'habits', 'completions', 'today'];
 // 第二块（主动服务）：排期和档位。
 const PROACTIVE_STATUS_KEYS = ['schedules', 'proactive', 'activity'];

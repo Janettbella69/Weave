@@ -59,15 +59,6 @@ test('flag off: /photo is not a route, it answers like any unknown path; and a g
   assert.equal(tableExists(h), false);
 });
 
-test('flag on but the old (non-SDK) runtime: no photo hints, plain text behaviour', async () => {
-  const h = await setup({runtime: '', images: true});
-  await h.bind();
-  const answer = await h.bridge('events', h.message('这顿多少卡', {photo: 'ready'}));
-  assert.equal(answer.data.queued, true);
-  assert.ok(!('photo' in answer.data));
-  assert.equal((await h.photo('msg_2', PHOTO)).status, 415, '/photo does not exist on this runtime');
-});
-
 test('private chat, photo first: the owner\'s text is held, the answer asks for the photo, the wake carries it on deepseek-flash, and it is deleted when the turn starts', async () => {
   const h = await setup({images: true, agent: async () => reply('大约 600 千卡')});
   assert.equal((await h.call('alice', 'settings', {model: 'deepseek-v4-pro'})).status, 200);

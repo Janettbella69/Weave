@@ -39,7 +39,7 @@ Agent 服务要自己启动容器，所以它跑在宿主机上，不放进容�
    - `AGENT_DATA_DIR`：每个人的工作目录都在这里，要备份；注销时 Weave 会调 `/forget` 删掉对应目录
 
    `AGENT_TICK_SECONDS` 不用设：默认每 60 秒用 `AGENT_SERVICE_TOKEN` 敲一次 `WEAVE_API_URL` 的 `/api/internal/tick`，到点的提醒、后台叫醒都靠它；设成 0 就关掉。
-4. Weave 服务那边设 `WEAVE_AGENT_RUNTIME=sdk`、`AGENT_SERVICE_URL=http://127.0.0.1:4320`（同一台机器上可以用 http）、`AGENT_SERVICE_TOKEN`。不设 `WEAVE_AGENT_RUNTIME` 就还走旧路。
+4. Weave 服务那边设 `AGENT_SERVICE_URL=http://127.0.0.1:4320`（同一台机器上可以用 http）和 `AGENT_SERVICE_TOKEN`。不设的话网页聊天返回 503，微信消息留在队列里。
 
 `AGENT_ISOLATION=local` 只用于没有 Docker 的本机开发：Bash 靠 SDK 的 sandbox 断网，文件工具靠路径规则限制在工作目录，没有容器那层。
 

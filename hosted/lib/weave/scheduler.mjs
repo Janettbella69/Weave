@@ -1,11 +1,8 @@
-import {Store,withWorld} from './store.mjs';
+import {withWorld} from './store.mjs';
 import {deliverReminders} from './domain.mjs';
-import {processInbound,processInboundSdk,wechatConfig} from './wechat.mjs';
+import {processInboundSdk,wechatConfig} from './wechat.mjs';
 import {agentServiceConfig,START_BY_MS,TICK_BUDGET_MS} from './dispatcher.mjs';
 import {runDayClose} from './day-close.mjs';
-import {chatFor,groupChatFor} from './api.mjs';
-import {modelBudgetConfig} from './budget.mjs';
-import {notionOAuthConfig} from './notion.mjs';
 import {sweepPhotos} from './wechat-photos.mjs';
 import {deliverRoutines,runProactive} from './proactive.mjs';
 import {jevConfig} from './jev.mjs';
@@ -32,7 +29,7 @@ function queueReminderMessages(world,now,enabled){
   return queued;
 }
 
-// On the Agent SDK path (WEAVE_AGENT_RUNTIME=sdk) a WeChat message wakes the Agent, which takes seconds to minutes and
+// A WeChat message wakes the Agent, which takes seconds to minutes and
 // writes the world through the tool backend meanwhile, so nothing here holds a world across it: the reminders are
 // their own transaction and processInboundSdk does its own claiming and saving.
 //   proactive      also wake people's Agents in the background (follow-ups and periodic looks, proactive.mjs). Only the
@@ -50,7 +47,7 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
   let processed=0;
   if(enabled&&wechatInbound){
     if(service)processed=await processInboundSdk({db,secret,service,fetcher,now});
-    else console.error('WEAVE_AGENT_RUNTIME=sdk，但 Agent 服务没有配置好，微信消息先留在队列里。');
+    else console.error('Agent 服务没有配置好，微信消息先留在队列里。');
   }
   // 后台叫醒（到点的跟进、定期看看）有时效，先跑；换日收尾（day-close.mjs）不急，用这一拍剩下的时间，
   // 过了 60 秒就留到下一拍。两者共用同一个预算，整拍不超过 TICK_BUDGET_MS。
@@ -60,19 +57,10 @@ async function runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,
   return {delivered,routines,queued,processed,proactive:{started,closed}};
 }
 
-export async function runScheduled({db,secret,env={},agentRuntime='',agentServiceUrl,agentServiceToken,agentProviderApiKey,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true,jev=jevConfig(env)}){
+export async function runScheduled({db,secret,env={},agentServiceUrl,agentServiceToken,fetcher=fetch,now=Date.now(),proactive=false,wechatInbound=true,jev=jevConfig(env)}){
   if(!db)throw Error('Reminder database is unavailable');
   // 微信看图暂存的照片，到期没用掉的删掉（最多 10 分钟）。开关关了以后也照样清，表不存在时什么都不做。
   // 这里每一拍都跑：桥接的定时任务、Agent 服务每分钟敲一次的 /api/internal/tick（#35）、Cloudflare Cron。
   await sweepPhotos(db,now);
-  if(agentRuntime==='sdk')return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive,wechatInbound,jev});
-  const agent={secret,fetcher,agentServiceUrl,agentServiceToken,agentProviderApiKey,modelBudget:modelBudgetConfig(env),now,apiProxy:notionOAuthConfig(env).apiProxyUrl||''};
-  for(let attempt=0;attempt<3;attempt++)try{
-    const store=new Store(db),world=await store.load();
-    const enabled=!!(wechatConfig(env).token&&secret),delivered=deliverReminders(world,now)+deliverRoutines(world,now),queued=queueReminderMessages(world,now,enabled);
-    // Replies are only queued here; the local bridge is what actually reaches WeChat.
-    const processed=enabled?await processInbound(world,{secret,now,handleMessage:(person,text)=>chatFor(person,world,text,agent),handleGroup:(person,input)=>groupChatFor(person,world,input,agent)}):0;
-    if(delivered||queued||processed)await store.save(world);
-    return {delivered,queued,processed};
-  }catch(error){if(attempt===2)throw error;}
+  return runScheduledSdk({db,secret,env,agentServiceUrl,agentServiceToken,fetcher,now,proactive,wechatInbound,jev});
 }

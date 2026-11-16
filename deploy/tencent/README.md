@@ -83,7 +83,7 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'b=$(ls -t ~/weave-d
 
 微信通道的两个程序（wx 守护进程和桥接）跑在你自己的 Mac 上，只向外连接这个网站；服务器这边只多一个 `WECHAT_BRIDGE_TOKEN`。整套步骤（装、配令牌、扫码、验证、回退、该警惕的征兆）在 [`deploy/wechat-mac/README.md`](../wechat-mac/README.md)。
 
-服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN` 和 `WEAVE_AGENT_RUNTIME=sdk`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
+服务器这边只涉及一件事：`web.env` 里的 `WECHAT_BRIDGE_TOKEN`。Mac 上的 `set-token.sh` 会经 ssh 调用本目录的 `set-wechat-token.sh`，替你写好令牌并重新部署，不用手动改。要关掉微信通道：Mac 上跑 `bash deploy/wechat-mac/set-token.sh --remove`。
 
 想把这两个程序也搬到这台服务器上（试点，自己的 compose 项目 `wechat`，不碰 `weave` 和 Azora）：见 [`wechat/README.md`](wechat/README.md)。
 
@@ -118,8 +118,6 @@ ssh -i ~/.ssh/id_ed25519_43_162_99_246 ubuntu@43.162.107.53 'cd ~/weave/deploy/t
 ```
 
 这条只停 `weave` 项目里的两个容器，数据都留着，Azora 不受影响。**不要加 `-v`**，加了会把网站的数据库一起删掉。
-
-想退回旧的聊天方式，把 `web.env` 里的 `WEAVE_AGENT_RUNTIME=sdk` 删掉，再跑一次 `deploy.sh`。
 
 ## 东西都在哪
 

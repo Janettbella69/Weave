@@ -1,4 +1,4 @@
-// Harness for WeChat messages that wake the Agent service (WEAVE_AGENT_RUNTIME=sdk).
+// Harness for WeChat messages that wake the Agent service.
 // Everything is fake: the D1 is in memory, the Agent service is a function that sees each
 // request the Weave side sends it, and no model is ever called.
 import {D1} from './product-db.mjs';
@@ -18,7 +18,7 @@ export const reply = text => ok({outcome: 'success', reply: text, sessionId: 's-
 
 // images: the server's WEAVE_WECHAT_IMAGES switch (docs/superpowers/specs/2026-11-03-wechat-images-design.md); off by default.
 // bridgePhotos: the bridge's own switch, which it announces with X-Weave-Photos: on on every request; follows images unless given.
-export async function setup({runtime = 'sdk', agent = async () => reply('收到'), images = false, bridgePhotos = images} = {}) {
+export async function setup({configured = true, agent = async () => reply('收到'), images = false, bridgePhotos = images} = {}) {
   const db = new D1(), store = new Store(db), world = await store.load(), id = 'u:' + await hash('alice');
   ensurePerson(world, {userId: id, displayName: 'Alice'});
   await store.save(world);
@@ -31,7 +31,7 @@ export async function setup({runtime = 'sdk', agent = async () => reply('收到'
     calls.push(call);
     return state.agent(call);
   };
-  const options = () => ({db, secret, wechat: {token: bridgeToken, ...(images ? {images: true} : {})}, agentServiceUrl: SERVICE, agentServiceToken: SERVICE_TOKEN, agentRuntime: runtime, fetcher, now});
+  const options = () => ({db, secret, wechat: {token: bridgeToken, ...(images ? {images: true} : {})}, ...(configured ? {agentServiceUrl: SERVICE, agentServiceToken: SERVICE_TOKEN} : {}), fetcher, now});
   const call = async (identity, path, data, headers = {}) => {
     const r = await handleAPI(new Request('https://weave.example/api/' + path, {method: data === undefined ? 'GET' : 'POST', headers: data ? {Origin: 'https://weave.example', 'Content-Type': 'application/json', ...headers} : headers, body: data ? JSON.stringify(data) : undefined}), {...options(), identity: identity ? {userId: identity, displayName: identity, email: identity + '@example.test'} : null});
     return {status: r.status, data: await r.json()};

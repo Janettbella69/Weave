@@ -42,8 +42,5 @@ trap - EXIT
 if [ -n "$token" ]; then echo "已写入 web.env 的 WECHAT_BRIDGE_TOKEN（${#token} 位，不显示内容）。旧文件备份在 $backup"
 else echo "已清空 web.env 的 WECHAT_BRIDGE_TOKEN，微信通道关闭。旧文件备份在 $backup"; fi
 
-# 微信消息只有 WEAVE_AGENT_RUNTIME=sdk 才走 Agent。没设的话网站会回到旧路，提醒一句。
-grep -q '^WEAVE_AGENT_RUNTIME=sdk$' "$env_file" || echo "注意：web.env 里没有 WEAVE_AGENT_RUNTIME=sdk，微信消息会走旧路。要先加上这一行。"
-
 if [ "${WEAVE_SKIP_DEPLOY:-}" = 1 ]; then echo "（WEAVE_SKIP_DEPLOY=1，没有重新部署。）"; exit 0; fi
 bash "$dir/deploy.sh"
