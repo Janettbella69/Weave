@@ -1,171 +1,103 @@
-// 工具后端（docs/ARCHITECTURE.md 第 4 节规则 1、4、6、7）：Agent 服务里的 MCP 工具只是薄壳，
-// 规则都在这里。POST /api/internal/agent/tools/<name>，Authorization 是这一轮的通行证。
-// 规则不允许时回 200 + {ok:false, text}，让模型看到能照做的原因；通行证不对才是 4xx。
-// 同一次调用（runId + toolUseId）重放时，原样返回上次的结果，不会记两条、发两次。
-import {withWorld} from './store.mjs';
+// 工具后端（docs/ARCHITECTURE.md「一张嘴」）：Weave 说话只有一个出口 send_message，Agent 服务里的 MCP 工具是薄壳，
+// 参数和这一条消息是什么（turn）转到这里。POST /api/internal/agent/tools/send_message，Authorization 是这一条的通行证。
+// 这里只做基础设施的事：收件人由通行证决定（模型选不了）、同一次调用重放不发两次、记进聊天、排进微信。
+// 不替 Weave 判断该不该说、说几句：每天几条、多久不重复、几点不打扰，这些「防它做蠢事」的上限都删了（教材 p.54「前者删」）。
+// 唯一的例外是 Jev（她定的用途：判断要不要主动提醒用户）：Weave 主动开口时（不是回她、不是她让设的提醒），先问 Jev 现在发不发。
+import {withWorld, Store} from './store.mjs';
 import {verifyCapability} from './capability.mjs';
-import {fail, record, notify, addReminder} from './domain.mjs';
-import {activeNow, localClock} from './proactivity.mjs';
-import {saveGoal, saveHabit, logCompletion} from './habits.mjs';
+import {fail, record, notify} from './domain.mjs';
+import {localClock} from './proactivity.mjs';
 import {groupTool, queueOwnerText} from './wechat.mjs';
-import {DIRECT_SEND_TEXT} from './dispatcher.mjs';
-import {proactiveOf, limitsFor, addSchedule, cancelSchedule, setLevel, scheduleResult, TEXT as SCHEDULE_TEXT} from './proactive.mjs';
+import {askJev} from './jev.mjs';
 
-// 这一轮能用哪些工具，按通行证上的范围。群范围只有 send_message，而且只能发给通行证上的那个群。
-// 只有会写东西的工具；读数据走叫醒前的快照（agent-snapshot.mjs，教材 p.16）。
-export const TOOL_SCOPES = {
-  send_message: ['owner', 'group'],
-  save_habit: ['owner'],
-  log_completion: ['owner'],
-  save_goal: ['owner'],
-  set_reminder: ['owner'],
-  schedule_wake: ['owner'],
-  cancel_schedule: ['owner'],
-  set_proactivity: ['owner'],
-};
-const RECEIPTS = 200, DAILY_MESSAGES = 20, REPEAT_MS = 24 * 60 * 60 * 1000;
+const RECEIPTS = 200, JEV_LOG = 50, WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// 草稿文案和每天 20 条的上限，待确认。off 到 backgroundRepeat 是第二块加的（设计稿附录 A-4）。
-const TEXT = {
+// 草稿文案，待确认：给模型看的结果。
+export const TEXT = {
   length: '消息要 1–700 字。',
-  quiet: '现在是对方的安静时段，这条没有发出。',
-  cap: '今天发的消息已经到上限了，这条没有发出。',
-  repeat: '这句话 24 小时内已经发过了，没有重复发送。',
   sent: '已发出。',
-  off: '对方关掉了主动消息，这条没有发出。',
-  proactiveCap: '今天主动说的话已经到上限了，这条没有发出。',
-  onlyDirect: '只有对方在聊天里亲口说的时候才能改这个，这次没有改。',
-  reminderBackground: '对方不在场，不能替对方设提醒。要晚点再看看，用 schedule_wake。',
-  backgroundRepeat: '这一轮没有人找你，只能排一次性的跟进。',
-  notFoundHint: '先查 weave/weave.db 的 schedules 表和 reminders 表。',
-  // 草稿文案，待确认（换日收尾，day-close.mjs）。
-  closeNoSend: '这一轮是当天的收尾，不发消息。要之后再找对方，用 schedule_wake 排一次跟进。',
+  jevQuiet: 'Jev 判断现在不打扰，这条没有发出。想晚点再看，可以给自己定个闹钟。',
 };
 
-// 收件人由通行证决定，模型选不了（文档第 4 节工具表）。通行证上的通道是微信就发到本人的微信，是网页就发网页通知。
-// 有人直接找它的那一轮（网页、微信私聊）什么都不发：最后一段话就是回复，再发就成了两条（DIRECT_SEND_TEXT）。
-// 没人直接找它的那一轮（后台的定时、定期看看）发出的是主动消息：档位关了不发，按档位每天有上限，聊天里标成主动来问。
-function sendMessage(world, person, claims, args, now) {
-  // 换日收尾那一轮（通行证 purpose: close）没人在场，也不是来找人的：一律不发。
-  if (claims.purpose === 'close') fail(TEXT.closeNoSend);
-  // 收尾那一轮是 direct: false；万一两样都带，按收尾的那句答（上一行先查）。
-  if (claims.direct) fail(DIRECT_SEND_TEXT);
-  const text = typeof args.text === 'string' ? args.text.trim() : '';
-  if (!text || text.length > 700) fail(TEXT.length);
-  const proactive = !claims.direct ? proactiveOf(person, now) : null;
-  if (proactive?.level === 'off') fail(TEXT.off);
-  if (proactive && !activeNow(person, now)) fail(TEXT.quiet);
-  if (proactive && proactive.sent >= limitsFor(proactive.level).messages) fail(TEXT.proactiveCap);
-  const day = localClock(person, now).day, previous = person.agentOutbox;
-  const outbox = {
-    day,
-    count: previous?.day === day ? previous.count : 0,
-    recent: (previous?.recent || []).filter(item => now - item.at < REPEAT_MS),
+// 这句话是不是 Weave 主动开口：心跳、它自己定的闹钟。她发来的话、她让设的提醒（alarmKind reminder）、事件都不是。
+export const isProactive = turn => turn?.kind === 'heartbeat' || (turn?.kind === 'alarm' && turn.alarmKind === 'self');
+
+// 给 Jev 的状态（英文字段，Jev 主要用英文训练）：Agent 服务从本子里算好的习惯和备忘（turn.facts），加上这边聊天记录里的
+// 「她多久没说话、几句主动的话还没回、今天主动说了几句」。不放聊天原文（隐私页写着发给 Jev 的是哪些）。
+function jevState(person, turn, now) {
+  const facts = turn.facts || {}, today = localClock(person, now).day;
+  const lastOwn = Math.max(0, ...(person.messages || []).filter(m => m.role === 'user').map(m => Date.parse(m.createdAt) || 0));
+  const proactive = (person.messages || []).filter(m => m.proactive === true);
+  const local = typeof facts.local_time === 'string' ? facts.local_time : null;
+  return {
+    ...(local ? {local_time: local, weekday: WEEKDAYS[new Date(local.slice(0, 10) + 'T12:00:00Z').getUTCDay()]} : {}),
+    reason: turn.kind === 'heartbeat' ? 'A periodic time check; the assistant is considering a message the user did not ask for.' : 'A follow-up the assistant scheduled for itself is due.',
+    ...(typeof facts.assistant_note === 'string' ? {assistant_note: facts.assistant_note} : {}),
+    proactive_messages_today: proactive.filter(m => localClock(person, Date.parse(m.createdAt) || 0).day === today).length,
+    minutes_since_user_last_spoke: lastOwn ? Math.round((now - lastOwn) / 60000) : null,
+    unanswered_proactive_messages: proactive.filter(m => (Date.parse(m.createdAt) || 0) > lastOwn && (m.wechat === undefined || m.wechat === 'sent')).length,
+    goals: Array.isArray(facts.goals) ? facts.goals : [],
+    habits: Array.isArray(facts.habits) ? facts.habits : [],
   };
-  if (outbox.count >= DAILY_MESSAGES) fail(TEXT.cap);
-  if (outbox.recent.some(item => item.text === text)) fail(TEXT.repeat);
-  outbox.count++;
-  outbox.recent.push({text, at: now});
-  person.agentOutbox = outbox;
-  if (proactive) proactive.sent++;
-  // 时间用这一轮的时钟：「连着两句没回」和微信发送过期都按它算（test/wechat-late-delivery.test.mjs）。
-  const message = record(person, text, {source: 'agent', runId: claims.runId, createdAt: new Date(now).toISOString(), ...(proactive ? {proactive: true} : {})});
-  if (claims.channel === 'wechat') {
-    // 主动消息走微信：先记成「排着」，桥接回执说送到了才算她看到了（proactive.mjs 的「连着两句没回」）。
-    if (queueOwnerText(world, person, text, now, {message, proactive: !!proactive}) && proactive) message.wechat = 'queued';
-  } else notify(world, person.id, text);
-  return TEXT.sent;
 }
-
-// 模型常把时间写到分钟、不带秒，比如 2026-11-04T20:00+08:00；domain.validTime（网页的表单也用它）要求有秒。
-// 所以只在这个工具里补上 :00：形如 YYYY-MM-DDTHH:MM 后面紧跟 Z 或 ±HH:MM 的才补，其他一概不动。
-// 没有时区、已经过去、日期或钟点不存在，照样由 addReminder 按原来的规则拒绝。
-const MINUTES_ONLY = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(Z|[+-]\d{2}:\d{2})$/;
-const withSeconds = value => typeof value === 'string' ? value.replace(MINUTES_ONLY, '$1:00$2') : value;
-
-// 只响一次的提醒：直接用现有的 domain.addReminder（1–500 字、必须是将来的 ISO 时间，规则和网页上设提醒一样）。
-// 到点后怎么送达不在这里：网页每次请求时把到点的提醒写进聊天和通知，微信由 scheduler.mjs 排队。
-// 每天 / 每周 / 每月的存进 person.schedules（proactive.mjs），到点同样原样发一句。对方不在场的那一轮不能设。
-function setReminder(person, claims, args, now) {
-  if (!claims.direct) fail(TEXT.reminderBackground);
-  const repeat = args.repeat ?? 'none';
-  if (repeat !== 'none') {
-    const item = addSchedule(person, {kind: 'reminder', text: args.text, at: withSeconds(args.due_at), repeat, origin: 'chat'}, now);
-    return {schedule: scheduleResult(person, item)};
-  }
-  const item = addReminder(person, {text: args.text, dueAt: withSeconds(args.due_at)});
-  return {reminder: {reminder_id: item.id, text: item.text, due_at: item.dueAt, status: item.status}};
-}
-
-// Weave 给自己排的跟进：到点在后台叫醒自己（proactive.mjs）。后台那一轮只能排一次性的，免得越排越多。
-function scheduleWake(person, claims, args, now) {
-  const repeat = args.repeat ?? 'none';
-  if (!claims.direct && repeat !== 'none') fail(TEXT.backgroundRepeat);
-  const item = addSchedule(person, {kind: 'wake', text: args.note, at: withSeconds(args.at), repeat, origin: claims.direct ? 'chat' : 'background'}, now);
-  return {schedule: scheduleResult(person, item)};
-}
-
-function cancelOne(person, args) {
-  try {
-    return {cancelled: cancelSchedule(person, args.schedule_id)};
-  } catch (error) {
-    // 网页上的那句给人看；给模型的补一句去哪查。
-    if (error.message === SCHEDULE_TEXT.notFound) fail(SCHEDULE_TEXT.notFound + TEXT.notFoundHint);
-    throw error;
-  }
-}
-
-// 档位只在对方亲口说的那一轮改（Muse：一句话就能关掉、调低、调高）。
-function setProactivity(person, claims, args, now) {
-  if (!claims.direct) fail(TEXT.onlyDirect);
-  return {proactivity: setLevel(person, args.level, now)};
-}
-
-const BACKENDS = {
-  send_message: sendMessage,
-  save_habit: (world, person, claims, args, now) => JSON.stringify(saveHabit(person, args, now)),
-  log_completion: (world, person, claims, args, now) => JSON.stringify(logCompletion(person, args, now, 'agent')),
-  save_goal: (world, person, claims, args, now) => JSON.stringify(saveGoal(person, args, now)),
-  set_reminder: (world, person, claims, args, now) => JSON.stringify(setReminder(person, claims, args, now)),
-  schedule_wake: (world, person, claims, args, now) => JSON.stringify(scheduleWake(person, claims, args, now)),
-  cancel_schedule: (world, person, claims, args) => JSON.stringify(cancelOne(person, args)),
-  set_proactivity: (world, person, claims, args, now) => JSON.stringify(setProactivity(person, claims, args, now)),
-};
 
 const json = (data, status = 200) => Response.json(data, {status, headers: {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}});
 
-export async function handleAgentTool(request, {db, secret, readBody, now = Date.now()}) {
+export async function handleAgentTool(request, {db, secret, readBody, jev = null, fetcher = fetch, now = Date.now()}) {
   try {
     if (request.method !== 'POST') return json({error: '方法不支持'}, 405);
     const name = new URL(request.url).pathname.slice('/api/internal/agent/tools/'.length);
-    if (!Object.hasOwn(TOOL_SCOPES, name)) return json({error: '工具不存在'}, 404);
+    if (name !== 'send_message') return json({error: '工具不存在'}, 404);
     const auth = request.headers.get('authorization') || '';
     const claims = await verifyCapability(secret, auth.startsWith('Bearer ') ? auth.slice(7) : '', now);
-    if (!TOOL_SCOPES[name].includes(claims.scope)) return json({error: '这一轮不能用这个工具'}, 403);
     if (!db) return json({error: '数据库尚未就绪'}, 503);
     const input = await readBody(request);
-    const args = input.args, toolUseId = input.toolUseId;
+    const {args, toolUseId} = input;
+    const turn = input.turn && typeof input.turn === 'object' && !Array.isArray(input.turn) ? input.turn : {kind: 'message'};
     if (!args || typeof args !== 'object' || Array.isArray(args) || typeof toolUseId !== 'string' || !toolUseId || toolUseId.length > 200) {
       return json({error: '参数无效'}, 400);
+    }
+    // 群：发回这个群，有人 @ 它的那一条就 @ 提问的人（wechat.mjs）。
+    if (claims.scope === 'group') return json(await withWorld(db, world => groupTool(world, claims, args, toolUseId, now)));
+    const key = `${claims.runId}:${toolUseId}`;
+    const text = typeof args.text === 'string' ? args.text.trim() : '';
+    // 先看是不是重放、Jev 要不要问：Jev 是外部请求，放在写数据的事务外面（事务冲突重试时不重复问、不重复花钱）。
+    const before = await new Store(db).load();
+    const owner = before.people[claims.owner];
+    if (!owner) return json({error: '账号不存在'}, 404);
+    const done = owner.toolReceipts?.find(receipt => receipt.key === key);
+    if (done) return json({ok: done.ok, text: done.text});
+    let verdict = null;
+    if (text && text.length <= 700 && jev && isProactive(turn)) {
+      try {
+        const answer = await askJev(jev, jevState(owner, turn, now), {fetcher});
+        verdict = {noul: answer.noul, model: answer.model, threshold: jev.threshold, ...(answer.cost !== undefined ? {cost: answer.cost} : {})};
+      } catch (error) {
+        // 问不到 Jev（超时、出错）：照旧发，交给 Weave 自己的判断。
+        console.error('Jev 这次没判断，照旧发出：' + (error instanceof Error ? error.message : 'unknown'));
+        verdict = {error: true};
+      }
     }
     const out = await withWorld(db, world => {
       const person = world.people[claims.owner];
       if (!person) fail('账号不存在', 404);
-      // 群范围的工具走单独一条路：不拿本人的记录，回执也记在群自己的记录里。
-      if (claims.scope === 'group') return groupTool(name, world, claims, args, toolUseId, now);
-      const key = `${claims.runId}:${toolUseId}`;
-      const done = person.toolReceipts?.find(receipt => receipt.key === key);
-      if (done) return {ok: done.ok, text: done.text};
-      let ok = true, text;
-      try {
-        text = BACKENDS[name](world, person, claims, args, now);
-      } catch (error) {
-        if (error.status !== 400) throw error;
-        ok = false;
-        text = error.message;
+      const receipt = person.toolReceipts?.find(r => r.key === key);
+      if (receipt) return {ok: receipt.ok, text: receipt.text};
+      let ok = true, reply;
+      if (!text || text.length > 700) { ok = false; reply = TEXT.length; }
+      else if (verdict && typeof verdict.noul === 'number' && verdict.noul < verdict.threshold) { ok = false; reply = TEXT.jevQuiet; }
+      else {
+        const proactive = isProactive(turn);
+        const message = record(person, text, {source: 'agent', runId: claims.runId, createdAt: new Date(now).toISOString(), ...(proactive ? {proactive: true} : {})});
+        // 收件人和通道由通行证决定：微信就排进她的微信（主动的话等桥接回执说送到了，才算她看到了），网页就发网页通知。
+        if (claims.channel === 'wechat') { if (queueOwnerText(world, person, text, now, {message, proactive}) && proactive) message.wechat = 'queued'; }
+        else notify(world, person.id, text);
+        reply = TEXT.sent;
       }
-      person.toolReceipts = [...(person.toolReceipts || []), {key, ok, text, at: now}].slice(-RECEIPTS);
-      return {ok, text};
+      // Jev 的每一次判断都记下来（发了没有），网页「动态」能看到，以后用来看 Jev 判得准不准。
+      if (verdict) person.jevLog = [...(person.jevLog || []), {at: now, kind: turn.kind, sent: ok, ...verdict}].slice(-JEV_LOG);
+      person.toolReceipts = [...(person.toolReceipts || []), {key, ok, text: reply, at: now}].slice(-RECEIPTS);
+      return {ok, text: reply};
     });
     return json(out);
   } catch (error) {

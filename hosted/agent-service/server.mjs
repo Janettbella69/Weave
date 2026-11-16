@@ -27,7 +27,7 @@ import {createLive} from './live.mjs';
 import {createRunQueue} from './queue.mjs';
 import {checkImage, IMAGE_MAX_BASE64} from './images.mjs';
 import * as workspace from './workspace.mjs';
-import {ensureNotebook, readNotebook, setCompletion, addAlarm, dueAlarms, markFired, cancelAlarm, localISO} from './notebook.mjs';
+import {ensureNotebook, readNotebook, setCompletion, addAlarm, dueAlarms, markFired, cancelAlarm, pauseAlarm, habitFacts, localISO} from './notebook.mjs';
 import {fetchLegacy} from './legacy-import.mjs';
 
 const PLUGIN_DIR = fileURLToPath(new URL('./plugin', import.meta.url));
@@ -199,7 +199,16 @@ export async function createAgentService({
     return workspace.sessionFor(dirs).then(sessionId => ({
       scope, dirs, provider, model, runToken: run.token, isolation: runIsolation, sessionId, fingerprint,
       handlers: state => ({
-        send_message: (args, toolUseId) => toolBackend({weaveUrl, capability: state.current.capability, turn: {kind: state.current.kind, ...(state.current.alarmKind ? {alarmKind: state.current.alarmKind} : {})}, fetcher})('send_message', args, toolUseId),
+        send_message: (args, toolUseId) => {
+          const c = state.current;
+          // Weave 想主动开口（心跳、它自己定的闹钟）：网站要问 Jev，这里把 Jev 要的事实从本子里算好带上（只在本人范围）。
+          const proactive = c.kind === 'heartbeat' || (c.kind === 'alarm' && c.alarmKind === 'self');
+          const facts = proactive && scope.kind === 'owner' && c.timezone
+            ? {local_time: localISO(now(), c.timezone), ...habitFacts(dirs, localISO(now(), c.timezone).slice(0, 10)), ...(c.note ? {assistant_note: c.note} : {})}
+            : undefined;
+          const turn = {kind: c.kind, ...(c.alarmKind ? {alarmKind: c.alarmKind} : {}), ...(facts ? {facts} : {})};
+          return toolBackend({weaveUrl, capability: c.capability, turn, fetcher})('send_message', args, toolUseId);
+        },
         schedule: async args => {
           try { return {ok: true, text: JSON.stringify({alarm: addAlarm(dirs, {...args, now: now()})})}; }
           catch (error) { if (error.status === 400) return {ok: false, text: error.message}; throw error; }
@@ -213,7 +222,7 @@ export async function createAgentService({
   }
 
   // 推一条消息进这个人（或群）的会话，等这一轮做完。同一个 key 排队，不同的人并行（queue.mjs）。
-  function deliver({scope, id, capability, message, image, alarmKind, provider, model, userKey}) {
+  function deliver({scope, id, capability, message, image, alarmKind, note, timezone, provider, model, userKey}) {
     const key = `${scope.kind}:${id}`;
     return queue.run(key, async () => {
       if (!weaveUrl) fail(503, 'Agent 服务没有配置 WEAVE_API_URL');
@@ -230,7 +239,7 @@ export async function createAgentService({
         open: () => setupFor({scope, id, dirs, provider, model, userKey, fingerprint}),
         fingerprint,
         message: userMessage({...message, text}, see ? image : undefined),
-        context: {capability, kind: message.kind, ...(alarmKind ? {alarmKind} : {})},
+        context: {capability, kind: message.kind, ...(alarmKind ? {alarmKind} : {}), ...(note ? {note} : {}), ...(timezone ? {timezone} : {})},
         meta: {scope: scope.kind, channel: message.channel},
       });
       if (result.sessionId) await workspace.saveSession(dirs, result.sessionId);
@@ -293,14 +302,14 @@ export async function createAgentService({
   async function fire({scope, entry, provider, model, userKey}) {
     const {id, capability, timezone} = entry;
     const dirs = await ready(scope, id, capability);
-    const at = now(), base = {scope, id, capability, provider, model, userKey};
+    const at = now(), base = {scope, id, capability, provider, model, userKey, timezone};
     // 先记成响过，再推消息：同一个闹钟最多响一次（推的时候出错不重来，和「出错不自动重试」一致）。
     for (const alarm of dueAlarms(dirs, at)) {
       markFired(dirs, alarm, {now: at, timezone});
       const late = at - Date.parse(alarm.at);
       const text = (alarm.kind === 'reminder' ? reminderAlarmText(alarm.note) : selfAlarmText(alarm.note)) + (late > LATE_MS ? lateText(label(Date.parse(alarm.at), timezone), Math.round(late / 60000)) : '');
       const message = {kind: 'alarm', channel: 'system', at: localISO(at, timezone), text};
-      deliver({...base, message, alarmKind: alarm.kind})
+      deliver({...base, message, alarmKind: alarm.kind, note: alarm.note})
         .then(result => report({capability, kind: 'alarm'}, result.outcome))
         .catch(error => report({capability, kind: 'alarm'}, error?.status === 429 ? 'busy' : 'unavailable'));
     }
@@ -333,6 +342,13 @@ export async function createAgentService({
         return {completion: out};
       }
       if (typeof input.alarmId !== 'string' || !input.alarmId) fail(400, '参数无效');
+      if (path === '/notebook/pause-alarm') {
+        if (typeof input.paused !== 'boolean') fail(400, '参数无效');
+        if (input.timezone !== undefined) checkTimezone(input.timezone);
+        const alarm = pauseAlarm(dirs, input.alarmId, input.paused, {now: now(), ...(input.timezone ? {timezone: input.timezone} : {})});
+        if (!alarm) fail(404, '没有这个重复的闹钟，或者它已经结束了');
+        return {alarm};
+      }
       if (!cancelAlarm(dirs, input.alarmId)) fail(404, '没有这个闹钟，或者它已经结束了');
       return {ok: true};
     });
@@ -364,6 +380,7 @@ export async function createAgentService({
     '/notebook/read': [JSON_LIMIT, input => handleNotebook('/notebook/read', input)],
     '/notebook/check': [JSON_LIMIT, input => handleNotebook('/notebook/check', input)],
     '/notebook/cancel-alarm': [JSON_LIMIT, input => handleNotebook('/notebook/cancel-alarm', input)],
+    '/notebook/pause-alarm': [JSON_LIMIT, input => handleNotebook('/notebook/pause-alarm', input)],
     '/memory': [JSON_LIMIT, handleMemory],
     '/forget': [JSON_LIMIT, handleForget],
   };

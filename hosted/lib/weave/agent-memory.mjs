@@ -1,9 +1,9 @@
-// 本人在网页上看 Agent 自己记下的 MEMORY.md（docs/ARCHITECTURE.md 第 10 节：本人可看）。
-// MEMORY.md 在 Agent 服务的工作目录里，Weave 服务只是转一次请求，不存副本。
+// 本人在网页上看 Weave 自己记下的记忆（SDK 自带的记忆目录：MEMORY.md 索引加一件事一个文件）。
+// 她 11-03：按文件显示，文件名 + 原文，只读。文件在 Agent 服务那边，网站只是转一次请求，不存副本。
 import {fail} from './domain.mjs';
 
 // 草稿文案，待确认。
-const UNAVAILABLE = '暂时读不到 Agent 的记忆，请稍后再试';
+const UNAVAILABLE = '暂时读不到 Weave 的记忆，请稍后再试';
 
 export async function readAgentMemory({service, ownerId, fetcher = fetch}) {
   let out;
@@ -17,6 +17,8 @@ export async function readAgentMemory({service, ownerId, fetcher = fetch}) {
   } catch {
     out = null;
   }
-  if (typeof out?.text !== 'string') fail(UNAVAILABLE, 503);
-  return out.text;
+  if (!Array.isArray(out?.files)) fail(UNAVAILABLE, 503);
+  const files = out.files.filter(f => typeof f?.name === 'string' && typeof f.text === 'string');
+  // text：给还按一整段显示的页面用（每个文件一段，文件名作标题）。
+  return {files, text: files.map(f => `# ${f.name}\n\n${f.text}`).join('\n\n')};
 }

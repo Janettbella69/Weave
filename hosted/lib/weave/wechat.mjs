@@ -3,7 +3,7 @@
 import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import {Store,withWorld} from './store.mjs';
 import {fail} from './domain.mjs';
-import {REPLIES,TICK_BUDGET_MS,START_BY_MS,DIRECT_SEND_TEXT,wakeForMessage,wakeForGroup,forgetAgentWorkspace} from './dispatcher.mjs';
+import {REPLIES,WECHAT_CONNECTED_TEXT,sendFromOwner,sendFromGroup,sentInRun,forgetAgentWorkspace} from './dispatcher.mjs';
 import {putPhoto,takePhoto,dropPhoto,sweepPhotos,photoProblem,PHOTO_MAX_BYTES} from './wechat-photos.mjs';
 import {localClock,GROUP_TIMEZONE} from './proactivity.mjs';
 
@@ -15,7 +15,8 @@ const STALE_MS=6*3600000,LEASE_MS=5*60000,CLAIM_LIMIT=5;
 // 和 proactive.mjs 的 GRACE_MS 一样是 2 小时：晚了 2 小时的「今天走了吗」「提醒你：吃药」比不发更打扰。普通回复、绑定确认、群消息不带 dueAt，不过期。
 const LATE_MS=2*3600000;
 // Agent SDK path: a run that has been 'processing' this long lost its worker; it is never retried.
-const ORPHAN_MS=10*60000,MAX_WAKES_PER_TICK=5,GROUP_RECEIPTS=50;
+// 交出去以后一直没回报（Agent 服务重启丢了）的那条：这么久还在 processing 就当没处理成。一轮最多 10 分钟，再加排队。
+const ORPHAN_MS=30*60000,MAX_HANDOFFS_PER_TICK=20,GROUP_RECEIPTS=50,RECENT_GROUP=10;
 // 看图（WEAVE_WECHAT_IMAGES=1，默认关；docs/superpowers/specs/2026-11-03-wechat-images-design.md）：一条在等照片的消息最多等多久。
 // 平时由桥接说「照片来了」或「没有照片」来放行（/photo），这个上限只防桥接中途掉线。
 const PHOTO_HOLD_MS=30000;
@@ -125,7 +126,10 @@ async function ingestPrivate(world,message,{secret,now}){
       if(person.settings.wechatWxidHash)delete world.runtime[mappingKey(person.settings.wechatWxidHash)];
       person.settings.wechatWxidHash=senderHash;person.settings.wechatWxid=await seal(message.sender,secret,ownerId);person.settings.wechatBoundAt=now;
       world.runtime[mappingKey(senderHash)]={ownerId,updatedAt:now};delete world.runtime[bindKey(await hash(match[1]))];
-      queueOut(world,{ownerId,text:'微信已连接到你的 Weave 空间。之后可以直接在这里记录反馈、询问个人 Agent。',source:'binding'},now);
+      // 绑定成功：不再由代码说一句写死的话。往收件队列里放一条「事件」，走和她的消息同一条路交给 Weave，由它自己打招呼
+      // （她 2026-11-16 确认的那句，dispatcher.mjs 的 WECHAT_CONNECTED_TEXT）。
+      const eventId='in:event:'+crypto.randomUUID();
+      world.wechat[eventId]={id:eventId,direction:'inbound',ownerId,kind:'event',text:WECHAT_CONNECTED_TEXT,status:'queued',createdAt:stamp(now)};
       mark('ignored');return {accepted:true,bound:true};
     }
     mark('ignored');return {accepted:true,ignored:true};
@@ -191,13 +195,6 @@ export async function ingest(world,input,{secret,now=Date.now(),images=false,dro
 // The group's recent messages as plain rows, the shape of the group_messages table in the pre-wake snapshot:
 // {seq, member, text, at}. Member numbers instead of ids or names; nothing but this group's own records.
 // A closed, unknown or someone else's group has no rows. This is the only thing the snapshot needs from here.
-export async function groupSnapshotMessages(world,{groupId,ownerId,secret}){
-  const key=groupKey(groupId),group=world.runtime?.[key];
-  if(!group||group.ownerId!==ownerId)return [];
-  const context=await readContext(group,secret,key);
-  return context.messages.map((m,i)=>({seq:i+1,member:m.from,text:m.text,at:Number.isFinite(m.at)?new Date(m.at).toISOString():null}));
-}
-
 // send_message from an owner run on the WeChat channel: the recipient is the owner, never chosen by the model.
 // message：聊天里记下的那一条。主动消息（没人直接找它的那一轮说的）的发送任务带 dueAt（说出口的时间，晚了就不发）和 messageId
 // （回执回写到那一条的 wechat 上，「连着两句没回」只算送到的）。返回有没有排进队列。
@@ -213,29 +210,26 @@ function markDelivery(world,entry,state){
   if(message)message.wechat=state;
 }
 
-// Tools in a group run (only send_message for now). The recipient is the group named by the capability, the
-// owner's personal record is never touched, and the results are remembered in the group's own record so a
-// replayed call (same run and toolUseId) answers the same without sending twice.
-// In a run where someone @-mentioned it (direct), the final paragraph is the reply and already goes to the group with
-// an @ to the asker, so send_message sends nothing and tells the model to put it there (DIRECT_SEND_TEXT).
-export function groupTool(name,world,claims,args,toolUseId,now){
+// 群里的 send_message：发回通行证上的那个群（模型选不了），不碰任何人的个人记录；结果记在群自己的记录里，同一次调用
+// （同一个 runId 和 toolUseId）重放时原样回答、不发两次。有人 @ 它的那一条，回话 @ 提问的人（sendFromGroup 记下的 mention）。
+export function groupTool(world,claims,args,toolUseId,now){
   const key=groupKey(claims.group),group=world.runtime?.[key],receiptKey=`${claims.runId}:${toolUseId}`;
   const done=group?.toolReceipts?.find(receipt=>receipt.key===receiptKey);
   if(done)return {ok:done.ok,text:done.text};
   let ok=true,text;
   try{
-    if(name!=='send_message')fail('这一轮不能用这个工具',403);
-    if(claims.direct)fail(DIRECT_SEND_TEXT);
     const sent=typeof args.text==='string'?args.text.trim():'';
     if(!sent||sent.length>700)fail('消息要 1–700 字。');
     if(!group||group.ownerId!==claims.owner)fail('这个群没有开启打卡助理，没有发出。');
-    queueOut(world,{source:'group',groupAad:key,text:sent,target:group.target},now);
+    const run=world.runtime[`group-run:${claims.runId}`];
+    queueOut(world,{source:'group',groupAad:key,text:sent,target:group.target,...(run?.mention&&run.expiresAt>now?{mentions:run.mention}:{})},now);
     text='已发出。';
   }catch(error){
     if(error.status!==400)throw error;
     ok=false;text=error.message;
   }
   if(group)group.toolReceipts=[...(group.toolReceipts||[]),{key:receiptKey,ok,text,at:now}].slice(-GROUP_RECEIPTS);
+  for(const [k,v] of Object.entries(world.runtime||{}))if(k.startsWith('group-run:')&&!(v?.expiresAt>now))delete world.runtime[k];
   return {ok,text};
 }
 
@@ -253,40 +247,46 @@ async function claimNext(db,secret,now){
     if(!world.people[entry.ownerId])return drop();
     if(entry.source!=='group'){
       entry.status='processing';entry.startedAt=stamp(now);
-      return {id:entry.id,kind:'private',ownerId:entry.ownerId,text:entry.text,...withPhoto};
+      return {id:entry.id,kind:entry.kind==='event'?'event':'private',ownerId:entry.ownerId,text:entry.text,...withPhoto};
     }
     const group=world.runtime[entry.groupAad];
     if(!group||group.ownerId!==entry.ownerId)return drop();
     let payload;
     try{payload=JSON.parse(await unseal(entry.payload,secret,entry.groupAad));}catch{entry.status='uncertain';entry.error='读不出这条群消息';delete entry.payload;return {skipped:true,...withPhoto};}
     entry.status='processing';entry.startedAt=stamp(now);
-    return {id:entry.id,kind:'group',ownerId:entry.ownerId,groupAad:entry.groupAad,groupId:entry.groupAad.slice('wechat-group:'.length),text:`${payload.label||'成员'}：${payload.text}`,sender:payload.sender,threadId:payload.threadId,...withPhoto};
+    // 群里之前的几句（这一条 @ 已经在最后，去掉它），一起交给 Weave：它看得到 @ 它之前大家在说什么（启动前预处理）。
+    let recent=[];
+    try{recent=(await readContext(group,secret,entry.groupAad)).messages.slice(-(RECENT_GROUP+1),-1);}catch{recent=[];}
+    return {id:entry.id,kind:'group',ownerId:entry.ownerId,groupAad:entry.groupAad,groupId:entry.groupAad.slice('wechat-group:'.length),text:`${payload.label||'成员'}：${payload.text}`,recent,sender:payload.sender,threadId:payload.threadId,...withPhoto};
   });
 }
 
-// Whatever happens to a run, its entry must not stay 'processing' forever, and the person hears about it.
-async function markUncertain(db,claim,now){
+// 交不出去（Agent 服务不在、排队太多）：这条不会再处理，她发来的话就如实告诉她原因（基础设施的报错，不是 Weave 说的）。
+async function markUncertain(db,claim,now,outcome='uncertain'){
   await withWorld(db,world=>{
     const entry=world.wechat?.[claim.id];
     if(!entry||entry.status!=='processing')return;
-    entry.status='uncertain';entry.error='处理中断';delete entry.payload;
-    if(claim.kind==='private'&&world.people[claim.ownerId])queueOut(world,{ownerId:claim.ownerId,text:REPLIES.uncertain,source:'reply'},now);
+    entry.status='uncertain';entry.error='没有处理';entry.outcome=outcome;delete entry.payload;
+    if(claim.kind==='private'&&world.people[claim.ownerId])queueOut(world,{ownerId:claim.ownerId,text:REPLIES[outcome]??REPLIES.uncertain,source:'reply'},now);
   });
 }
 
-// One tick's worth of WeChat work on the Agent SDK path. Returns how many runs were started.
-//   startBy / deadline  absolute times on `clock`: no new wake starts after startBy (the first one always does),
-//                       and no wake waits past the end of the tick.
-export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Date.now(),clock=Date.now,startBy,deadline,maxWakes=MAX_WAKES_PER_TICK}){
-  const began=clock();startBy??=began+START_BY_MS;deadline??=began+TICK_BUDGET_MS;
+// 群里 @ 它的那一条交给 Weave 时，前面带上群里之前的几句（草稿文案，待确认）。
+const withRecent=claim=>claim.recent?.length
+  ?'群里之前的几句：\n'+claim.recent.map(m=>`${m.from}：${m.text}`).join('\n')+'\n\n@你的这一句：\n'+claim.text
+  :claim.text;
+
+// 一拍里的微信收件：把排着的消息交给 Weave 就回来，不等它做完（没有谁挂着等，教材 p.61、p.75「延迟预算」）。
+// Weave 回话走 send_message（agent-tools.mjs）；这一条做完了，Agent 服务回报 /api/internal/agent/outcome（agentOutcome）。
+export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Date.now(),max=MAX_HANDOFFS_PER_TICK}){
   const markers=await withWorld(db,world=>{
     world.wechat??={};
     for(const entry of Object.values(world.wechat)){
       if(entry.direction!=='inbound'||entry.status!=='processing')continue;
       const started=Date.parse(entry.startedAt);
       if(Number.isFinite(started)&&now-started<=ORPHAN_MS)continue;
-      entry.status='uncertain';entry.error='处理中断';delete entry.payload;
-      if(entry.source!=='group'&&world.people[entry.ownerId])queueOut(world,{ownerId:entry.ownerId,text:REPLIES.uncertain,source:'reply'},now);
+      entry.status='uncertain';entry.error='一直没有回报';delete entry.payload;
+      if(entry.source!=='group'&&entry.kind!=='event'&&world.people[entry.ownerId])queueOut(world,{ownerId:entry.ownerId,text:REPLIES.uncertain,source:'reply'},now);
     }
     return Object.keys(world.runtime||{}).filter(key=>key.startsWith('wechat-forget:'));
   });
@@ -296,38 +296,46 @@ export async function processInboundSdk({db,secret,service,fetcher=fetch,now=Dat
       await withWorld(db,world=>{delete world.runtime[marker];});
     }catch(error){console.error('群的 Agent 工作目录暂时删不掉，下一轮再试：'+error.message);}
   }
-  let started=0;
-  while(started<maxWakes&&(started===0||clock()<startBy)){
+  let handed=0;
+  for(let n=0;n<max;n++){
     const claim=await claimNext(db,secret,now);
     if(!claim)break;
     if(claim.skipped){if(claim.photo)await dropPhoto(db,claim.photo);continue;}
-    started++;
-    const timeoutMs=Math.max(5000,Math.min(180000,deadline-clock()));
-    // 看图：照片读出来就删掉，这一轮不管成败都不会再用到它。读不出来（过期、坏了）就按没有照片回答。日志只写 id 和大小。
-    const photo=claim.photo?await takePhoto(db,claim.photo,{secret,now}):null,image=photo?{image:{mediaType:photo.mediaType,data:photo.data}}:{};
-    if(claim.photo)console.log(photo?`这一轮带一张照片（${photo.mediaType}，${photo.bytes} 字节）：${claim.id}`:`这一轮的照片读不出来或已过期，按没有照片回答：${claim.id}`);
+    // 看图：照片读出来就删掉，交出去以后不会再用到它。读不出来（过期、坏了）就按没有照片交。日志只写 id 和大小。
+    const photo=claim.photo?await takePhoto(db,claim.photo,{secret,now}):null,image=photo?{mediaType:photo.mediaType,data:photo.data}:undefined;
+    if(claim.photo)console.log(photo?`这一条带一张照片（${photo.mediaType}，${photo.bytes} 字节）：${claim.id}`:`这一条的照片读不出来或已过期，按没有照片交：${claim.id}`);
+    let result;
     try{
-      if(claim.kind==='private'){
-        await wakeForMessage({db,secret,ownerId:claim.ownerId,text:claim.text,...image,service,fetcher,now,channel:'wechat',timeoutMs,afterWake:(world,person,done)=>{
-          const entry=world.wechat[claim.id];if(!entry)return;
-          entry.status=done.uncertain?'uncertain':'replied';entry.outcome=done.outcome;if(done.uncertain)entry.error='结果不确定';
-          if(person)queueOut(world,{ownerId:claim.ownerId,text:done.reply.slice(0,4000),source:'reply'},now);
-        }});
-      }else{
-        await wakeForGroup({db,secret,ownerId:claim.ownerId,groupId:claim.groupId,text:claim.text,...image,service,fetcher,now,timeoutMs,afterWake:async(world,person,done)=>{
-          const entry=world.wechat[claim.id];
-          // The group was closed while the Agent ran: the entry was deleted with it, and nothing is said.
-          if(!entry)return;
-          entry.status=done.uncertain?'uncertain':'replied';entry.outcome=done.outcome;delete entry.payload;if(done.uncertain)entry.error='结果不确定';
-          if(world.runtime[claim.groupAad])queueOut(world,{source:'group',groupAad:claim.groupAad,text:done.reply.slice(0,4000),target:await seal(claim.threadId,secret,claim.groupAad),mentions:await seal(JSON.stringify([claim.sender]),secret,claim.groupAad)},now);
-        }});
-      }
+      if(claim.kind==='group')result=await sendFromGroup({db,secret,ownerId:claim.ownerId,groupId:claim.groupId,text:withRecent(claim),image,service,fetcher,now,ref:claim.id,mention:await seal(JSON.stringify([claim.sender]),secret,claim.groupAad)});
+      else result=await sendFromOwner({db,secret,ownerId:claim.ownerId,text:claim.text,image,service,fetcher,now,channel:'wechat',kind:claim.kind==='event'?'event':'message',ref:claim.id});
     }catch(error){
-      console.error('微信消息处理失败，记为结果不确定：'+(error instanceof Error?error.message:'unknown'));
-      await markUncertain(db,claim,now).catch(()=>{});
+      console.error('微信消息交给 Weave 失败：'+(error instanceof Error?error.message:'unknown'));
+      result={accepted:false,outcome:'unavailable'};
     }
+    if(result.accepted)handed++;
+    else await markUncertain(db,claim,now,result.outcome).catch(()=>{});
   }
-  return started;
+  return handed;
+}
+
+// Agent 服务回报：没人等的那一条做完了（/api/internal/agent/outcome，按那一条的通行证）。claims 是通行证上的，input 是
+// {outcome, kind, ref}。微信那条消息的状态改成处理完或没处理成；她发来的话没处理成、Weave 这一条又一句话都没发出去时，
+// 如实告诉她（REPLIES）。闹钟、心跳没处理成不打扰她，只记日志。
+export function agentOutcome(world,claims,input,now=Date.now()){
+  const outcome=typeof input?.outcome==='string'?input.outcome:'uncertain',ok=outcome==='success';
+  const entry=typeof input?.ref==='string'?world.wechat?.[input.ref]:null;
+  if(entry&&entry.direction==='inbound'&&entry.status==='processing'){
+    entry.status=ok?'replied':'uncertain';entry.outcome=outcome;delete entry.payload;if(!ok)entry.error='没有处理完';
+  }
+  if(ok)return {ok:true};
+  console.error(`Weave 这一条没处理完（${claims.scope}，${input?.kind??'?'}）：${outcome}`);
+  if(claims.scope!=='owner'||input?.kind!=='message')return {ok:true};
+  const person=world.people?.[claims.owner];
+  if(!person||sentInRun(person,claims.runId).length)return {ok:true};
+  const text=REPLIES[outcome]??REPLIES.uncertain;
+  if(claims.channel==='wechat')queueOwnerText(world,person,text,now);
+  person.messages.push({id:crypto.randomUUID(),role:'assistant',text,source:'system',runId:claims.runId,outcome,createdAt:new Date(now).toISOString()});
+  return {ok:true};
 }
 
 // The idempotency key the bridge sends is the entry id, so re-claiming after a lost

@@ -1,35 +1,27 @@
-// 谁该醒（docs/ARCHITECTURE.md 第 7 节）。叫醒 Agent 服务只有一个入口 wake()，各个通道（网页、微信私聊、
-// 打卡群 @，以后还有定时和事件）只是传不同的参数：范围（owner / group）、通道、触发信息。
-// 醒了做什么由 Agent 决定，这里只负责叫醒、算出结果、存回复。
-//
-// 顺序很重要：先存用户消息，再叫醒，回来重新读一遍再存回复。叫醒期间工具后端会单独写 world，
-// 拿着叫醒前读到的 world 存回去会覆盖那些写入，或者报 409。所以这里每一步都是自己的 withWorld，
-// 调用方也不要把 world 拿着等一轮醒来。
+// 把消息交给一直在线的 Weave（docs/ARCHITECTURE.md「一直在线」「一张嘴」）。Weave 一直都在，这里不「叫醒」谁：
+// 她在网页、微信里说的话，群里 @ 它的话，「微信刚连上」这类事件，都推进同一段会话；每条消息带一张这一条的通行证。
+// Weave 说话只有一个出口 send_message（agent-tools.mjs），这里不替它说任何话；只有这一条没处理成、又一句话都没发出去时，
+// 基础设施如实说一句（REPLIES，和 Claude Code 自己报 API 出错一样）。
 import {withWorld} from './store.mjs';
 import {unseal} from './crypto.mjs';
-import {fail, record} from './domain.mjs';
-import {localClock, GROUP_TIMEZONE} from './proactivity.mjs';
-import {DEFAULT_MODEL, IMAGE_MODEL} from './model.mjs';
+import {record} from './domain.mjs';
+import {GROUP_TIMEZONE} from './proactivity.mjs';
+import {DEFAULT_MODEL} from './model.mjs';
 import {issueCapability} from './capability.mjs';
 
-// 一次 tick（网页 / Cloudflare Cron / 微信桥接每分钟调一次）总共不能超过约 150 秒：桥接 170 秒放弃，nginx 200 秒放弃。
-// 所以 60 秒以后不再开始新的一轮，每一轮最多等到 tick 结束。主动唤醒也用同样的预算。
-export const TICK_BUDGET_MS = 150_000;
-export const START_BY_MS = 60_000;
-const WAKE_TIMEOUT_MS = 180_000;
+// 网页聊天等这一轮做完，最多等到 Agent 服务那边一轮的上限（10 分钟）再多一点。
+const WAIT_MS = 10 * 60 * 1000 + 30_000;
 const SCOPES = ['owner', 'group'], CHANNELS = ['web', 'wechat'];
 
-// 草稿文案，待确认。
+// 草稿文案，待确认：这一条没处理成、Weave 也什么都没发出去时，基础设施说的真实原因。
 export const REPLIES = {
   busy: '现在排队的人有点多，没有处理这条，请稍后再发一次。',
-  unavailable: 'Agent 暂时不可用，没有处理这条，请稍后再试。',
-  uncertain: '这次没有拿到完整结果，Weave 可能已经做了一部分（比如记了一条记录），请先看看再决定要不要重发。',
+  unavailable: 'Weave 暂时不可用，没有处理这条，请稍后再试。',
+  uncertain: '这条没有处理完，Weave 可能已经做了一部分（比如记了一条记录），请先看看再决定要不要重发。',
 };
-// 有人直接找它的那一轮，最后一段话就是回复（网页存下来，微信排进发送队列，群里还 @ 提问的人）。这一轮再调 send_message
-// 就成了两条（2026-11-04 群里出现过），所以工具后端不发，回模型这一句。本人和群两个范围共用。她确认过的原句，不要改写。
-export const DIRECT_SEND_TEXT = '把话写在最后一段就行。';
-// Agent 服务明确说没开始跑的状态码：这时可以说「没有处理」。其余失败都可能跑到一半。
-const NOT_STARTED = new Set([400, 401, 403, 404, 413, 503]);
+// 她 2026-11-16 确认过的原句：微信连上以后，由 Weave 自己打招呼。hosted/agent-service/prompts.mjs 有同一句，
+// test/agent-prompts-sync.test.mjs 保证两边一致。
+export const WECHAT_CONNECTED_TEXT = '对方刚把微信连上了。打个招呼，告诉对方以后在这里找你就行。';
 
 // 通行证和用户自己的 Key 都会发给 Agent 服务，所以只接受 https、同一台机器上的 http，
 // 或者 docker 网络里不带点的服务名（如 http://agent:4320，只在那个网络里解析得到）。
@@ -42,7 +34,7 @@ export function agentServiceConfig(url, token) {
   return {url: url.replace(/\/+$/, ''), token};
 }
 
-// 带时区偏移的当地时间，比如 2026-11-01T23:30:00-08:00，写进 <trigger at="…">。
+// 带时区偏移的当地时间，比如 2026-11-01T23:30:00-08:00，写进 <message at="…">。
 export function localISO(timezone, now) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
     timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -52,103 +44,87 @@ export function localISO(timezone, now) {
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
 }
 
-// 叫醒一轮：全仓库唯一向 Agent 服务发 /wake 的地方。只管叫醒和算结果，不替调用方存任何东西。
-//   scope     'owner'（本人）或 'group'（打卡群）。群范围要给 groupId：群 id 的哈希，不是微信的群号。
-//   ownerId   本人；群范围里是开启这个群的人，用他的模型和 Key。
-//   channel   通行证上的通道（web / wechat），决定 send_message 发到哪。
-//   trigger   {kind, channel, direct, text}：kind 默认 message，direct 默认 true；at 由这里补上：本人范围按本人时区，群范围按北京时间。
-//   beforeWake  可选，在读模型设置的同一个事务里先跑（网页和微信用它先存用户的消息）。
-//   background  后台那一轮（定时、定期看看，proactive.mjs）：Agent 服务从当天的会话分叉出去，失败了不碰原会话。
-//   image     可选，{mediaType, data}（base64）：微信看图时这一轮带的那张照片。带照片的一轮一律用 IMAGE_MODEL。
-//   purpose   可选，写进通行证：'close' 是换日收尾那一轮（day-close.mjs），工具后端不让它发消息。
-//   sessionDate  可选，接哪一天的会话（收尾那一轮接前一天的）；不给就是今天。
-// 本人直接找它的那一轮（网页、微信私聊），记下她这一天跟 Weave 说过话（person.agentDay），换日后由 day-close.mjs 收尾。
-// 后台那一轮（定期看看、跟进、收尾）不算：她没说话的那天没有新的「说好的事」，上一份 HANDOFF.md 留着就行。
-// 返回 {outcome, reply, uncertain, retryable, runId}：
-//   retryable  Agent 服务明确说没开始跑（429 / 400 401 403 404 413 503），可以说「没有处理」，稍后重试也安全；
-//   uncertain  其余没拿到完整结果的情况（超时、断线、500、这一轮没成功）可能已经做了一部分，不自动重试。
-export async function wake({db, secret, service, fetcher = fetch, now = Date.now(), scope = 'owner', ownerId, groupId, channel = 'web', trigger, timeoutMs = WAKE_TIMEOUT_MS, beforeWake, background = false, image, purpose, sessionDate}) {
-  if (!SCOPES.includes(scope)) throw Error(`不支持的范围：${scope}`);
+// 这个人用的模型：她在设置页选的，和她自己的 Key（有的话，她自己付费，模型代理不计她的额度）。群用开启者的。
+export async function modelOf(person, ownerId, secret) {
+  return {
+    provider: 'deepseek',
+    model: person.settings?.model || DEFAULT_MODEL,
+    ...(person.settings?.deepseekKey ? {userKey: await unseal(person.settings.deepseekKey, secret, ownerId)} : {}),
+  };
+}
+
+// 这一条消息的通行证：说话发到哪（channel）、是谁、哪个群，由它决定，模型改不了（agent-tools.mjs）。
+export const capabilityFor = (secret, {ownerId, scope = 'owner', channel, groupId, runId, now}) =>
+  issueCapability(secret, {owner: ownerId, scope, runId, channel, direct: false, ...(scope === 'group' ? {group: groupId} : {})}, now);
+
+// 推一条消息给 Agent 服务。wait：等这一轮做完（网页聊天）；否则对方马上回 202，做完了回报 /api/internal/agent/outcome。
+async function post(service, fetcher, body, wait) {
+  const response = await fetcher(service.url + '/message', {
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(wait ? WAIT_MS : 15000),
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + service.token},
+    body: JSON.stringify({...body, ...(wait ? {wait: true} : {})}),
+  });
+  let data = null;
+  try { data = await response.json(); } catch { /* not JSON */ }
+  return {status: response.status, data};
+}
+const failureOf = status => status === 429 ? 'busy' : status === 400 || status === 401 || status === 403 || status === 404 || status === 413 || status === 503 ? 'unavailable' : 'uncertain';
+
+// 这一条里 Weave 用 send_message 说了哪些话（agent-tools.mjs 记在 person.messages 里，带 runId）。
+export const sentInRun = (person, runId) => (person?.messages || []).filter(m => m.role === 'assistant' && m.source === 'agent' && m.runId === runId);
+
+// 她发来一句话（网页或微信私聊）：先记下她的话，再推进会话。
+//   web     她在页面上等：等这一轮做完，回复就是 Weave 这一轮说的话（可能没有）；没处理成又一句没说，回 REPLIES。
+//   wechat  不等：交出去马上回来（ref 是微信那条消息的编号，做完回报时对得上），回复由 send_message 排进微信。
+export async function sendFromOwner({db, secret, ownerId, text, image, service, fetcher = fetch, now = Date.now(), channel = 'web', kind = 'message', ref, remember = true}) {
   if (!CHANNELS.includes(channel)) throw Error(`不支持的通道：${channel}`);
-  if (scope === 'group' && (typeof groupId !== 'string' || !groupId)) throw Error('群范围需要 groupId');
-  if (scope === 'owner' && groupId !== undefined) throw Error('本人范围不能带 groupId');
-  const direct = trigger.direct ?? true, runId = crypto.randomUUID();
-  const run = await withWorld(db, async world => {
+  const runId = crypto.randomUUID();
+  const setup = await withWorld(db, async world => {
     const person = world.people[ownerId];
-    if (!person) fail('账号不存在', 404);
-    await beforeWake?.(world, person);
-    // 群里的日期和时间按北京时间，不用开启者的时区（GROUP_TIMEZONE）。
-    const localDate = localClock(scope === 'group' ? {profile: {timezone: GROUP_TIMEZONE}} : person, now).day;
-    if (scope === 'owner' && direct) person.agentDay = localDate;
-    return {
-      model: person.settings?.model || DEFAULT_MODEL,
-      // 用自己 Key 的人自己付费，模型代理不计他的额度（沿用 budget.mjs 的口径）。
-      userKey: person.settings?.deepseekKey ? await unseal(person.settings.deepseekKey, secret, ownerId) : undefined,
-      localDate: sessionDate ?? localDate,
-      at: localISO(scope === 'group' ? GROUP_TIMEZONE : person.profile.timezone, now),
-    };
+    if (!person) throw Object.assign(Error('账号不存在'), {status: 404});
+    if (remember && kind === 'message') person.messages.push({id: crypto.randomUUID(), role: 'user', text, channel, createdAt: new Date(now).toISOString()});
+    return {at: localISO(person.profile.timezone, now), ...(await modelOf(person, ownerId, secret))};
   });
-  const capability = await issueCapability(secret, {owner: ownerId, scope, runId, channel, direct, ...(scope === 'group' ? {group: groupId} : {}), ...(purpose ? {purpose} : {})}, now);
+  const capability = await capabilityFor(secret, {ownerId, channel, runId, now});
+  const body = {scope: 'owner', id: ownerId, capability, ...(ref ? {ref} : {}), provider: setup.provider, model: setup.model, ...(setup.userKey ? {userKey: setup.userKey} : {}),
+    message: {kind, channel, at: setup.at, text}, ...(image ? {image} : {})};
+  const wait = channel === 'web';
+  let result;
+  try { result = await post(service, fetcher, body, wait); }
+  catch { result = {status: 0, data: null}; }
+  if (!wait) return {runId, accepted: result.status === 202, outcome: result.status === 202 ? 'accepted' : failureOf(result.status)};
+  const outcome = result.status === 200 && typeof result.data?.outcome === 'string' ? result.data.outcome : failureOf(result.status);
+  // 这一条里 Weave 说过的话；没处理成又一句没说时，基础设施如实说一句，也记进聊天。
+  const reply = await withWorld(db, world => {
+    const person = world.people[ownerId];
+    const said = sentInRun(person, runId).map(m => m.text);
+    if (said.length || outcome === 'success') return said.join('\n\n');
+    const text = REPLIES[outcome] ?? REPLIES.uncertain;
+    if (person) record(person, text, {source: 'system', runId, outcome});
+    return text;
+  });
+  return {runId, outcome, reply};
+}
 
-  let outcome = 'error', reply = null, retryable = false;
+// 群里有人 @ 它：推进这个群自己的那段会话（不碰任何人的记录）。不等。text 里已经带上群里之前的几句（wechat.mjs）。
+// mention 是提问的人（封好的），send_message 在群里回话时 @ 他（agent-tools.mjs 读 world.runtime 里这一条的记录）。
+export async function sendFromGroup({db, secret, ownerId, groupId, text, image, service, fetcher = fetch, now = Date.now(), ref, mention}) {
+  const runId = crypto.randomUUID();
+  const setup = await withWorld(db, async world => {
+    const person = world.people[ownerId];
+    if (!person) throw Object.assign(Error('账号不存在'), {status: 404});
+    if (mention) world.runtime[`group-run:${runId}`] = {mention, expiresAt: now + 30 * 60 * 1000};
+    return modelOf(person, ownerId, secret);
+  });
+  const capability = await capabilityFor(secret, {ownerId, scope: 'group', groupId, channel: 'wechat', runId, now});
+  let result;
   try {
-    const response = await fetcher(service.url + '/wake', {
-      method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
-      headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + service.token},
-      body: JSON.stringify({
-        scope, id: scope === 'group' ? groupId : ownerId, capability, localDate: run.localDate,
-        trigger: {kind: trigger.kind ?? 'message', channel: trigger.channel, direct, at: run.at, text: trigger.text},
-        provider: 'deepseek', model: image ? IMAGE_MODEL : run.model, ...(run.userKey ? {userKey: run.userKey} : {}),
-        ...(background ? {background: true} : {}),
-        ...(image ? {image} : {}),
-      }),
-    });
-    if (response.status === 429) { outcome = 'busy'; retryable = true; }
-    else if (NOT_STARTED.has(response.status)) { outcome = 'unavailable'; retryable = true; }
-    else if (response.status === 200) {
-      const out = await response.json();
-      outcome = typeof out?.outcome === 'string' ? out.outcome : 'error';
-      if (outcome === 'success' && typeof out.reply === 'string' && out.reply.trim()) reply = out.reply.trim();
-    }
-  } catch {
-    // 超时或断线：Agent 可能已经跑了一部分。
-  }
-  // 不自动重试：可能已经记过东西或发过消息（文档第 2 节「出错时」）。
-  // 有人直接找它的那一轮，成功就必须有最后一段话；没人找它的那一轮（定时、事件），不说话是正常的。
-  const uncertain = !retryable && !(outcome === 'success' && (reply !== null || !direct));
-  return {outcome, reply, uncertain, retryable, runId};
-}
-
-// 有人直接找它的那一轮一定要有一句话回给人：没有拿到结果时用这三句。
-function answerFor(result) {
-  if (result.reply !== null) return result.reply;
-  return result.outcome === 'busy' ? REPLIES.busy : result.outcome === 'unavailable' ? REPLIES.unavailable : REPLIES.uncertain;
-}
-
-// 本人发来一条消息（网页或微信私聊）：先存用户消息，叫醒，回来重读再存回复。
-// afterWake(world, person, done) 在存回复的同一个事务里跑，微信用它把回复排进发送队列。
-export async function wakeForMessage({db, secret, ownerId, text, image, service, fetcher = fetch, now = Date.now(), channel = 'web', timeoutMs, afterWake}) {
-  const result = await wake({
-    // 照片只交给这一轮，不写进 person.messages：那里只存文字。
-    db, secret, service, fetcher, now, ownerId, channel, timeoutMs, trigger: {channel, text}, image,
-    beforeWake: (world, person) => { person.messages.push({id: crypto.randomUUID(), role: 'user', text, createdAt: new Date(now).toISOString()}); },
-  });
-  const reply = answerFor(result), done = {reply, outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};
-  await withWorld(db, async world => {
-    const person = world.people[ownerId];
-    if (person) record(person, reply, {source: 'agent', runId: done.runId, outcome: done.outcome, ...(done.uncertain ? {uncertain: true} : {})});
-    await afterWake?.(world, person, done);
-  });
-  return done;
-}
-
-// 打卡群里有人 @ 它：群范围，通道是微信，触发信息的通道是 group。
-// 不往本人的任何记录里写东西；回复排进哪个群、@ 谁，由 afterWake 决定。
-export async function wakeForGroup({db, secret, ownerId, groupId, text, image, service, fetcher = fetch, now = Date.now(), timeoutMs, afterWake}) {
-  const result = await wake({db, secret, service, fetcher, now, ownerId, scope: 'group', groupId, channel: 'wechat', timeoutMs, trigger: {channel: 'group', text}, image});
-  const done = {reply: answerFor(result), outcome: result.outcome, uncertain: result.uncertain, runId: result.runId};
-  if (afterWake) await withWorld(db, world => afterWake(world, world.people[ownerId], done));
-  return done;
+    result = await post(service, fetcher, {
+      scope: 'group', id: groupId, capability, ...(ref ? {ref} : {}), provider: setup.provider, model: setup.model, ...(setup.userKey ? {userKey: setup.userKey} : {}),
+      message: {kind: 'message', channel: 'group', at: localISO(GROUP_TIMEZONE, now), text}, ...(image ? {image} : {}),
+    }, false);
+  } catch { result = {status: 0}; }
+  return {runId, accepted: result.status === 202, outcome: result.status === 202 ? 'accepted' : failureOf(result.status)};
 }
 
 // 注销或关闭群时先删 Agent 的工作目录和会话记录，删不掉就不往下走，免得留下没人管的个人数据。
@@ -165,5 +141,18 @@ export async function forgetAgentWorkspace({service, scope = 'owner', id, ownerI
     done = false;
   }
   // 草稿文案，待确认。
-  if (!done) fail('暂时删不掉 Agent 的工作目录，账号没有删除，请稍后重试', 503);
+  if (!done) throw Object.assign(Error('暂时删不掉 Agent 的工作目录，账号没有删除，请稍后重试'), {status: 503});
+}
+
+// 调 Agent 服务的本子、记忆接口（网页读本子、打勾、取消闹钟、看记忆）。要这个人的通行证：第一次读时会从这里导入以前的数据。
+export async function agentCall({service, fetcher = fetch, path, body}) {
+  const response = await fetcher(service.url + path, {
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(15000),
+    headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + service.token},
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await response.json(); } catch { /* not JSON */ }
+  if (response.status !== 200) throw Object.assign(Error(data?.error || 'Weave 暂时不可用，请稍后再试'), {status: response.status === 404 ? 404 : 503});
+  return data;
 }

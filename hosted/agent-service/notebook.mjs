@@ -154,7 +154,42 @@ export function markFired(dirs, alarm, {now = Date.now(), timezone = 'Asia/Shang
   return next;
 }
 
+const shiftDay = (day, days) => new Date(Date.parse(day + 'T00:00:00Z') + days * 86400000).toISOString().slice(0, 10);
+
+// 给 Jev 的事实（她定的用途：判断要不要主动提醒用户）：每个习惯今天做没做、最近 7 天做了几天。
+// 只在 Weave 想主动开口时、由 Agent 服务交给网站去问 Jev；不替 Weave 做任何判断。
+export function habitFacts(dirs, today) {
+  const from = shiftDay(today, -6);
+  return withDb(dirs, db => {
+    const done = db.prepare('SELECT habit_id, date FROM completions WHERE date >= ? AND date <= ?').all(from, today);
+    return {
+      goals: db.prepare('SELECT title FROM goals WHERE archived = 0').all().map(g => g.title),
+      habits: db.prepare('SELECT habit_id, name, minimum_action, trigger FROM habits').all().map(h => ({
+        name: h.name, minimum_action: h.minimum_action ?? '', trigger: h.trigger ?? '',
+        done_today: done.some(c => c.habit_id === h.habit_id && c.date === today),
+        days_done_last_7: new Set(done.filter(c => c.habit_id === h.habit_id).map(c => c.date)).size,
+      })),
+    };
+  });
+}
+
 // 她在网页上取消一个闹钟。没有这条（或已经结束）回 false。
 export function cancelAlarm(dirs, alarmId) {
   return withDb(dirs, db => db.prepare("UPDATE alarms SET status = 'cancelled' WHERE alarm_id = ? AND status IN ('scheduled', 'paused')").run(alarmId).changes > 0);
+}
+
+// 她在网页上暂停或恢复一个重复的闹钟。恢复时，已经过去的那一次跳过，排到下一个还没过的时间。没有这条回 null。
+export function pauseAlarm(dirs, alarmId, paused, {now = Date.now(), timezone = 'Asia/Shanghai'} = {}) {
+  return withDb(dirs, db => {
+    const row = db.prepare("SELECT * FROM alarms WHERE alarm_id = ? AND status IN ('scheduled', 'paused') AND repeat != 'none'").get(alarmId);
+    if (!row) return null;
+    let at = row.at;
+    if (!paused && Date.parse(at) <= now) {
+      const atMs = Date.parse(at);
+      const next = nextAfter({repeat: row.repeat, localTime: localHHMM(atMs, timezone), anchorDay: localParts(atMs, timezone).day}, atMs, now, timezone);
+      if (next !== null) at = localISO(next, timezone);
+    }
+    db.prepare('UPDATE alarms SET status = ?, at = ? WHERE alarm_id = ?').run(paused ? 'paused' : 'scheduled', at, alarmId);
+    return alarmRow({...row, status: paused ? 'paused' : 'scheduled', at});
+  });
 }

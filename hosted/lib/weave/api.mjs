@@ -1,18 +1,17 @@
-import {Store} from './store.mjs';
+import {Store,withWorld} from './store.mjs';
 import {hash,randomToken,seal,unseal} from './crypto.mjs';
 import * as domain from './domain.mjs';
 import {DEFAULT_MODEL} from './model.mjs';
 import {NotionClient,notionOAuthConfig,notionOAuthURL,exchangeNotionOAuth} from './notion.mjs';
 import {notionCallback,notionConfigured,connectionState,finishNotion,listNotionPages,selectNotionPage,sweepNotionRuntime,forgetNotionRuntime,clearNotionSettings} from './notion-connect.mjs';
-import {proactiveState,localClock} from './proactivity.mjs';
-import {checkToday,uncheckToday} from './habits.mjs';
-import {wechatQueue,startBinding,unbind,publicBinding} from './wechat.mjs';
+import {localClock} from './proactivity.mjs';
+import {verifyCapability} from './capability.mjs';
+import {wechatQueue,startBinding,unbind,publicBinding,agentOutcome} from './wechat.mjs';
 import {runScheduled} from './scheduler.mjs';
-import {deliverRoutines,publicProactive,publicSchedules,publicSchedule,publicActivity,setLevel,cancelSchedule,pauseSchedule} from './proactive.mjs';
 import {handleAgentTool} from './agent-tools.mjs';
 import {handleAgentSnapshot} from './agent-snapshot.mjs';
 import {readAgentMemory} from './agent-memory.mjs';
-import {agentServiceConfig,wakeForMessage,forgetAgentWorkspace} from './dispatcher.mjs';
+import {agentServiceConfig,sendFromOwner,forgetAgentWorkspace,capabilityFor,agentCall} from './dispatcher.mjs';
 import {dropOwnerPhotos} from './wechat-photos.mjs';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 async function body(request){
@@ -26,6 +25,36 @@ async function body(request){
 }
 // Calendar arithmetic on a YYYY-MM-DD string, done in UTC so no zone or daylight-saving rule gets involved.
 const daysBefore=(day,count)=>new Date(Date.parse(day+'T00:00:00Z')-count*86400000).toISOString().slice(0,10);
+
+// 这个人的本子（Agent 服务那边的 records.db）。页面认识的格式不变：目标、习惯、打卡原样；闹钟换算成「待办」和「提醒」栏
+// 认识的两种（她让设的一次性提醒是 reminders，其余是 schedules）。读不到时页面照常显示，只是这几样是空的。
+async function notebookFor({service,id,secret,fetcher,now,since=''}){
+  if(!service)return null;
+  try{
+    const capability=await capabilityFor(secret,{ownerId:id,channel:'web',runId:crypto.randomUUID(),now});
+    return await agentCall({service,fetcher,path:'/notebook/read',body:{id,capability,...(since?{since}:{})}});
+  }catch(error){console.error('读不到本子：'+(error instanceof Error?error.message:'unknown'));return null;}
+}
+const oneOffReminder=a=>a.kind==='reminder'&&a.repeat==='none';
+const remindersOf=book=>(book?.alarms||[]).filter(a=>oneOffReminder(a)&&a.status==='scheduled').map(a=>({id:a.id,text:a.note,dueAt:a.at,status:'scheduled'}));
+const schedulesOf=book=>(book?.alarms||[]).filter(a=>!oneOffReminder(a)).map(a=>({id:a.id,kind:a.kind==='reminder'?'reminder':'wake',text:a.note,repeat:a.repeat,nextAt:a.at,anchorDay:a.repeat==='monthly'?Number(a.at.slice(8,10)):null,status:a.status,origin:null,lastRunAt:a.firedAt??null,lastOutcome:null}));
+// 「动态」：Weave 最近 14 天主动说过的话，加上 Jev 判断不打扰、没发出去的那几次。
+function activityOf(person,now){
+  const since=now-14*86400000,items=[];
+  for(const m of person.messages||[])if(m.role==='assistant'&&m.proactive===true&&Date.parse(m.createdAt)>=since&&typeof m.text==='string')items.push({id:'m:'+m.id,at:m.createdAt,kind:'message',text:m.text.slice(0,300)});
+  for(const j of person.jevLog||[])if(j.sent===false&&j.at>=since)items.push({id:`j:${j.at}`,at:new Date(j.at).toISOString(),kind:j.kind==='heartbeat'?'check':'followup',outcome:'jev-quiet'});
+  return items.sort((a,b)=>Date.parse(b.at)-Date.parse(a.at)).slice(0,50);
+}
+// POST /api/internal/agent/outcome：Agent 服务回报没人等的那一条做完了（wechat.mjs 的 agentOutcome）。按那一条的通行证。
+async function outcomeRoute(request,{db,secret,now}){
+  if(request.method!=='POST')return json({error:'方法不支持'},405);
+  const auth=request.headers.get('authorization')||'';
+  let claims;
+  try{claims=await verifyCapability(secret,auth.startsWith('Bearer ')?auth.slice(7):'',now);}catch{return json({error:'通行证无效或已过期'},401);}
+  if(!db)return json({error:'数据库尚未就绪'},503);
+  const input=await body(request);
+  return json(await withWorld(db,world=>agentOutcome(world,claims,input,now)));
+}
 // POST /api/internal/tick. Only with the Agent service set up: it is the caller, and its token
 // (which this side already holds to call it) is the password. No login and no site password (basic-auth.mjs).
 async function internalTick(request,{tick,agentServiceUrl,agentServiceToken}){
@@ -43,13 +72,14 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     const managedProvider=typeof agentProviderApiKey==='string'&&agentProviderApiKey.length>=12;
     const requestURL=new URL(request.url),requestPath=requestURL.pathname;
     // Calls from the Agent service's MCP tools. Authorized by the per-wake capability, not a login.
-    if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,now});
-    // The Agent service's pre-wake data snapshot, same capability (textbook p.16, p.20).
+    if(requestPath.startsWith('/api/internal/agent/tools/'))return handleAgentTool(request,{db,secret,readBody:body,jev,fetcher,now});
+    if(requestPath==='/api/internal/agent/outcome')return outcomeRoute(request,{db,secret,now});
+    // 以前存在网站库里的数据，第一次建本子时 Agent 服务来取一次（agent-snapshot.mjs），所有人搬完就删。
     if(requestPath==='/api/internal/agent/snapshot')return handleAgentSnapshot(request,{db,secret,now});
     // Same work as the Cron handler, for deployments where Cron does not fire (`wrangler dev`).
-    const tick=(flags={})=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,fetcher,now,jev,...flags});
-    // The server's own clock: the Agent service calls this every minute (proactive design §4.7). Reminders and the
-    // background wakes; queued WeChat messages stay with the Mac bridge's tick below.
+    const tick=(flags={})=>runScheduled({db,secret,env:{WECHAT_BRIDGE_TOKEN:wechat?.token,NOTION_API_PROXY_URL:notionOAuth?.apiProxyUrl},agentServiceUrl,agentServiceToken,fetcher,now,...flags});
+    // The server's own clock: the Agent service calls this every minute. It hands the people and groups to look at back to
+    // the Agent service (/tick: due alarms, heartbeats); queued WeChat messages stay with the bridge's tick below.
     if(requestPath==='/api/internal/tick')return internalTick(request,{tick,agentServiceUrl,agentServiceToken});
     if(requestPath.startsWith('/api/internal/wechat/'))return wechatQueue(request,{db,secret,token:wechat?.token,readBody:body,tick,now,images:wechat?.images===true});
     // Any other internal path is not a route: answer before reading identity or touching the world.
@@ -63,10 +93,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     if(request.method==='POST'){const originHeader=request.headers.get('origin'),hostHeader=request.headers.get('host')||requestURL.host;if(!originHeader||!hostHeader)return json({error:'不允许跨站请求'},403);try{if(new URL(originHeader).host!==hostHeader)return json({error:'不允许跨站请求'},403);}catch{return json({error:'不允许跨站请求'},403);}}
     const store=new Store(db,{strict:path==='profile'||path==='account/delete'}),world=await store.load(),id='u:'+await hash(identity.userId);
     const person=domain.ensurePerson(world,{...identity,userId:id});
-    proactiveState(person);
-    domain.deliverReminders(world);
-    deliverRoutines(world,now);
     const save=()=>store.save(world);
+    const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
     async function notionFor(){return new NotionClient({token:person.settings.notionToken?await unseal(person.settings.notionToken,secret,id):'',pageId:person.settings.notionPageId,fetcher,apiProxy:notionOAuth?.apiProxyUrl||''});}
     if(request.method==='GET'){
       await save();
@@ -76,7 +104,8 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
         // The records page has the same 61 (STATUS_WINDOW_BACK, app/workspace/records.mjs); test/habits-web.test.mjs holds them together.
         // goals and habits go out whole, archived goals included: the pages hide an archived goal's habits, which they can only do if they see the goal and its flag.
         const today=localClock(person,now).day,since=daysBefore(today,61);
-        return json({profile:person.profile,personId:id,messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),reminders:person.reminders,notifications:person.notifications.slice(-100),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user',goals:person.goals||[],habits:person.habits||[],completions:(person.completions||[]).filter(c=>c.date>=since),today,schedules:publicSchedules(person),proactive:publicProactive(person,now),activity:publicActivity(person,now)});
+        const book=await notebookFor({service,id,secret,fetcher,now,since});
+        return json({profile:person.profile,personId:id,messages:person.messages.slice(-200),plans:person.plans.slice(-50),checkins:person.checkins.slice(-100),reminders:remindersOf(book),notifications:person.notifications.slice(-100),settings:{model:person.settings.model,agent:!!(person.settings.deepseekKey||managedAgent||managedProvider),verifiedAt:person.settings.verifiedAt||null,notion:!!(person.settings.notionToken&&person.settings.notionPageId),notionConfigured:notionConfigured(notionOAuth),wechat:publicBinding(person,wechat,world,now)},agentRuntime:managedAgent?'hosted':managedProvider?'managed':'user',goals:book?.goals||[],habits:book?.habits||[],completions:book?.completions||[],today,schedules:schedulesOf(book),activity:activityOf(person,now),notebook:book?'ok':'unavailable'});
       }
       if(path==='connections/notion/pending'){
         const keyPrefix='notion-pending:';for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith(keyPrefix)&&value.ownerId===id){if(value.expiresAt>now){if(value.reason)continue;return json({ready:true,pages:value.pages||[]});}delete world.runtime[key];}
@@ -88,11 +117,10 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
       if(path==='memory')return json({text:await(await notionFor()).memory()});
       // What the Agent itself wrote in MEMORY.md (ARCHITECTURE §10: the owner can see it). Read through the Agent service.
       if(path==='agent-memory'){
-        const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
         if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
-        return json({text:await readAgentMemory({service,ownerId:id,fetcher})});
+        return json(await readAgentMemory({service,ownerId:id,fetcher}));
       }
-      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,reminders:person.reminders,goals:person.goals||[],habits:person.habits||[],completions:person.completions||[],schedules:person.schedules||[],proactive:person.proactive||null});
+      if(path==='export')return json({profile:person.profile,messages:person.messages,plans:person.plans,checkins:person.checkins,notebook:await notebookFor({service,id,secret,fetcher,now})});
       return json({error:'接口不存在'},404);
     }
     const input=await body(request);
@@ -148,27 +176,31 @@ export async function handleAPI(request,{db,identity,secret,fetcher=fetch,agentS
     }
     else if(path==='chat'){
       const text=typeof input.text==='string'?input.text.trim():'';if(!text||text.length>4000)domain.fail('请输入1–4000字消息');
-      const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
       if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
-      // The wake writes through the tool backend, so this request's world is stale from here:
-      // return without the final save below.
-      return json({reply:(await wakeForMessage({db,secret,ownerId:id,text,service,fetcher,now})).reply});
+      // 推进她那一段一直在线的会话，等这一轮做完（她在页面上等）。回复是 Weave 这一轮用 send_message 说的话（可能没有）。
+      // 那边会改 world（工具后端），所以这里的 world 已经旧了：不走下面的保存。
+      return json({reply:(await sendFromOwner({db,secret,ownerId:id,text,service,fetcher,now,channel:'web'})).reply});
     }
-    else if(path==='reminders')output=domain.addReminder(person,input);
-    else if(path==='reminders/cancel'){
-      const reminder=person.reminders.find(r=>r.id===input.id);if(!reminder||reminder.status!=='scheduled')domain.fail('提醒不存在或已经执行',404);reminder.status='cancelled';
+    // 她在网页上取消、暂停、恢复一个闹钟（本子里的 alarms，Weave 用 schedule 定的）。
+    else if(path==='reminders/cancel'||path==='schedules/cancel'||path==='schedules/pause'){
+      if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
+      if(typeof input.id!=='string'||!input.id)domain.fail('没有这个提醒',404);
+      const capability=await capabilityFor(secret,{ownerId:id,channel:'web',runId:crypto.randomUUID(),now});
+      const pause=path==='schedules/pause';
+      if(pause&&typeof input.paused!=='boolean')domain.fail('参数无效');
+      const out=await agentCall({service,fetcher,path:pause?'/notebook/pause-alarm':'/notebook/cancel-alarm',body:{id,capability,alarmId:input.id,...(pause?{paused:input.paused,timezone:person.profile.timezone}:{})}});
+      if(pause&&out.alarm)output={schedule:schedulesOf({alarms:[out.alarm]})[0]};
     }
-    // 助理主页「提醒」栏（proactive design §4.8）：档位、删掉一条重复的提醒或跟进、暂停和恢复。
-    else if(path==='proactive/level'){setLevel(person,input.level,now);output={proactive:publicProactive(person,now)};}
-    else if(path==='schedules/cancel')cancelSchedule(person,input.id);
-    else if(path==='schedules/pause')output={schedule:publicSchedule(pauseSchedule(person,input.id,input.paused,now))};
     else if(path==='notifications/read')person.notifications.forEach(n=>n.read=true);
-    // The web page's tick box: today only, in the person's own zone (habits.mjs). The result is the rule's own answer, sent as is.
-    else if(path==='habits/check')output=checkToday(person,input.habit_id,now);
-    else if(path==='habits/uncheck')output=uncheckToday(person,input.habit_id,now);
+    // 「待办」的勾：今天（她所在时区的今天）给这个习惯打勾或取消，写进本子。
+    else if(path==='habits/check'||path==='habits/uncheck'){
+      if(!service)domain.fail('新版 Agent 还没有配置好，请联系管理员',503);
+      if(typeof input.habit_id!=='string'||!input.habit_id)domain.fail('没有这个习惯',404);
+      const capability=await capabilityFor(secret,{ownerId:id,channel:'web',runId:crypto.randomUUID(),now});
+      output=await agentCall({service,fetcher,path:'/notebook/check',body:{id,capability,habitId:input.habit_id,date:localClock(person,now).day,done:path==='habits/check'}});
+    }
     else if(path==='account/delete'){
       if(input.confirm!==true)domain.fail('请确认要永久删除账号');
-      const service=agentServiceConfig(agentServiceUrl,agentServiceToken);
       if(service){
         // Each group this account enabled has a workspace of its own. Delete those first, so a failure leaves the whole account in place.
         for(const [key,value] of Object.entries(world.runtime||{}))if(key.startsWith('wechat-group:')&&value?.ownerId===id)await forgetAgentWorkspace({service,scope:'group',id:key.slice('wechat-group:'.length),fetcher});
