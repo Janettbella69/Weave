@@ -2,7 +2,7 @@
 
 - 日期：2026-11-18
 - 分支：`feat/group-photos`，从 `feat/ilink-private`（PR #54，`511c74e`）开；草稿 PR 合进 `feat/deploy-tencent`，要在 #54 之后合
-- 状态：设计稿，等负责人批准；还没写代码
+- 状态：负责人 2026-11-18 批准；6.5「开始看照片前先说一声」定为要做。第 7 节的文字仍是草稿，合并前逐句确认
 - 依据：负责人这次的选择（第 5 节）；2026-11-04 定的「群里没 @ 的照片也看、记成打卡」；2026-11-11 定的「图片 = 工作目录里的文件」；2026-11-16 定的「入口不挑类型」「不写死替 Agent 说话的代码」；PR #54 的代码；agent-wechat 1.3.3 的接口
 
 ## 1. 要做成什么，为什么
@@ -99,7 +99,7 @@
 
 - `handleEvent`：文字照旧走 `/events`；`type 3`（`incoming`）走新的「交照片」。交完（成功、交了空的、或网站拒绝）才前进读取位置，和文字一样「网站拿到了才往前走」。交照片在事件流里同步等：保证「先发照片、再 @ 它问」时，照片那条先进网站。
 - 删掉配对：`createPhotos` 里的 `seen` / `extraFor` / `answered`、`PHOTO_PAIR_MS`、`PHOTO_WATCH_MS`、`X-Weave-Photos` 请求头；`readPhoto`、`stripMetadata`、`sniffImage` 留着用。
-- `WEAVE_ORIGIN`：除了 HTTPS，再认一个服务器内部地址（`http://host.docker.internal:4317`，和 iLink 桥接一样），别的 `http://` 一律拒绝；`deploy/tencent/wechat/bridge-guard.mjs` 的出站限制跟着认这个地址；compose 里给 wx（桥接共用它的网络）加 `host.docker.internal:host-gateway`；`login.sh` 的连通性检查改查新地址。共用网络时这个名字能不能解析，实现时先验证；不行就直接写 docker0 的地址（`WEAVE_BIND_IP`）。
+- `WEAVE_ORIGIN`：除了 HTTPS，再认服务器内部地址：`http://` 加内网 IPv4（127/8、10/8、172.16/12、192.168/16）加端口，别的 `http://` 一律拒绝。部署时用网站本来就绑着的 docker0 地址：`deploy/tencent/wechat/lib.sh` 从 `deploy/tencent/.env` 读 `WEAVE_BIND_IP`（`setup-env.sh` 写的，`deploy.sh` 也读它），默认地址变成 `http://<WEAVE_BIND_IP>:4317`；`login.sh` 的连通性检查和写进 `bridge.env` 的都是这个地址。wx 守护进程和它的 compose 一点不动（重建 wx 有让刚登上的小号掉线的风险）。`bridge-guard.mjs` 只管 wx 断了就退出、第一次连上时说一句，不限制出站，不用改。
 
 ### 6.4 网站（`hosted/lib/weave/wechat.mjs`、`api.mjs`、`dispatcher.mjs`）
 
@@ -109,7 +109,7 @@
 - `processInboundSdk` 的群分支：照片条目用 `direct: false`；`afterWake` 对 `direct: false` 的不排回复。
 - `wakeForGroup` 多一个 `direct` 参数，默认 `true`（照旧）。
 
-### 6.5 群里开始看照片之前，先说一声（要负责人定）
+### 6.5 群里开始看照片之前，先说一声（负责人定了：要）
 
 照片会发给 DeepSeek 看，这是群友当初开启打卡群时没被告知的用途。建议：每个群在 Weave 开始看照片之前，先由 Weave 用自己的话在群里说一声。做法是排一轮「事件」（`direct: true`，trigger 原句见第 7 节第 3 句，等确认）；这句话发出去（桥接回执 `sent`）以后，这个群才开始看照片（`group.photosToldAt`）。在那之前到的照片只记一行、不看。
 
@@ -149,9 +149,9 @@
 
 ## 8. 留给实现的人
 
-- 桥接共用 wx 的网络时，`host.docker.internal` 能不能解析；不行就用 `WEAVE_BIND_IP`。
-- 同一个群的两轮能不能同时跑（照片那一轮和紧接着的 @ 那一轮）：先查 Agent 服务对同一个工作目录有没有排他；没有的话，在网站认领时同一个群一次只放一条。
-- `wechatPhotosShown`、`images` 参数还被哪些地方用，删干净。
+- 同一个群的两轮不会同时跑：Agent 服务按「范围:id」排队（`hosted/agent-service/queue.mjs`，`server.mjs` 的 `queue.run`）；桥接按顺序交、网站按时间先后认领，所以「先发照片、再 @ 它」时照片那一轮先跑完。（已查，不用再做。）
+- `wechatPhotosShown`、`images` 参数还被哪些地方用，删干净（`api.mjs:97`、`hosted/app/privacy/page.tsx`、`scheduler.mjs` 的注释）。
+- `deploy/wechat-mac`（2026-11-04 起不用的 Mac 部署）里的看图开关这次不动，留给清理旧路线的那次。
 - 容器测试只在 CI 上跑，本地跳过的要在 PR 里写清楚。
 
 ## 9. 对照《Agent Harness 教材》
